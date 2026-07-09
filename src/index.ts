@@ -9,11 +9,8 @@
  * the extension loads cleanly in Pi. Each phase replaces a stub with its real
  * controller.
  */
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-} from "@earendil-works/pi-coding-agent";
 import { COMMANDS } from "./constants";
+import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	registerPlaceholderCommands(pi);
