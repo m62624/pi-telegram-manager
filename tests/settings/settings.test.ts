@@ -1,0 +1,80 @@
+import { describe, expect, it } from "vitest";
+import { loadSettings } from "../../src/settings/manager";
+import { DEFAULT_SETTINGS, normalizeSettings } from "../../src/settings/schema";
+import { createTelegramPaths } from "../../src/storage/paths";
+import { FakeFs } from "../helpers/fake-fs";
+
+const paths = createTelegramPaths("/agent");
+
+describe("normalizeSettings", () => {
+	it("returns defaults for empty input", () => {
+		expect(normalizeSettings({})).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("field-merges over defaults, keeping untouched defaults", () => {
+		const s = normalizeSettings({
+			manager: { continueWindowMs: 45_000, subMode: "takeover" },
+		});
+		expect(s.manager.continueWindowMs).toBe(45_000);
+		expect(s.manager.subMode).toBe("takeover");
+		// Untouched fields keep defaults.
+		expect(s.manager.ownerReplyWindowMs).toBe(300_000);
+		expect(s.manager.labeler).toBe("LLM agent:");
+	});
+
+	it("accepts an empty labeler (no prefix)", () => {
+		expect(
+			normalizeSettings({ manager: { labeler: "" } }).manager.labeler,
+		).toBe("");
+	});
+
+	it("collects unknown top-level keys as warnings without failing", () => {
+		const warnings: string[] = [];
+		normalizeSettings({ nope: 1, botToken: "x" }, warnings);
+		expect(warnings.join()).toContain("nope");
+	});
+
+	it("throws TypeError with a path on a wrong-typed field", () => {
+		expect(() =>
+			normalizeSettings({ manager: { continueWindowMs: -5 } }),
+		).toThrow(/manager.continueWindowMs/);
+		expect(() =>
+			normalizeSettings({ assistant: { rendering: "xml" } }),
+		).toThrow(/assistant.rendering/);
+		expect(() => normalizeSettings({ instructionFiles: "not-array" })).toThrow(
+			/instructionFiles/,
+		);
+	});
+
+	it("parses manager sub-mode instruction files", () => {
+		const s = normalizeSettings({
+			manager: {
+				firstMessageTemplate: "~/first.md",
+				observer: { interlocutorInstructionFile: "~/i.md" },
+				takeover: { instructionFile: "~/t.md" },
+			},
+		});
+		expect(s.manager.firstMessageTemplate).toBe("~/first.md");
+		expect(s.manager.observer.interlocutorInstructionFile).toBe("~/i.md");
+		expect(s.manager.takeover.instructionFile).toBe("~/t.md");
+	});
+});
+
+describe("loadSettings", () => {
+	it("returns defaults when the file is missing", async () => {
+		const fs = new FakeFs();
+		const { settings } = await loadSettings(fs, paths.settingsPath);
+		expect(settings).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("reads and normalizes the on-disk file", async () => {
+		const fs = new FakeFs();
+		await fs.writeText(
+			paths.settingsPath,
+			JSON.stringify({ allowedUserId: 7, manager: { rememberMessages: 5 } }),
+		);
+		const { settings } = await loadSettings(fs, paths.settingsPath);
+		expect(settings.allowedUserId).toBe(7);
+		expect(settings.manager.rememberMessages).toBe(5);
+	});
+});
