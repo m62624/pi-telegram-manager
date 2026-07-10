@@ -188,6 +188,25 @@ describe("ConnectController", () => {
 		expect(sendFollowUp).toHaveBeenCalledTimes(1);
 	});
 
+	it("intercepts /esc (and /cancel) as an abort control command", async () => {
+		const onAbort = vi.fn(async () => {});
+		const { controller, sendFollowUp } = setup({ onAbort });
+		expect(await controller.onEvent(messageEvent("/esc"))).toBe(true);
+		expect(await controller.onEvent(messageEvent("/cancel", 2))).toBe(true);
+		expect(onAbort).toHaveBeenCalledTimes(2);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+	});
+
+	it("answers /help with the command list, without prompting the agent", async () => {
+		const { controller, api, sendFollowUp } = setup();
+		const handled = await controller.onEvent(messageEvent("/help"));
+		expect(handled).toBe(true);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		const markdown = api.sent.at(-1)?.rich_message.markdown ?? "";
+		expect(markdown).toContain("/esc");
+		expect(markdown).toContain("/clear");
+	});
+
 	it("sends a collapsible tool-activity block to the bound chat", async () => {
 		const { controller, api } = setup();
 		await controller.sendToolActivity({

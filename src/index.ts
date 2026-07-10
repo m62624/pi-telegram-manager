@@ -15,7 +15,7 @@
  * context; `sendUserMessage` is used from the top-level `pi` for the same
  * reason.
  */
-import { COMMANDS } from "./constants";
+import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { ContextReset } from "./core/context-reset";
@@ -200,6 +200,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		return { action: "continue" };
 	});
+
+	// Let the chat know when context compaction runs, so a mid-turn pause is
+	// explained rather than looking like a hang. There is no dedicated
+	// "compaction failed" event; a genuine failure surfaces through the normal
+	// agent error path.
+	pi.on("session_before_compact", async () => {
+		await connect
+			?.sendToChat("🗜 Compacting context to free up space — one moment…")
+			.catch(() => {});
+	});
+	pi.on("session_compact", async () => {
+		await connect
+			?.sendToChat("✅ Context compacted — continuing.")
+			.catch(() => {});
+	});
 	pi.on("session_shutdown", async () => {
 		if (connect) {
 			await connect
@@ -315,12 +330,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						"🧹 History cleared — starting fresh. (Shared session: the terminal sees the cleared context too.)",
 					);
 				},
+				onAbort: async () => {
+					// Interrupt the running turn via the handler armed on agent_start.
+					const stopped = await abort.abort();
+					await connect?.sendToChat(
+						stopped
+							? "⎋ Cancelled the current turn."
+							: "Nothing to cancel — the agent is idle.",
+					);
+				},
 				outbound,
 				abort,
 			});
 			toolActivityEnabled = settings.assistant.toolActivity;
 			draftPreviewsEnabled = settings.assistant.draftPreviews;
 			void client.start();
+			// Publish the tappable command menu (no manual setup needed by the user).
+			void client.api
+				.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
+				.catch(() => {});
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();
 			}, HEARTBEAT_INTERVAL_MS);

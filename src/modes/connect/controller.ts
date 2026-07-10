@@ -45,12 +45,25 @@ export interface ConnectControllerDeps {
 	loadImages?: (message: Message) => Promise<InboundImage[]>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
+	/** Handle a `/esc` (or `/cancel`) request to interrupt the running turn. */
+	onAbort?: () => Promise<void>;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
 
-/** Telegram bot commands the bridge handles itself instead of forwarding to the agent. */
+// Telegram bot commands the bridge handles itself instead of forwarding to the
+// agent. Everything else (including /start) falls through as an ordinary prompt.
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
+const ABORT_COMMANDS = new Set(["esc", "cancel"]);
+const HELP_COMMANDS = new Set(["help"]);
+
+/** Static help shown for `/help`, mirroring the Telegram command menu. */
+const HELP_TEXT = [
+	"*Pi terminal bridge*",
+	"/esc — cancel the current turn",
+	"/clear — clear the conversation history",
+	"/help — show this help",
+].join("\n");
 
 export class ConnectController {
 	private readonly queue = new MessageQueue();
@@ -114,6 +127,14 @@ export class ConnectController {
 		if (!command) return false;
 		if (CLEAR_COMMANDS.has(command.name) && this.deps.onClear) {
 			await this.deps.onClear();
+			return true;
+		}
+		if (ABORT_COMMANDS.has(command.name) && this.deps.onAbort) {
+			await this.deps.onAbort();
+			return true;
+		}
+		if (HELP_COMMANDS.has(command.name)) {
+			await this.sendToChat(HELP_TEXT);
 			return true;
 		}
 		return false;

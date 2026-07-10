@@ -21,5 +21,18 @@ export const COMMANDS = {
 	managerStop: "telegram-manager-stop",
 } as const;
 
+/**
+ * Bot commands published to the Telegram command menu (mode 1) via
+ * `setMyCommands`. They render as a tappable list behind the chat's menu
+ * button — the user never types them by hand — and map to the bridge's own
+ * control handlers, not the agent.
+ */
+export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
+	[
+		{ command: "esc", description: "Cancel the current turn" },
+		{ command: "clear", description: "Clear the conversation history" },
+		{ command: "help", description: "Show available commands" },
+	];
+
 /** The two mutually-exclusive runtime modes. */
 export type BridgeMode = "connect" | "manager";
