@@ -11,7 +11,7 @@
  * update into a dispatched event) is factored into pure functions that are unit
  * tested; the grammY `Bot` wiring itself is glue.
  */
-import { Bot, type PollingOptions } from "grammy";
+import { Bot, type PollingOptions, type RawApi } from "grammy";
 import { classifyUpdate, type TelegramEvent } from "./updates";
 
 /** A classified event handler; may be async. Thrown errors go to `onError`. */
@@ -80,9 +80,16 @@ export class TelegramClient {
 		});
 	}
 
-	/** The grammY api surface, satisfying the `OutboundApi` / `FileApi` ports. */
-	get api(): Bot["api"] {
-		return this.bot.api;
+	/**
+	 * The grammY *raw* api surface, satisfying the `OutboundApi` / `FileApi`
+	 * ports. We deliberately expose `bot.api.raw` (single object-payload calls,
+	 * e.g. `sendMessage({ chat_id, text })`) rather than the high-level `bot.api`
+	 * whose methods take positional args (`sendMessage(chat_id, text)`). The raw
+	 * proxy also forwards brand-new Bot API 10.1 methods (`sendRichMessage`) that
+	 * are absent from the high-level surface.
+	 */
+	get api(): RawApi {
+		return this.bot.api.raw;
 	}
 
 	/** The base URL for downloading files uploaded to this bot. */

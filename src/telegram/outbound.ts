@@ -1,7 +1,8 @@
 /**
  * Send outbound content to Telegram as modern rich messages (Bot API 10.1),
  * falling back to a classic `sendMessage` when the rich API rejects a message
- * (it is very new and not reliable for every bot). How a model's Markdown
+ * (it is very new; a bot not opted into rich, or an older API server, still
+ * gets a plain-text reply). How a model's Markdown
  * becomes an `InputRichMessage` is an injected `RichRenderer` strategy — the
  * default is the Markdown fast-path (`toRichMarkdownMessages`); a
  * Markdown→Rich-HTML renderer can be swapped in for `assistant.rendering:
