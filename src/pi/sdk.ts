@@ -20,4 +20,4 @@ export type {
 	SlashCommandInfo,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-export { getAgentDir } from "@earendil-works/pi-coding-agent";
+export { defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
