@@ -14,11 +14,50 @@
  */
 import { defineTool, type ToolDefinition } from "../../pi/sdk";
 
+/**
+ * How the model classified the latest interlocutor message before acting. It is
+ * a required tool parameter (a code-checkable decision trail that nudges a weak
+ * local model to think before it types):
+ *  - `question` — a real question / request that wants an answer;
+ *  - `addressed_to_bot` — the bot is called by name or as the AI assistant;
+ *  - `acknowledgement` — "ok", "thanks", a reaction; a reply is optional;
+ *  - `chatter` — small talk / emoji; usually stay silent.
+ */
+export type MessageCategory =
+	| "question"
+	| "addressed_to_bot"
+	| "acknowledgement"
+	| "chatter";
+
+export const MESSAGE_CATEGORIES: readonly MessageCategory[] = [
+	"question",
+	"addressed_to_bot",
+	"acknowledgement",
+	"chatter",
+];
+
 /** The model's structured decision for a manager turn. */
 export type ManagerDecision =
-	| { kind: "reply"; text: string }
-	| { kind: "silent"; reason?: string }
+	| {
+			kind: "reply";
+			text: string;
+			category?: MessageCategory;
+			needsReply?: boolean;
+	  }
+	| {
+			kind: "silent";
+			reason?: string;
+			category?: MessageCategory;
+			needsReply?: boolean;
+	  }
 	| { kind: "none" };
+
+/** Coerce an untrusted string into a known category, defaulting to "question". */
+function asCategory(value: unknown): MessageCategory {
+	return MESSAGE_CATEGORIES.includes(value as MessageCategory)
+		? (value as MessageCategory)
+		: "question";
+}
 
 /** Names of the tools defined here — fed to the visibility gate. */
 export const MANAGER_TOOL_NAMES = ["manager_reply", "manager_silent"] as const;
@@ -67,26 +106,48 @@ function fail(text: string) {
 
 /** Build the manager decision tools bound to `sink`. Register with `pi.registerTool`. */
 export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
+	const categoryParam = {
+		type: "string",
+		enum: MESSAGE_CATEGORIES,
+		description:
+			"Classify the latest interlocutor message first: 'question' (wants an answer), 'addressed_to_bot' (you are called by name or as the AI), 'acknowledgement' (ok/thanks/reaction), or 'chatter' (small talk/emoji).",
+	};
+	const needsReplyParam = {
+		type: "boolean",
+		description:
+			"Your own check: does this message actually require a reply? Reactions and chatter usually do not.",
+	};
+
 	const managerReply = defineTool({
 		name: "manager_reply",
 		label: "Manager Reply",
 		description:
-			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. End your turn by calling exactly one of manager_reply or manager_silent.",
+			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent.",
 		parameters: {
 			type: "object",
 			properties: {
+				category: categoryParam,
+				needs_reply: needsReplyParam,
 				text: {
 					type: "string",
 					description: "The message to send to the interlocutor.",
 				},
 			},
-			required: ["text"],
+			required: ["category", "needs_reply", "text"],
 			additionalProperties: false,
 		} as never,
-		async execute(_toolCallId, params: { text: string }) {
+		async execute(
+			_toolCallId,
+			params: { text: string; category?: string; needs_reply?: boolean },
+		) {
 			const text = params.text?.trim();
 			if (!text) return fail("manager_reply requires non-empty text.");
-			sink.record({ kind: "reply", text });
+			sink.record({
+				kind: "reply",
+				text,
+				category: asCategory(params.category),
+				needsReply: params.needs_reply ?? true,
+			});
 			return ok("Reply queued for delivery.");
 		},
 	});
@@ -95,21 +156,29 @@ export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 		name: "manager_silent",
 		label: "Manager Silent",
 		description:
-			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). End your turn by calling exactly one of manager_reply or manager_silent.",
+			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent.",
 		parameters: {
 			type: "object",
 			properties: {
+				category: categoryParam,
+				needs_reply: needsReplyParam,
 				reason: {
 					type: "string",
 					description: "Optional short reason for staying silent.",
 				},
 			},
+			required: ["category", "needs_reply"],
 			additionalProperties: false,
 		} as never,
-		async execute(_toolCallId, params: { reason?: string }) {
+		async execute(
+			_toolCallId,
+			params: { reason?: string; category?: string; needs_reply?: boolean },
+		) {
 			sink.record({
 				kind: "silent",
 				reason: params.reason?.trim() || undefined,
+				category: asCategory(params.category),
+				needsReply: params.needs_reply ?? false,
 			});
 			return ok("Staying silent this turn.");
 		},

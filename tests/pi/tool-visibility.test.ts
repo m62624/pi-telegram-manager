@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createToolMatcher } from "../../src/pi/tool-allow";
 import {
 	createToolVisibility,
 	type ToolRegistryApi,
@@ -70,6 +71,59 @@ describe("createToolVisibility", () => {
 
 		visibility.setActive("connect", false);
 		visibility.setActive("manager", true);
+		expect(api.active).toEqual(["read", "manager_reply"]);
+	});
+
+	it("exclusive manager collapses to only its allowlist (telegram-sandbox)", () => {
+		const api = fakeApi([
+			"read",
+			"write",
+			"bash",
+			"ask_user",
+			"telegram_message",
+			"manager_reply",
+			"manager_silent",
+		]);
+		const visibility = createToolVisibility(api, {
+			connect: ["telegram_message"],
+			manager: ["manager_reply", "manager_silent"],
+		});
+		visibility.setExclusive(
+			"manager",
+			createToolMatcher(["manager_reply", "manager_silent"]),
+		);
+		visibility.setActive("manager", true);
+		expect(api.active).toEqual(["manager_reply", "manager_silent"]);
+	});
+
+	it("manager allowedTools regex re-enables specific tools only", () => {
+		const api = fakeApi([
+			"read",
+			"bash",
+			"grep",
+			"manager_reply",
+			"manager_silent",
+		]);
+		const visibility = createToolVisibility(api, {
+			manager: ["manager_reply", "manager_silent"],
+		});
+		visibility.setExclusive(
+			"manager",
+			createToolMatcher(["manager_reply", "manager_silent"], ["^grep$"]),
+		);
+		visibility.setActive("manager", true);
+		expect(api.active).toEqual(["grep", "manager_reply", "manager_silent"]);
+	});
+
+	it("clearing exclusive returns to additive visibility", () => {
+		const api = fakeApi(["read", "manager_reply"]);
+		const visibility = createToolVisibility(api, {
+			manager: ["manager_reply"],
+		});
+		visibility.setExclusive("manager", createToolMatcher(["manager_reply"]));
+		visibility.setActive("manager", true);
+		expect(api.active).toEqual(["manager_reply"]);
+		visibility.setExclusive("manager", null);
 		expect(api.active).toEqual(["read", "manager_reply"]);
 	});
 });

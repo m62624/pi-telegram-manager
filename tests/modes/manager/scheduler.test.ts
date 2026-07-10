@@ -110,6 +110,23 @@ describe("ChatScheduler", () => {
 		expect(scheduler.pending()).toEqual(["c"]);
 	});
 
+	it("promotes never-replied chats ahead of already-replied ones", () => {
+		const { clock, scheduler } = setup();
+		scheduler.onMessage("a"); // active
+		scheduler.onMessage("b"); // queued, replies 0
+		scheduler.onMessage("c"); // queued, replies 0
+		scheduler.onReplied(); // a replies -> 1, continuation armed
+		clock.advance(90_001);
+		scheduler.onTick(); // release a; among [b,c] both 0 -> FIFO picks b
+		expect(scheduler.activeChat()).toBe("b");
+		expect(scheduler.repliesFor("a")).toBe(1);
+		scheduler.onMessage("a"); // a re-enters the queue with replies 1
+		scheduler.onReplied(); // b replies -> 1
+		clock.advance(90_001);
+		scheduler.onTick(); // among [c(0), a(1)] the never-replied c wins
+		expect(scheduler.activeChat()).toBe("c");
+	});
+
 	it("a promoted chat has no continuation window until it is replied to", () => {
 		const { clock, scheduler } = setup();
 		scheduler.onMessage("a");

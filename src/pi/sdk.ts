@@ -18,6 +18,8 @@ export type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SlashCommandInfo,
+	ToolCallEvent,
+	ToolCallEventResult,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 export { defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";

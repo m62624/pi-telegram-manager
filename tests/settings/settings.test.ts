@@ -19,7 +19,7 @@ describe("normalizeSettings", () => {
 		expect(s.manager.subMode).toBe("takeover");
 		// Untouched fields keep defaults.
 		expect(s.manager.ownerReplyWindowMs).toBe(300_000);
-		expect(s.manager.labeler).toBe("LLM agent:");
+		expect(s.manager.labeler).toBe("LLM agent 🤖:");
 	});
 
 	it("accepts an empty labeler (no prefix)", () => {

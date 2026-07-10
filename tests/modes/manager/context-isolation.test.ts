@@ -13,6 +13,36 @@ const rec = (over: Partial<ChatMessageRecord>): ChatMessageRecord => ({
 	...over,
 });
 
+describe("buildIsolatedMessages — images", () => {
+	it("attaches latest images to the last interlocutor line and rebuilds image blocks", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({ author: "interlocutor", text: "look", senderName: "Alice" }),
+			],
+			latestImages: [{ data: "BASE64", mimeType: "image/png" }],
+		});
+		expect(messages[0].images).toEqual([
+			{ data: "BASE64", mimeType: "image/png" },
+		]);
+		const rebuilt = toRebuiltMessages(messages, 5);
+		expect(rebuilt[0]).toMatchObject({
+			role: "user",
+			content: [
+				{ type: "image", data: "BASE64", mimeType: "image/png" },
+				{ type: "text", text: "Interlocutor (Alice): look" },
+			],
+		});
+	});
+
+	it("leaves text-only messages as plain string content", () => {
+		const rebuilt = toRebuiltMessages(
+			buildIsolatedMessages({ records: [rec({ text: "hi" })] }),
+			5,
+		);
+		expect(rebuilt[0].content).toBe("Interlocutor: hi");
+	});
+});
+
 describe("buildIsolatedMessages", () => {
 	it("maps bot turns to assistant and others to labelled user messages", () => {
 		const messages = buildIsolatedMessages({

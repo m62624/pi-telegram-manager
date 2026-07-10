@@ -61,6 +61,8 @@ async function setup(subMode: ManagerSubMode = "observer") {
 		rememberMessages: 20,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
+		maxBytes: 52_428_800,
+		media: { images: true, documents: false },
 		clock,
 		chatStore: createChatStore(fs, paths),
 		contactStore: createContactStore(fs, paths),
@@ -283,6 +285,56 @@ describe("ManagerController", () => {
 		await controller.onTick();
 		expect(triggerAgent).not.toHaveBeenCalled(); // busy → nothing dispatched
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 1 });
+	});
+
+	it("releases a queued chat the owner answered instead of stalling on it", async () => {
+		const { controller, triggerAgent, setIdle, clock } = await setup();
+		// Chat 42 becomes active while the agent is busy.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		setIdle(false);
+		await controller.onTick();
+		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
+		// Chat 43 queues behind it.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "43",
+			fromId: 6,
+			message: {
+				message_id: 9,
+				date: 0,
+				chat: { id: 43, type: "private", first_name: "Bob" },
+				from: { id: 6, is_bot: false, first_name: "Bob" },
+				text: "hey",
+			} as Message,
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 1 });
+		// The owner answers chat 43 manually while it waits.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "43",
+			fromId: OWNER_ID,
+			message: {
+				message_id: 10,
+				date: 0,
+				chat: { id: 43, type: "private", first_name: "Bob" },
+				from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+				text: "got it",
+			} as Message,
+		});
+		// Chat 42 finishes silent; 43 must not stall the active slot.
+		setIdle(true);
+		controller.decisionSink().record({ kind: "silent" });
+		await controller.onAgentEnd();
+		expect(controller.status().activeChat).toBeUndefined();
+		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
 	it("persists a business connection with the owner id", async () => {

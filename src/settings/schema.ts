@@ -25,6 +25,25 @@ export interface TelegramSettings {
 		continueWindowMs: number;
 		/** Owner-reply window (ms). Default 300000 (5 min). */
 		ownerReplyWindowMs: number;
+		/**
+		 * Catch-up window (ms). On activation the bot may answer for the owner in
+		 * chats whose last message is not the owner's and is newer than this.
+		 * Default 36000000 (10 h).
+		 */
+		catchUpWindowMs: number;
+		/**
+		 * Regex patterns of tool names the model may call in manager mode, on top of
+		 * the built-in `manager_reply`/`manager_silent`. Empty = telegram-sandbox
+		 * (only the messaging tools; no computer access). Anchored full-name match.
+		 */
+		allowedTools: string[];
+		/** What inbound media the manager forwards to the model. */
+		media: {
+			/** Let the model scan interlocutor images (vision). Default true. */
+			images: boolean;
+			/** Accept non-image documents. Default false (they are refused). */
+			documents: boolean;
+		};
 		/** Last-N messages remembered per chat. */
 		rememberMessages: number;
 		responseMode: "smart" | "active" | "mention";
@@ -62,6 +81,9 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	manager: {
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
+		catchUpWindowMs: 36_000_000,
+		allowedTools: [],
+		media: { images: true, documents: false },
 		rememberMessages: 20,
 		responseMode: "smart",
 		markRead: true,
@@ -179,6 +201,7 @@ export function normalizeSettings(
 	const manager = asRecord(root.manager, "manager");
 	const observer = asRecord(manager.observer, "manager.observer");
 	const takeover = asRecord(manager.takeover, "manager.takeover");
+	const media = asRecord(manager.media, "manager.media");
 	const files = asRecord(root.files, "files");
 
 	const allowedUserId =
@@ -229,6 +252,24 @@ export function normalizeSettings(
 				"manager.ownerReplyWindowMs",
 				d.manager.ownerReplyWindowMs,
 			),
+			catchUpWindowMs: asPositiveInt(
+				manager.catchUpWindowMs,
+				"manager.catchUpWindowMs",
+				d.manager.catchUpWindowMs,
+			),
+			allowedTools: asStringArray(manager.allowedTools, "manager.allowedTools"),
+			media: {
+				images: asBoolean(
+					media.images,
+					"manager.media.images",
+					d.manager.media.images,
+				),
+				documents: asBoolean(
+					media.documents,
+					"manager.media.documents",
+					d.manager.media.documents,
+				),
+			},
 			rememberMessages: asPositiveInt(
 				manager.rememberMessages,
 				"manager.rememberMessages",

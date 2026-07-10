@@ -1,4 +1,4 @@
-import type { TelegramFs } from "./fs";
+import { safeReaddir, type TelegramFs } from "./fs";
 import type { TelegramPaths } from "./paths";
 
 /**
@@ -33,6 +33,8 @@ export interface ChatStore {
 	all(chatId: string): Promise<ChatMessageRecord[]>;
 	/** True once a chat has at least one recorded message (first-contact check). */
 	hasHistory(chatId: string): Promise<boolean>;
+	/** Every chat id with a stored transcript (for catch-up scanning). */
+	listChatIds(): Promise<string[]>;
 }
 
 export function createChatStore(
@@ -73,6 +75,12 @@ export function createChatStore(
 			const path = paths.chatFile(chatId);
 			if (!(await fs.exists(path))) return false;
 			return (await fs.readText(path)).trim().length > 0;
+		},
+		async listChatIds() {
+			const entries = await safeReaddir(fs, paths.chatsDir);
+			return entries
+				.filter((name) => name.endsWith(".jsonl"))
+				.map((name) => name.slice(0, -".jsonl".length));
 		},
 	};
 }

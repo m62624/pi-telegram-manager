@@ -35,6 +35,7 @@ import {
 } from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
 import { extractText, type PromptContent } from "./modes/connect/messages";
+import { selectCatchUpChats } from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import { ManagerController } from "./modes/manager/controller";
 import {
@@ -44,14 +45,23 @@ import {
 } from "./modes/manager/decision";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
+import { registerToolGuard } from "./pi/tool-guard";
 import {
 	createToolVisibility,
 	registerToolVisibility,
 } from "./pi/tool-visibility";
 import { loadSettings } from "./settings/manager";
 import { resolveSecret } from "./settings/secret";
-import { createBusinessStore } from "./storage/business-store";
-import { createChatStore } from "./storage/chat-store";
+import {
+	type BusinessStore,
+	createBusinessStore,
+} from "./storage/business-store";
+import {
+	type ChatMessageRecord,
+	type ChatStore,
+	createChatStore,
+} from "./storage/chat-store";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
 import { createSentRegistry } from "./storage/sent-registry";
@@ -102,6 +112,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		manager: MANAGER_TOOL_NAMES,
 	});
 	registerToolVisibility(pi, visibility);
+	// Runtime backstop for the telegram-sandbox: block any tool the manager's
+	// allowlist does not permit, even if it slipped past the visibility gate.
+	registerToolGuard(pi, {
+		isActive: () => manager !== null,
+		matcher: () => managerMatcher,
+	});
 
 	// Rebuild the LLM context per mode: the manager replaces it with the active
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
@@ -150,6 +166,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	// Live manager-mode runtime (null when inactive).
 	let manager: ManagerController | null = null;
+	// The active telegram-sandbox allowlist; null while the manager is inactive.
+	let managerMatcher: ToolMatcher | null = null;
 	let managerClient: TelegramClient | null = null;
 	let managerTick: ReturnType<typeof setInterval> | null = null;
 	let managerHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -248,6 +266,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerClient = null;
 		manager = null;
 		visibility.setActive("manager", false);
+		visibility.setExclusive("manager", null);
+		managerMatcher = null;
 		managerUi?.setWidget(MANAGER_BANNER_KEY, undefined);
 		managerUi = null;
 		await lifecycle.deactivate("manager");
@@ -664,6 +684,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			firstMessageOverride,
 		});
 
+		// The telegram-sandbox allowlist: only the manager's messaging tools, plus
+		// any user-configured regex names. Everything else (read/write/bash,
+		// ask_user, foreign extensions) is hidden by visibility and blocked by the
+		// runtime guard.
+		managerMatcher = createToolMatcher(
+			MANAGER_TOOL_NAMES,
+			settings.manager.allowedTools,
+			(warning) => ctx.ui.notify(warning, "warning"),
+		);
+
 		// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
 		// terminal — it staleness-poisons the captured `ctx` and the module-level
 		// `pi`, but the manager needs `pi.sendUserMessage` on every turn from the
@@ -671,12 +701,44 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// isolation is guaranteed by pi.on("context") rebuilding messages, and the
 		// banner tells the user this session is now the manager.
 
+		const chatStore = createChatStore(fs, paths);
+		const businessStore = createBusinessStore(fs, paths.businessPath);
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
 			onError: (error) =>
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
+		// Download an interlocutor message's inline images so the model can scan
+		// them (mode-2 vision); documents are never downloaded here (refused by the
+		// controller's media policy). Per-image failures are swallowed — the
+		// "[image]" marker still records that a picture arrived.
+		const managerMedia = new MediaDownloader({
+			api: managerClient.api as unknown as FileApi,
+			fetchBytes: fetchBytesFromUrl,
+			fileBaseUrl: fileBaseUrl(token),
+			maxBytes: settings.files.maxBytes,
+		});
+		const loadManagerImages = async (
+			message: Parameters<typeof describeAttachments>[0],
+		) => {
+			const refs = describeAttachments(message, settings.files.maxBytes).filter(
+				isImage,
+			);
+			const images: { data: string; mimeType: string }[] = [];
+			for (const ref of refs) {
+				try {
+					const file = await managerMedia.download(ref);
+					images.push({
+						data: toBase64(file.bytes),
+						mimeType: ref.mimeType ?? "image/jpeg",
+					});
+				} catch {
+					// too large / unavailable — the "[image]" marker still notes it.
+				}
+			}
+			return images;
+		};
 		const api = managerClient.api as unknown as {
 			sendMessage(args: {
 				business_connection_id: string;
@@ -696,11 +758,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			rememberMessages: settings.manager.rememberMessages,
 			continueWindowMs: settings.manager.continueWindowMs,
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
+			maxBytes: settings.files.maxBytes,
+			media: settings.manager.media,
+			loadImages: loadManagerImages,
 			clock: { now: () => Date.now() },
-			chatStore: createChatStore(fs, paths),
+			chatStore,
 			contactStore,
 			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
-			businessStore: createBusinessStore(fs, paths.businessPath),
+			businessStore,
 			isIdle: () => !busy,
 			triggerAgent: async (prompt) => {
 				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
@@ -722,8 +787,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		});
 		void managerClient.start();
+		visibility.setExclusive("manager", managerMatcher);
 		visibility.setActive("manager", true);
 		managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
+		updateManagerBanner();
+		// Smart catch-up: answer for the owner in chats left waiting (last message
+		// not the owner's, older than the owner-reply window, still recent). Runs
+		// once on activation; failures never block the manager.
+		await catchUpOnActivation(
+			manager,
+			chatStore,
+			businessStore,
+			settings.manager,
+		).catch(() => {});
 		updateManagerBanner();
 		managerTick = setInterval(() => {
 			void manager?.onTick().then(updateManagerBanner);
@@ -755,4 +831,53 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Telegram manager: stopped.");
 		},
 	});
+}
+
+/** The display name of the most recent interlocutor message, if any. */
+function lastInterlocutorName(
+	records: readonly ChatMessageRecord[],
+): string | undefined {
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		if (records[i].author === "interlocutor") return records[i].senderName;
+	}
+	return undefined;
+}
+
+/**
+ * On manager activation, scan stored chats and queue the ones the bot should
+ * catch up on (see {@link selectCatchUpChats}), replying for the owner. The
+ * business connection id (needed to send) comes from the stored connections; if
+ * none is known yet, catch-up is skipped.
+ */
+async function catchUpOnActivation(
+	manager: ManagerController,
+	chatStore: ChatStore,
+	businessStore: BusinessStore,
+	managerSettings: {
+		ownerReplyWindowMs: number;
+		catchUpWindowMs: number;
+		rememberMessages: number;
+	},
+): Promise<void> {
+	const connections = await businessStore.all();
+	const connection = connections.find((c) => c.isEnabled) ?? connections[0];
+	if (!connection) return;
+	const chatIds = await chatStore.listChatIds();
+	const chats: { chatId: string; records: ChatMessageRecord[] }[] = [];
+	for (const chatId of chatIds) {
+		const records = await chatStore.getRecent(
+			chatId,
+			managerSettings.rememberMessages,
+		);
+		if (records.length > 0) chats.push({ chatId, records });
+	}
+	const selected = selectCatchUpChats(chats, Date.now(), {
+		ownerReplyWindowMs: managerSettings.ownerReplyWindowMs,
+		catchUpWindowMs: managerSettings.catchUpWindowMs,
+	});
+	const byId = new Map(chats.map((chat) => [chat.chatId, chat.records]));
+	for (const chatId of selected) {
+		const contactName = lastInterlocutorName(byId.get(chatId) ?? []) ?? chatId;
+		manager.markReady(chatId, { connectionId: connection.id, contactName });
+	}
 }

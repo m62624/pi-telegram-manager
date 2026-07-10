@@ -49,6 +49,8 @@ export class ChatScheduler {
 	private active: string | null = null;
 	/** Chats waiting their turn, FIFO by first message. */
 	private readonly waiting: string[] = [];
+	/** Bot-reply count per chat; drives never-replied-first promotion. */
+	private readonly replies = new Map<string, number>();
 	private readonly timers: TimerRegistry;
 	private readonly clock: Clock;
 	private readonly continueWindowMs: number;
@@ -81,6 +83,35 @@ export class ChatScheduler {
 			: this.timers.remaining(this.active, TIMER.continueWindow);
 	}
 
+	/** How many times the bot has replied in a chat (0 = never replied). */
+	repliesFor(chatId: string): number {
+		return this.replies.get(chatId) ?? 0;
+	}
+
+	/**
+	 * Promote the highest-priority waiting chat to active and return it: the fewest
+	 * bot replies wins (never-replied chats first), FIFO within a tier. No one
+	 * starves while the bot keeps chatting with an already-answered contact.
+	 */
+	private promoteNext(): string | null {
+		if (this.waiting.length === 0) {
+			this.active = null;
+			return null;
+		}
+		let bestIndex = 0;
+		let bestReplies = this.repliesFor(this.waiting[0]);
+		for (let i = 1; i < this.waiting.length; i += 1) {
+			const count = this.repliesFor(this.waiting[i]);
+			if (count < bestReplies) {
+				bestReplies = count;
+				bestIndex = i;
+			}
+		}
+		const [chatId] = this.waiting.splice(bestIndex, 1);
+		this.active = chatId;
+		return chatId;
+	}
+
 	/**
 	 * Register an interlocutor message for `chatId`. If nothing is active this
 	 * chat becomes active; if it *is* the active chat this is a continuation (the
@@ -101,9 +132,13 @@ export class ChatScheduler {
 		return "queued";
 	}
 
-	/** The bot finished replying to the active chat — arm its continuation window. */
+	/**
+	 * The bot finished replying to the active chat — count the reply (so the chat
+	 * drops in priority behind never-replied ones) and arm its continuation window.
+	 */
 	onReplied(): void {
 		if (this.active !== null) {
+			this.replies.set(this.active, this.repliesFor(this.active) + 1);
 			this.timers.arm(this.active, TIMER.continueWindow, this.continueWindowMs);
 		}
 	}
@@ -123,7 +158,7 @@ export class ChatScheduler {
 		}
 		const released = this.active;
 		this.timers.cancelChat(released);
-		this.active = this.waiting.shift() ?? null;
+		this.promoteNext();
 		return { released, promoted: this.active };
 	}
 
@@ -135,7 +170,7 @@ export class ChatScheduler {
 	 */
 	next(): { promoted: string | null } {
 		this.timers.cancelChat(this.active ?? "");
-		this.active = this.waiting.shift() ?? null;
+		this.promoteNext();
 		return { promoted: this.active };
 	}
 
@@ -145,10 +180,11 @@ export class ChatScheduler {
 	 */
 	remove(chatId: string): { promoted: string | null } {
 		this.timers.cancelChat(chatId);
+		this.replies.delete(chatId);
 		const index = this.waiting.indexOf(chatId);
 		if (index !== -1) this.waiting.splice(index, 1);
 		if (this.active === chatId) {
-			this.active = this.waiting.shift() ?? null;
+			this.promoteNext();
 			return { promoted: this.active };
 		}
 		return { promoted: null };

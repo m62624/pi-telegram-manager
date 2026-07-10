@@ -45,14 +45,30 @@ describe("manager tools", () => {
 		expect(MANAGER_TOOL_NAMES).toEqual(["manager_reply", "manager_silent"]);
 	});
 
-	it("manager_reply records the text", async () => {
+	it("manager_reply records the text with its category and self-check", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
-		const res = await tools
-			.get("manager_reply")
-			?.execute("t1", { text: "hello" });
-		expect(state.current()).toEqual({ kind: "reply", text: "hello" });
+		const res = await tools.get("manager_reply")?.execute("t1", {
+			text: "hello",
+			category: "question",
+			needs_reply: true,
+		});
+		expect(state.current()).toEqual({
+			kind: "reply",
+			text: "hello",
+			category: "question",
+			needsReply: true,
+		});
 		expect(res?.isError).toBeUndefined();
+	});
+
+	it("manager_reply defaults an unknown category to 'question'", async () => {
+		const state = new DecisionState();
+		const tools = toolMap(state);
+		await tools
+			.get("manager_reply")
+			?.execute("t1", { text: "hi", category: "bogus", needs_reply: true });
+		expect(state.current()).toMatchObject({ category: "question" });
 	});
 
 	it("manager_reply rejects empty text and records nothing", async () => {
@@ -66,12 +82,16 @@ describe("manager tools", () => {
 	it("manager_silent records silence with an optional reason", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
-		await tools
-			.get("manager_silent")
-			?.execute("t1", { reason: "owner handling" });
+		await tools.get("manager_silent")?.execute("t1", {
+			reason: "owner handling",
+			category: "chatter",
+			needs_reply: false,
+		});
 		expect(state.current()).toEqual({
 			kind: "silent",
 			reason: "owner handling",
+			category: "chatter",
+			needsReply: false,
 		});
 	});
 });

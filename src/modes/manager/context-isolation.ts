@@ -15,10 +15,18 @@
  */
 import type { ChatMessageRecord } from "../../storage/chat-store";
 
+/** An inline image part (structurally the SDK's `ImageContent`). */
+export interface IsolatedImage {
+	data: string;
+	mimeType: string;
+}
+
 /** A rebuilt message, structurally a subset of the SDK's user/assistant message. */
 export interface IsolatedMessage {
 	role: "user" | "assistant";
 	content: string;
+	/** Inline images to attach to a user message (interlocutor pictures, mode 2). */
+	images?: IsolatedImage[];
 }
 
 export interface IsolationLabels {
@@ -42,6 +50,12 @@ export interface BuildIsolatedInput {
 	 */
 	boundary?: string;
 	labels?: Partial<IsolationLabels>;
+	/**
+	 * Inline images for the newest interlocutor message (mode 2 vision). They live
+	 * only in memory for the freshest turn — stored records keep just an `[image]`
+	 * marker — so they attach to the last interlocutor line, if any.
+	 */
+	latestImages?: IsolatedImage[];
 }
 
 /**
@@ -54,6 +68,7 @@ export function buildIsolatedMessages(
 ): IsolatedMessage[] {
 	const labels = { ...DEFAULT_LABELS, ...input.labels };
 	const messages: IsolatedMessage[] = [];
+	let lastInterlocutorIndex = -1;
 	if (input.boundary?.trim()) {
 		messages.push({ role: "user", content: input.boundary.trim() });
 	}
@@ -67,7 +82,12 @@ export function buildIsolatedMessages(
 				record.author === "owner" ? labels.owner : labels.interlocutor;
 			const who = record.senderName ? `${label} (${record.senderName})` : label;
 			messages.push({ role: "user", content: `${who}: ${text}` });
+			if (record.author === "interlocutor")
+				lastInterlocutorIndex = messages.length - 1;
 		}
+	}
+	if (input.latestImages?.length && lastInterlocutorIndex >= 0) {
+		messages[lastInterlocutorIndex].images = input.latestImages;
 	}
 	return messages;
 }
@@ -77,10 +97,27 @@ export function boundaryDirective(contactName: string): string {
 	return `[New chat with ${contactName}. This is a separate conversation; previous chats are not available.]`;
 }
 
-/** A rebuilt user message for the SDK's context event (string content is valid). */
+/** A text content block (structurally the SDK's `TextContent`). */
+export interface TextBlock {
+	type: "text";
+	text: string;
+}
+
+/** An image content block (structurally the SDK's `ImageContent`). */
+export interface ImageBlock {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
+
+/**
+ * A rebuilt user message for the SDK's context event. Plain text stays a string;
+ * a message carrying images becomes a mixed `[image…, text]` block array so the
+ * model can actually see the picture (mode 2 vision).
+ */
 export interface RebuiltUserMessage {
 	role: "user";
-	content: string;
+	content: string | Array<ImageBlock | TextBlock>;
 	timestamp: number;
 }
 
@@ -125,15 +162,32 @@ export function toRebuiltMessages(
 	messages: readonly IsolatedMessage[],
 	now: number,
 ): RebuiltMessage[] {
-	return messages.map((message) =>
-		message.role === "assistant"
-			? {
-					role: "assistant",
-					content: [{ type: "text", text: message.content }],
-					timestamp: now,
-					stopReason: "stop",
-					usage: { ...ZERO_USAGE },
-				}
-			: { role: "user", content: message.content, timestamp: now },
-	);
+	return messages.map((message) => {
+		if (message.role === "assistant") {
+			return {
+				role: "assistant",
+				content: [{ type: "text", text: message.content }],
+				timestamp: now,
+				stopReason: "stop",
+				usage: { ...ZERO_USAGE },
+			};
+		}
+		if (message.images?.length) {
+			return {
+				role: "user",
+				content: [
+					...message.images.map(
+						(image): ImageBlock => ({
+							type: "image",
+							data: image.data,
+							mimeType: image.mimeType,
+						}),
+					),
+					{ type: "text", text: message.content },
+				],
+				timestamp: now,
+			};
+		}
+		return { role: "user", content: message.content, timestamp: now };
+	});
 }

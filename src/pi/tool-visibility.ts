@@ -5,16 +5,26 @@
  * Tools are grouped (`connect` → `telegram_*`, `manager` → `manager_*`). Pi has
  * no per-turn unregister; instead `pi.setActiveTools(names)` sets the whole
  * active list. So we register every tool at load, then keep each group's gated
- * names and, on refresh, recompute the active list = all tools minus the names
- * of every group that is *not* active. Activating mode 1 reveals only its tools;
- * the manager's `manager_reply`/`manager_silent` stay hidden until mode 2 runs.
- * Mirrors pi-planner's `index.tool-visibility.ts`.
+ * names and, on refresh, recompute the active list.
+ *
+ * Two shapes of gating:
+ *  - **Additive** (`connect`): active list = all tools minus the names of every
+ *    group that is *not* active. Activating mode 1 reveals its tools alongside
+ *    the rest.
+ *  - **Exclusive** (`manager`, the telegram-sandbox): when active, the active
+ *    list is *only* the tools its {@link ToolMatcher} allows — the group's own
+ *    `manager_*` tools plus any `manager.allowedTools` regex matches. Every other
+ *    tool (built-in `read`/`write`/`bash`, `ask_user`, foreign extensions') is
+ *    hidden. The matcher is injected at activation via {@link setExclusive}
+ *    because the allowlist comes from settings, loaded after extension load.
  *
  * IMPORTANT: `getAllTools()` / `setActiveTools()` are action methods that must
  * NOT be called during extension load. `registerToolVisibility` therefore only
  * refreshes on `session_start` and before each provider request.
  */
+
 import type { ExtensionAPI } from "./sdk";
+import type { ToolMatcher } from "./tool-allow";
 
 /** The tool-registry slice the controller needs; `ExtensionAPI` satisfies it. */
 export interface ToolRegistryApi {
@@ -48,12 +58,39 @@ export function visibleToolNames(
 	return allToolNames.filter((name) => !hidden.has(name));
 }
 
+/**
+ * The active tool list. If any active group is *exclusive* (has a matcher), the
+ * list collapses to only the tools those exclusive matchers allow — deny-all
+ * sandboxing. Otherwise it is the additive "all minus inactive groups".
+ */
+export function computeActiveTools(
+	allToolNames: readonly string[],
+	groups: ReadonlyMap<string, ReadonlySet<string>>,
+	activeGroups: ReadonlySet<string>,
+	exclusive: ReadonlyMap<string, ToolMatcher>,
+): string[] {
+	const activeExclusive = [...activeGroups]
+		.filter((group) => exclusive.has(group))
+		.map((group) => exclusive.get(group) as ToolMatcher);
+	if (activeExclusive.length > 0) {
+		return allToolNames.filter((name) =>
+			activeExclusive.some((matcher) => matcher.matches(name)),
+		);
+	}
+	return visibleToolNames(allToolNames, groups, activeGroups);
+}
+
 export interface ToolVisibility {
 	/** Re-apply the active tool list from the current active state. */
 	refresh(): void;
 	/** Set whether a group's mode is active, then re-apply. */
 	setActive(group: string, active: boolean): void;
 	isActive(group: string): boolean;
+	/**
+	 * Mark a group as exclusive with the given matcher (deny-all except matcher),
+	 * or pass `null` to clear it back to additive. Re-applies immediately.
+	 */
+	setExclusive(group: string, matcher: ToolMatcher | null): void;
 }
 
 /** Create a visibility controller over the tool registry for the given groups. */
@@ -66,9 +103,12 @@ export function createToolVisibility(
 		groupMap.set(group, new Set(names));
 	}
 	const activeGroups = new Set<string>();
+	const exclusive = new Map<string, ToolMatcher>();
 	const refresh = (): void => {
 		const all = api.getAllTools().map((tool) => tool.name);
-		api.setActiveTools(visibleToolNames(all, groupMap, activeGroups));
+		api.setActiveTools(
+			computeActiveTools(all, groupMap, activeGroups, exclusive),
+		);
 	};
 	return {
 		refresh,
@@ -79,6 +119,11 @@ export function createToolVisibility(
 		},
 		isActive(group: string): boolean {
 			return activeGroups.has(group);
+		},
+		setExclusive(group: string, matcher: ToolMatcher | null): void {
+			if (matcher) exclusive.set(group, matcher);
+			else exclusive.delete(group);
+			refresh();
 		},
 	};
 }
