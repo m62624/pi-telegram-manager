@@ -11,7 +11,8 @@ import type { SentRegistry } from "../../../src/storage/sent-registry";
 function fakeRegistry(known: Record<string, number[]> = {}): SentRegistry {
 	return {
 		async recordSent(chatId, id) {
-			(known[chatId] ??= []).push(id);
+			known[chatId] ??= [];
+			known[chatId].push(id);
 		},
 		async wasSentByBot(chatId, id) {
 			return (known[chatId] ?? []).includes(id);
