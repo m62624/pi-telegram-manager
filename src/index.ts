@@ -27,6 +27,7 @@ import {
 	registerToolVisibility,
 } from "./pi/tool-visibility";
 import { loadSettings } from "./settings/manager";
+import { resolveSecret } from "./settings/secret";
 import { createNodeFs } from "./storage/fs";
 import { createSingletonStore } from "./storage/singleton-store";
 import { fileBaseUrl, TelegramClient } from "./telegram/client";
@@ -117,8 +118,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 			for (const warning of warnings) ctx.ui.notify(warning, "warning");
-			if (!settings.botToken) {
-				ctx.ui.notify("Set botToken in settings.json first.", "error");
+			const token = resolveSecret(settings.botToken);
+			if (!token) {
+				ctx.ui.notify(
+					'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN" to read it from the environment).',
+					"error",
+				);
 				return;
 			}
 			if (!settings.allowedUserId) {
@@ -136,7 +141,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 
 			client = new TelegramClient({
-				token: settings.botToken,
+				token,
 				onEvent: async (event) => {
 					await connect?.onEvent(event);
 				},
@@ -152,7 +157,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				outbound,
 				abort,
 			});
-			void fileBaseUrl(settings.botToken); // reserved for media downloads (Phase 5)
+			void fileBaseUrl(token); // reserved for media downloads (Phase 5)
 			void client.start();
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();
