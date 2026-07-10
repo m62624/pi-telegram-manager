@@ -77,6 +77,13 @@ export type RichRenderer = (text: string) => InputRichMessage[];
 export interface OutboundSenderOptions {
 	/** Defaults to the Markdown fast-path (`toRichMarkdownMessages`). */
 	renderer?: RichRenderer;
+	/**
+	 * Called when `sendRichMessage` failed and we fell back to a classic
+	 * plain-text `sendMessage`. Lets the caller surface that native rich
+	 * rendering is NOT reaching this chat (so a tester can tell a real rich
+	 * reply from a degraded plain-text one).
+	 */
+	onRichFallback?: (error: unknown) => void;
 }
 
 /** Telegram rejects an empty rich message (400); skip anything with no text. */
@@ -97,12 +104,14 @@ function targetArgs(target: OutboundTarget): TargetArgs {
 
 export class OutboundSender {
 	private readonly renderer: RichRenderer;
+	private readonly onRichFallback?: (error: unknown) => void;
 
 	constructor(
 		private readonly api: OutboundApi,
 		options: OutboundSenderOptions = {},
 	) {
 		this.renderer = options.renderer ?? toRichMarkdownMessages;
+		this.onRichFallback = options.onRichFallback;
 	}
 
 	/** Render `markdown` and send it (possibly as several messages). Returns the sent message ids. */
@@ -142,7 +151,8 @@ export class OutboundSender {
 				rich_message: richMessage,
 			});
 			return sent.message_id;
-		} catch {
+		} catch (error) {
+			this.onRichFallback?.(error);
 			const text = richFallbackText(richMessage);
 			const sent = await this.api.sendMessage({ ...args, text });
 			return sent.message_id;

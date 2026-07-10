@@ -182,7 +182,23 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				onError: (error) =>
 					ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 			});
-			const outbound = new OutboundSender(client.api as unknown as OutboundApi);
+			// Warn once (not per-message) when native rich rendering isn't reaching
+			// Telegram and we degraded to plain text — so a tester can tell a real
+			// rich reply from a fallback one.
+			let richFallbackWarned = false;
+			const outbound = new OutboundSender(
+				client.api as unknown as OutboundApi,
+				{
+					onRichFallback: (error) => {
+						if (richFallbackWarned) return;
+						richFallbackWarned = true;
+						ctx.ui.notify(
+							`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
+							"warning",
+						);
+					},
+				},
+			);
 			const media = new MediaDownloader({
 				api: client.api as unknown as FileApi,
 				fetchBytes: fetchBytesFromUrl,
