@@ -48,6 +48,8 @@ export interface ManagerInstructions {
 export async function loadManagerInstructions(input: {
 	fs: TelegramFs;
 	subMode: ManagerSubMode;
+	/** The bot's name in the chat (the labeler); people may address it by this. */
+	labeler?: string;
 	overrideText?: string;
 	firstMessageOverride?: string;
 }): Promise<ManagerInstructions> {
@@ -61,6 +63,12 @@ export async function loadManagerInstructions(input: {
 	const firstDefault = await readBuiltin(input.fs, "manager-first-message.md");
 
 	const parts = [common, submode];
+	const name = input.labeler?.trim().replace(/:\s*$/, "");
+	if (name) {
+		parts.push(
+			`## Your name\n\nYou appear in this chat as **${name}**. Treat being addressed by "${name}" (or as an AI/LLM/bot/assistant) as a message to you.`,
+		);
+	}
 	if (input.overrideText?.trim()) parts.push(input.overrideText.trim());
 
 	return {

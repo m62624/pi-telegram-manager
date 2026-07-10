@@ -4,11 +4,12 @@
  * It multiplexes many Telegram business chats through one agent: classifies each
  * business update (interlocutor vs the owner's own manual message vs the bot's
  * own echo), records transcripts and contact profiles, drives the
- * {@link ChatScheduler} (one active chat at a time, continuation window) and the
- * {@link TakeoverMachine} (observer/takeover freezing), triggers an agent turn
- * for the active chat, and on turn end delivers the model's `manager_reply` text
- * back on behalf of the owner — tagged so the bot never mistakes its own send
- * for the owner.
+ * {@link ChatScheduler} (one active chat at a time) and the {@link ReplyGate}
+ * (the shared owner-reply window: an interlocutor message is held until the
+ * owner stays silent past the window, then the whole chat batch is served),
+ * triggers an agent turn for the active chat, and on turn end delivers the
+ * model's `manager_reply` text back on behalf of the owner — tagged so the bot
+ * never mistakes its own send for the owner.
  *
  * Every Pi/grammY specific arrives as a port (agent trigger, business send,
  * typing, the stores), so the coordination is unit-testable with fakes;
@@ -39,7 +40,7 @@ import {
 import { DecisionState, resolveDecision } from "./decision";
 import { isBotMessage, stripBotMarker, tagBotText } from "./identity";
 import { ChatScheduler } from "./scheduler";
-import { botMayReply, TakeoverMachine } from "./submode";
+import { ReplyGate } from "./submode";
 
 /** A classified inbound business message (already extracted from the update). */
 export interface BusinessMessageInput {
@@ -54,9 +55,9 @@ export interface BusinessMessageInput {
  * reliably ends the turn with a tool call rather than free-form text.
  */
 export const MANAGER_ACTION_TRIGGER =
-	"[Now reply to the latest message above. You are the Owner. End this turn by " +
-	"calling exactly one tool — manager_reply to send a message, or " +
-	"manager_silent to stay quiet. Do not write plain text.]";
+	"[Decide now on the latest messages above. End this turn by calling exactly " +
+	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
+	"observing. Never write plain text and never write a tool name as text.]";
 
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
@@ -107,7 +108,7 @@ function withMessageContext(message: Message, text: string): string {
 
 export class ManagerController {
 	private readonly scheduler: ChatScheduler;
-	private readonly takeover: TakeoverMachine;
+	private readonly gate: ReplyGate;
 	private readonly decision = new DecisionState();
 	private readonly chats = new Map<string, ChatMeta>();
 
@@ -116,7 +117,8 @@ export class ManagerController {
 			continueWindowMs: deps.continueWindowMs,
 			clock: deps.clock,
 		});
-		this.takeover = new TakeoverMachine({
+		this.gate = new ReplyGate({
+			subMode: deps.subMode,
 			ownerReplyWindowMs: deps.ownerReplyWindowMs,
 			clock: deps.clock,
 		});
@@ -177,7 +179,9 @@ export class ManagerController {
 				senderId: ownerId,
 				messageId,
 			});
-			this.takeover.onOwnerMessage(chatId);
+			// The owner answered inside the window — cancel this chat's pending batch
+			// (takeover also freezes). The bot never replies to owner messages.
+			this.gate.onOwnerMessage(chatId);
 			return;
 		}
 
@@ -201,14 +205,9 @@ export class ManagerController {
 			senderName: contactName,
 			messageId,
 		});
-		this.takeover.onInterlocutorMessage(chatId);
-		const outcome = this.scheduler.onMessage(chatId);
-		if (
-			(outcome === "active" || outcome === "continued") &&
-			botMayReply(this.deps.subMode, this.takeover, chatId)
-		) {
-			await this.triggerTurn();
-		}
+		// Do NOT reply now: arm the owner-reply window and let the owner answer
+		// first. onTick promotes the chat only if the window expires in silence.
+		this.gate.onInterlocutorMessage(chatId);
 	}
 
 	/** Resolve the finished turn's decision and deliver a reply if the model chose to. */
@@ -235,18 +234,22 @@ export class ManagerController {
 				});
 			}
 		}
-		// Arm the continuation window; if the interlocutor goes quiet, onTick moves on.
-		this.scheduler.onReplied();
+		// This chat's batch is served — drop it and promote the next ready chat.
+		this.gate.clearServed(active);
+		this.scheduler.next();
+		await this.triggerTurn();
 	}
 
-	/** Advance timers: promote the next chat / re-engage after an owner-reply window. */
+	/**
+	 * Advance time: every chat whose owner-reply window expired in silence becomes
+	 * ready (priority per chat/user via the scheduler's FIFO queue); then start a
+	 * turn for the active chat if the agent is idle.
+	 */
 	async onTick(): Promise<void> {
-		const { promoted } = this.scheduler.onTick();
-		const unfrozen = this.takeover.onTick();
-		const active = this.scheduler.activeChat();
-		if (promoted !== null || (active !== null && unfrozen.includes(active))) {
-			await this.triggerTurn();
+		for (const chatId of this.gate.onTick()) {
+			this.scheduler.onMessage(chatId);
 		}
+		await this.triggerTurn();
 	}
 
 	/**
@@ -294,11 +297,14 @@ export class ManagerController {
 		};
 	}
 
-	/** Start a turn for the active chat when idle and the bot is allowed to reply. */
+	/**
+	 * Start a turn for the active chat when the agent is idle. The chat is only
+	 * ever active after its owner-reply window expired (the gate), so there is no
+	 * per-message permission check here.
+	 */
 	private async triggerTurn(): Promise<void> {
 		const active = this.scheduler.activeChat();
 		if (active === null || !this.deps.isIdle()) return;
-		if (!botMayReply(this.deps.subMode, this.takeover, active)) return;
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		if (meta) {
@@ -307,7 +313,7 @@ export class ManagerController {
 				.catch(() => {});
 		}
 		await this.deps.triggerAgent(
-			"Respond to the latest message in the active Telegram chat by calling manager_reply or manager_silent.",
+			"Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
 		);
 	}
 }

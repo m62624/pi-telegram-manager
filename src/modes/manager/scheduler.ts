@@ -128,6 +128,18 @@ export class ChatScheduler {
 	}
 
 	/**
+	 * The active chat has been served — release it and promote the next ready
+	 * chat from the queue. Returns the newly active chat (or null when the queue
+	 * is empty). Used when the reply gate, not a continuation window, drives
+	 * turn-taking.
+	 */
+	next(): { promoted: string | null } {
+		this.timers.cancelChat(this.active ?? "");
+		this.active = this.waiting.shift() ?? null;
+		return { promoted: this.active };
+	}
+
+	/**
 	 * Drop a chat entirely (cleared/closed). If it was active, the next queued
 	 * chat is promoted and returned.
 	 */

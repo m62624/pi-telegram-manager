@@ -86,27 +86,35 @@ async function setup(subMode: ManagerSubMode = "observer") {
 }
 
 describe("ManagerController", () => {
-	it("makes the first interlocutor chat active and triggers a turn", async () => {
-		const { controller, triggerAgent, typing } = await setup();
+	it("holds a message for the owner-reply window, then triggers after it lapses", async () => {
+		const { controller, triggerAgent, typing, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
 			message: interlocutorMsg("hello"),
 		});
+		// Not delivered to the model yet — the owner gets first crack.
+		expect(triggerAgent).not.toHaveBeenCalled();
+		expect(controller.status().activeChat).toBeUndefined();
+		// Owner stays silent past the window → the chat is served.
+		clock.advance(300_001);
+		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
 		expect(typing).toHaveBeenCalledWith({ connectionId: CONN, chatId: "42" });
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
 	});
 
 	it("delivers manager_reply text on turn end, labelled + bot-tagged + recorded", async () => {
-		const { controller, sendReply, deps } = await setup();
+		const { controller, sendReply, deps, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
 			message: interlocutorMsg("hi"),
 		});
+		clock.advance(300_001);
+		await controller.onTick();
 		controller.decisionSink().record({ kind: "reply", text: "Hello there!" });
 		await controller.onAgentEnd();
 
@@ -190,13 +198,15 @@ describe("ManagerController", () => {
 	});
 
 	it("builds an isolated context for the active chat only", async () => {
-		const { controller } = await setup();
+		const { controller, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
 			message: interlocutorMsg("hi there"),
 		});
+		clock.advance(300_001);
+		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
 		// First message = the system-instruction block (rules + first-contact).
 		expect(ctx?.[0].content).toContain("[SYSTEM_INSTRUCTIONS]");
@@ -214,7 +224,7 @@ describe("ManagerController", () => {
 	});
 
 	it("carries reply/forward context of an interlocutor message into the context", async () => {
-		const { controller } = await setup();
+		const { controller, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -234,6 +244,8 @@ describe("ManagerController", () => {
 				},
 			} as Message,
 		});
+		clock.advance(300_001);
+		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
 		const interlocutor = ctx?.find((m) => m.content.includes("yes, that one"));
 		expect(interlocutor?.content).toContain(
@@ -241,15 +253,20 @@ describe("ManagerController", () => {
 		);
 	});
 
-	it("queues a second chat while the first is active", async () => {
-		const { controller, triggerAgent, setIdle } = await setup();
+	it("queues a second chat (per-user) while the first is active", async () => {
+		const { controller, triggerAgent, setIdle, clock } = await setup();
+		// Chat 42's window lapses first → it becomes active.
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
 			message: interlocutorMsg("first"),
 		});
+		clock.advance(300_001);
 		setIdle(false); // agent now busy on chat 42
+		await controller.onTick();
+		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
+		// Chat 43 arrives and its window lapses while 42 is still being served.
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "43",
@@ -262,7 +279,9 @@ describe("ManagerController", () => {
 				text: "second",
 			} as Message,
 		});
-		expect(triggerAgent).toHaveBeenCalledTimes(1); // only the first
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled(); // busy → nothing dispatched
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 1 });
 	});
 

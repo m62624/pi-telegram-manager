@@ -659,6 +659,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const instructions = await loadManagerInstructions({
 			fs,
 			subMode,
+			labeler: settings.manager.labeler,
 			overrideText: override.text,
 			firstMessageOverride,
 		});
