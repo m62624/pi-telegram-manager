@@ -105,7 +105,10 @@ describe("ConnectController", () => {
 		await controller.onAgentEnd([{ role: "assistant", content: "done" }]);
 
 		// reply mirrored to Telegram
-		expect(api.sent.at(-1)?.rich_message).toEqual({ markdown: "done" });
+		expect(api.sent.at(-1)?.rich_message).toEqual({
+			markdown: "done",
+			skip_entity_detection: true,
+		});
 		// and the next queued turn released
 		expect(sendFollowUp).toHaveBeenCalledTimes(1);
 		expect(sendFollowUp.mock.calls[0][0]).toContain("first");
@@ -132,7 +135,10 @@ describe("ConnectController", () => {
 			{ role: "assistant", content: "the answer" },
 			{ role: "assistant", content: "" },
 		]);
-		expect(api.sent.at(-1)?.rich_message).toEqual({ markdown: "the answer" });
+		expect(api.sent.at(-1)?.rich_message).toEqual({
+			markdown: "the answer",
+			skip_entity_detection: true,
+		});
 	});
 
 	it("broadcasts a typing action to the bound chat", async () => {

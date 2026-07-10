@@ -1,11 +1,11 @@
 /**
- * Send outbound content to Telegram as modern rich messages (Bot API 10.1).
- *
- * There is no legacy `sendMessage(parse_mode)` path: everything goes through
- * `sendRichMessage`. How a model's Markdown becomes an `InputRichMessage` is an
- * injected `RichRenderer` strategy — the default is the Markdown fast-path
- * (`toRichMarkdownMessages`); a Markdown→Rich-HTML renderer can be swapped in
- * for `assistant.rendering: "html"` without touching this module.
+ * Send outbound content to Telegram as modern rich messages (Bot API 10.1),
+ * falling back to a classic `sendMessage` when the rich API rejects a message
+ * (it is very new and not reliable for every bot). How a model's Markdown
+ * becomes an `InputRichMessage` is an injected `RichRenderer` strategy — the
+ * default is the Markdown fast-path (`toRichMarkdownMessages`); a
+ * Markdown→Rich-HTML renderer can be swapped in for `assistant.rendering:
+ * "html"` without touching this module.
  *
  * The grammY bot API is reached through the narrow {@link OutboundApi} port so
  * the transport is trivially fakeable in tests. Every send is addressed by an
@@ -46,10 +46,28 @@ export interface OutboundApi {
 	sendRichMessage(
 		args: TargetArgs & { rich_message: InputRichMessage },
 	): Promise<{ message_id: number }>;
+	/** Classic text message — the universally-supported fallback when rich send fails. */
+	sendMessage(
+		args: TargetArgs & { text: string },
+	): Promise<{ message_id: number }>;
 	sendRichMessageDraft(
 		args: TargetArgs & { rich_message: InputRichMessage },
 	): Promise<unknown>;
 	sendChatAction(args: TargetArgs & { action: ChatAction }): Promise<unknown>;
+}
+
+/** Best-effort plain text of a rich message, for the classic fallback send. */
+function richFallbackText(message: InputRichMessage): string {
+	if (message.markdown?.trim()) return message.markdown;
+	if (message.html?.trim()) {
+		return message.html
+			.replace(/<[^>]+>/g, "")
+			.replace(/&lt;/g, "<")
+			.replace(/&gt;/g, ">")
+			.replace(/&amp;/g, "&")
+			.trim();
+	}
+	return "";
 }
 
 /** Strategy turning a model's Markdown into one or more sendable rich messages. */
@@ -103,22 +121,38 @@ export class OutboundSender {
 		const ids: number[] = [];
 		for (const richMessage of messages) {
 			if (isEmptyRich(richMessage)) continue;
-			const sent = await this.api.sendRichMessage({
-				...args,
-				rich_message: richMessage,
-			});
-			ids.push(sent.message_id);
+			ids.push(await this.sendOneRich(args, richMessage));
 		}
 		return ids;
 	}
 
+	/**
+	 * Send one rich message, falling back to a classic text message when the
+	 * (very new) rich API rejects it — so a reply is always delivered even if
+	 * `sendRichMessage` is unavailable or misbehaves for this bot.
+	 */
+	private async sendOneRich(
+		args: TargetArgs,
+		richMessage: InputRichMessage,
+	): Promise<number> {
+		try {
+			const sent = await this.api.sendRichMessage({
+				...args,
+				rich_message: richMessage,
+			});
+			return sent.message_id;
+		} catch {
+			const text = richFallbackText(richMessage);
+			const sent = await this.api.sendMessage({ ...args, text });
+			return sent.message_id;
+		}
+	}
+
 	/** Send a short notice; plain strings are HTML-escaped, built `RichHtml` is passed through. */
 	async notify(target: OutboundTarget, text: RichContent): Promise<number> {
-		const sent = await this.api.sendRichMessage({
-			...targetArgs(target),
-			rich_message: { html: RichHtml.of(text).html },
+		return this.sendOneRich(targetArgs(target), {
+			html: RichHtml.of(text).html,
 		});
-		return sent.message_id;
 	}
 
 	/** Broadcast a chat action (defaults to "typing"). */

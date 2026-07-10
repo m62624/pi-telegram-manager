@@ -234,9 +234,13 @@ function hardSplit(text: string, max: number): string[] {
 
 // --- assembly --------------------------------------------------------------
 
-/** Wrap an already-normalized Markdown string as a single rich message. */
+/**
+ * Wrap an already-normalized Markdown string as a single rich message. We set
+ * `skip_entity_detection` (matching the pi-telegram reference) so Telegram
+ * renders our markdown as-is instead of also auto-detecting URLs/mentions.
+ */
 export function buildRichMarkdownMessage(markdown: string): InputRichMessage {
-	return { markdown };
+	return { markdown, skip_entity_detection: true };
 }
 
 /** Full pipeline: normalize model Markdown, then split into sendable rich messages. */
@@ -244,5 +248,8 @@ export function toRichMarkdownMessages(
 	rawMarkdown: string,
 ): InputRichMessage[] {
 	const normalized = normalizeRichMarkdown(rawMarkdown);
-	return splitRichMarkdown(normalized).map((markdown) => ({ markdown }));
+	return splitRichMarkdown(normalized).map((markdown) => ({
+		markdown,
+		skip_entity_detection: true,
+	}));
 }

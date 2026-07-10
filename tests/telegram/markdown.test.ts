@@ -95,7 +95,9 @@ describe("splitRichMarkdown", () => {
 describe("toRichMarkdownMessages", () => {
 	it("normalizes then wraps each chunk as an InputRichMessage", () => {
 		const messages = toRichMarkdownMessages("value \\( x \\)");
-		expect(messages).toEqual([{ markdown: "value $ x $" }]);
+		expect(messages).toEqual([
+			{ markdown: "value $ x $", skip_entity_detection: true },
+		]);
 	});
 
 	it("produces multiple rich messages past the limit", () => {

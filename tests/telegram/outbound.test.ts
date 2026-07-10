@@ -12,7 +12,7 @@ describe("OutboundSender", () => {
 		expect(api.sent).toHaveLength(1);
 		expect(api.sent[0]).toEqual({
 			chat_id: 555,
-			rich_message: { markdown: "hello $ x $" },
+			rich_message: { markdown: "hello $ x $", skip_entity_detection: true },
 		});
 	});
 
@@ -74,6 +74,25 @@ describe("OutboundSender", () => {
 			{ chat_id: 1, business_connection_id: "c", action: "typing" },
 			{ chat_id: 1, action: "upload_photo" },
 		]);
+	});
+
+	it("falls back to a classic text message when the rich API rejects", async () => {
+		const api = new FakeOutboundApi();
+		api.failRich = true;
+		const sender = new OutboundSender(api);
+		const ids = await sender.sendMessages({ chatId: 5 }, [
+			{ markdown: "hello world" },
+		]);
+		expect(api.sent).toHaveLength(0);
+		expect(api.texts).toEqual([{ chat_id: 5, text: "hello world" }]);
+		expect(ids).toHaveLength(1);
+	});
+
+	it("strips html tags for the fallback text", async () => {
+		const api = new FakeOutboundApi();
+		api.failRich = true;
+		await new OutboundSender(api).notify({ chatId: 5 }, "a < b");
+		expect(api.texts[0].text).toBe("a < b");
 	});
 
 	it("skips empty rich messages instead of sending them", async () => {
