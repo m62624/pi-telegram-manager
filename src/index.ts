@@ -7,8 +7,9 @@
  * the telegram tools, and registers the mode commands and agent-lifecycle
  * handlers.
  *
- * Mode 1 (terminal continuation) is wired here through `ConnectController`.
- * Mode 2 (business manager) is still a stub pending Phase 4.
+ * Mode 1 (terminal continuation) is wired here through `ConnectController`;
+ * mode 2 (business manager) through `ManagerController`. The two are mutually
+ * exclusive (the lifecycle singleton enforces it).
  *
  * `isIdle` is tracked with a local `busy` flag flipped by agent_start/agent_end,
  * because Telegram updates arrive from the polling loop outside any Pi event
