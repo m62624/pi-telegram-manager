@@ -19,6 +19,7 @@
 import type { BusinessConnection, Message, User } from "@grammyjs/types";
 import { applyLabeler } from "../../core/render";
 import type { Clock } from "../../core/timers";
+import { buildContextLines } from "../../core/turns";
 import {
 	type ManagerInstructions,
 	SYSTEM_INSTRUCTIONS_HEADER,
@@ -28,6 +29,7 @@ import type { ChatStore } from "../../storage/chat-store";
 import type { ContactStore } from "../../storage/contact-store";
 import type { SentRegistry } from "../../storage/sent-registry";
 import type { ManagerSubMode } from "../../storage/singleton-store";
+import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
 import {
 	boundaryDirective,
@@ -91,6 +93,16 @@ interface ChatMeta {
 /** Text a message carries — body or media caption. */
 function messageText(message: Message): string {
 	return message.text ?? message.caption ?? "";
+}
+
+/**
+ * Prefix a stored message with its cross-message context (forward origin, reply,
+ * quote, cross-chat reply) so the model sees the same context in the manager as
+ * in mode 1. Empty context leaves the text untouched.
+ */
+function withMessageContext(message: Message, text: string): string {
+	const lines = buildContextLines(extractMessageContext(message));
+	return lines.length > 0 ? `${lines.join("\n")}\n${text}` : text;
 }
 
 export class ManagerController {
@@ -160,7 +172,7 @@ export class ManagerController {
 			if (bot) return;
 			await this.deps.chatStore.append(chatId, {
 				author: "owner",
-				text: stripBotMarker(text),
+				text: withMessageContext(input.message, stripBotMarker(text)),
 				timestamp: now,
 				senderId: ownerId,
 				messageId,
@@ -183,7 +195,7 @@ export class ManagerController {
 		}
 		await this.deps.chatStore.append(chatId, {
 			author: "interlocutor",
-			text,
+			text: withMessageContext(input.message, text),
 			timestamp: now,
 			senderId: from ? String(from.id) : undefined,
 			senderName: contactName,

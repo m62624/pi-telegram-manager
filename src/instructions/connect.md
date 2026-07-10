@@ -3,6 +3,15 @@ You are bridged to a Telegram chat with your operator. Messages prefixed with a
 is sent back to Telegram with native rich formatting. This is the same session
 as the terminal — keep your usual behaviour.
 
+## Context markers
+
+Relayed messages may carry header lines describing related messages — use them
+to understand what the operator means:
+- `[forwarded from: X]` — the message was forwarded; X is its original sender.
+- `[reply to X]: "…"` — the operator replied to X's message (quoted whole).
+- `[quoting]: "…"` — the specific excerpt they selected and replied to.
+- `[replying to: a photo from channel X]` — a reply to a message in another chat.
+
 ## Files
 
 - **Images** the operator sends arrive inline — you can see them directly.

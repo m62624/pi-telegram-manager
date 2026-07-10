@@ -27,6 +27,26 @@ export interface TurnReplyContext {
 	text: string;
 }
 
+/**
+ * Cross-cutting context a Telegram message carries about *other* messages:
+ * whether it was forwarded, what it replies to (same chat), a quoted excerpt,
+ * or a reply to a message in another chat. Extracted once from the raw message
+ * (see `telegram/message-context.ts`) and rendered the same way in both modes,
+ * so the model always has the full picture regardless of which mode is active.
+ */
+export interface MessageContext {
+	/** Original sender when the message was forwarded, e.g. `channel «News»`. */
+	forwardedFrom?: string;
+	/** The message being replied to in the same chat (whole text). */
+	reply?: TurnReplyContext;
+	/** The specific excerpt the sender quoted from the replied message. */
+	quote?: string;
+	/** A reply to a message from another chat, e.g. `a photo from channel «News»`. */
+	externalReply?: string;
+	/** True when the message replies to a story. */
+	replyToStory?: boolean;
+}
+
 export interface TurnAttachment {
 	kind: string;
 	fileName?: string;
@@ -42,11 +62,10 @@ export interface TurnSavedFile {
 	mimeType?: string;
 }
 
-export interface TurnInput {
+export interface TurnInput extends MessageContext {
 	text?: string;
 	senderName?: string;
 	chatTitle?: string;
-	reply?: TurnReplyContext;
 	attachments?: readonly TurnAttachment[];
 	/** Non-image files saved to disk, with their absolute paths. */
 	savedFiles?: readonly TurnSavedFile[];
@@ -83,6 +102,41 @@ export function buildReplyLine(reply: TurnReplyContext | undefined): string {
 	const quote = truncate(reply.text, REPLY_QUOTE_MAX);
 	const author = reply.author ? sanitizeAttribute(reply.author) : "";
 	return author ? `[reply to ${author}]: "${quote}"` : `[reply]: "${quote}"`;
+}
+
+/** The `[forwarded from: X]` line, or empty when the message is not a forward. */
+export function buildForwardLine(forwardedFrom: string | undefined): string {
+	if (!forwardedFrom) return "";
+	return `[forwarded from: ${sanitizeAttribute(forwardedFrom)}]`;
+}
+
+/** The `[quoting]: "excerpt"` line for a partial quote, or empty. */
+export function buildQuoteLine(quote: string | undefined): string {
+	if (!quote?.trim()) return "";
+	return `[quoting]: "${truncate(quote, REPLY_QUOTE_MAX)}"`;
+}
+
+/** The `[replying to: a photo from channel X]` line for a cross-chat reply, or empty. */
+export function buildExternalReplyLine(
+	externalReply: string | undefined,
+): string {
+	if (!externalReply) return "";
+	return `[replying to: ${sanitizeAttribute(externalReply)}]`;
+}
+
+/**
+ * The cross-message context lines (forward origin, reply, partial quote,
+ * cross-chat reply, story reply), in a stable order. Shared by both modes so a
+ * forwarded/replied/quoted message reads the same everywhere.
+ */
+export function buildContextLines(ctx: MessageContext): string[] {
+	return [
+		buildForwardLine(ctx.forwardedFrom),
+		buildReplyLine(ctx.reply),
+		buildQuoteLine(ctx.quote),
+		buildExternalReplyLine(ctx.externalReply),
+		ctx.replyToStory ? "[replying to a story]" : "",
+	].filter((line) => line.length > 0);
 }
 
 /** The `[attachments: …]` line, or empty when there are none. */
@@ -124,7 +178,7 @@ export function buildAttachmentErrorsLine(
 export function buildPromptTurn(input: TurnInput): string {
 	const header = [
 		buildHeader(input),
-		buildReplyLine(input.reply),
+		...buildContextLines(input),
 		buildAttachmentsLine(input.attachments),
 		buildSavedFilesLine(input.savedFiles),
 		buildAttachmentErrorsLine(input.attachmentErrors),

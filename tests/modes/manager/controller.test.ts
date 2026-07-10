@@ -213,6 +213,34 @@ describe("ManagerController", () => {
 		expect(ctx?.at(-1)?.content).toContain("manager_reply");
 	});
 
+	it("carries reply/forward context of an interlocutor message into the context", async () => {
+		const { controller } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				message_id: 3,
+				date: 0,
+				chat: { id: 42, type: "private", first_name: "Alice" },
+				from: { id: 5, is_bot: false, first_name: "Alice" },
+				text: "yes, that one",
+				reply_to_message: {
+					message_id: 2,
+					date: 0,
+					chat: { id: 42, type: "private", first_name: "Alice" },
+					from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+					text: "the blue one?",
+				},
+			} as Message,
+		});
+		const ctx = await controller.buildContextForActive();
+		const interlocutor = ctx?.find((m) => m.content.includes("yes, that one"));
+		expect(interlocutor?.content).toContain(
+			'[reply to Owner]: "the blue one?"',
+		);
+	});
+
 	it("queues a second chat while the first is active", async () => {
 		const { controller, triggerAgent, setIdle } = await setup();
 		await controller.onBusinessMessage({

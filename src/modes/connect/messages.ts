@@ -14,6 +14,7 @@
 import type { Message, User } from "@grammyjs/types";
 import type { TurnInput } from "../../core/turns";
 import { describeAttachments } from "../../telegram/media";
+import { extractMessageContext } from "../../telegram/message-context";
 
 /** A text part of a prompt turn (structurally the SDK's `TextContent`). */
 export interface PromptTextPart {
@@ -109,14 +110,11 @@ export function messageToTurnInput(
 		fileName: ref.fileName,
 		mimeType: ref.mimeType,
 	}));
-	const replyTo = message.reply_to_message;
-	const reply = replyTo
-		? { author: senderDisplayName(replyTo.from), text: messageText(replyTo) }
-		: undefined;
 	return {
+		// Forward origin, reply, quote and cross-chat reply — shared with mode 2.
+		...extractMessageContext(message),
 		text: messageText(message),
 		senderName: senderDisplayName(message.from),
-		reply,
 		attachments: attachments.length > 0 ? attachments : undefined,
 	};
 }
