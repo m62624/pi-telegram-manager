@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantReplyText,
 	extractText,
+	formatPiCommandList,
 	lastAssistantReply,
 	messageText,
 	messageToTurnInput,
@@ -75,6 +76,27 @@ describe("parseSlashCommand", () => {
 		expect(parseSlashCommand("hello")).toBeNull();
 		expect(parseSlashCommand("path is a/b")).toBeNull();
 		expect(parseSlashCommand("")).toBeNull();
+	});
+});
+
+describe("formatPiCommandList", () => {
+	it("lists commands sorted, slash-prefixed, with descriptions", () => {
+		const out = formatPiCommandList([
+			{ name: "telegram-connect", description: "Bind chat" },
+			{ name: "planner-create", description: "New plan" },
+			{ name: "bare" },
+		]);
+		expect(out).toContain("run these in the terminal");
+		const lines = out.split("\n").slice(1);
+		expect(lines).toEqual([
+			"/bare",
+			"/planner-create — New plan",
+			"/telegram-connect — Bind chat",
+		]);
+	});
+
+	it("handles an empty registry", () => {
+		expect(formatPiCommandList([])).toBe("No Pi commands are registered.");
 	});
 });
 

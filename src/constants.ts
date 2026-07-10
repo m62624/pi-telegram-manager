@@ -31,6 +31,7 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 	[
 		{ command: "esc", description: "Cancel the current turn" },
 		{ command: "clear", description: "Clear the conversation history" },
+		{ command: "commands", description: "List all Pi commands (terminal)" },
 		{ command: "help", description: "Show available commands" },
 	];
 

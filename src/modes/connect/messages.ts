@@ -72,6 +72,33 @@ export function parseSlashCommand(
 	return { name: match[1].toLowerCase(), arg: (match[2] ?? "").trim() };
 }
 
+/** A Pi slash command surfaced for discovery (from `pi.getCommands()`). */
+export interface PiCommandInfo {
+	name: string;
+	description?: string;
+}
+
+/**
+ * Render the registered Pi slash commands (from every loaded extension) as a
+ * discovery list for Telegram. These run in the *terminal* — the SDK exposes no
+ * way to execute another extension's command remotely — so the list is a
+ * read-only map of what's available, sorted for a stable order.
+ */
+export function formatPiCommandList(
+	commands: readonly PiCommandInfo[],
+): string {
+	if (commands.length === 0) return "No Pi commands are registered.";
+	const lines = [...commands]
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((command) => {
+			const description = command.description
+				? ` — ${command.description}`
+				: "";
+			return `/${command.name}${description}`;
+		});
+	return ["*Pi commands* (run these in the terminal):", ...lines].join("\n");
+}
+
 /** Map a Telegram message to the prompt-turn input (sender, reply, attachments). */
 export function messageToTurnInput(
 	message: Message,

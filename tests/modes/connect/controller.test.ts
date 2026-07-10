@@ -207,6 +207,19 @@ describe("ConnectController", () => {
 		expect(markdown).toContain("/clear");
 	});
 
+	it("answers /commands with the discovered Pi command list", async () => {
+		const listCommands = vi.fn(() => [
+			{ name: "planner-create", description: "New plan" },
+		]);
+		const { controller, api, sendFollowUp } = setup({ listCommands });
+		const handled = await controller.onEvent(messageEvent("/commands"));
+		expect(handled).toBe(true);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(listCommands).toHaveBeenCalledTimes(1);
+		const markdown = api.sent.at(-1)?.rich_message.markdown ?? "";
+		expect(markdown).toContain("/planner-create — New plan");
+	});
+
 	it("sends a collapsible tool-activity block to the bound chat", async () => {
 		const { controller, api } = setup();
 		await controller.sendToolActivity({

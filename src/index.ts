@@ -339,6 +339,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 							: "Nothing to cancel — the agent is idle.",
 					);
 				},
+				// Discovery only: list every registered Pi command (incl. other
+				// extensions'). The SDK exposes no way to execute another
+				// extension's command remotely, so these are shown as terminal-run.
+				listCommands: () =>
+					pi.getCommands().map((command) => ({
+						name: command.name,
+						description: command.description,
+					})),
 				outbound,
 				abort,
 			});
