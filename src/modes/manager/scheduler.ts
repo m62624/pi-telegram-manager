@@ -18,7 +18,12 @@
  * a wall-clock tick to {@link ChatScheduler.onTick} and feeds the active chat's
  * turn to the agent, calling {@link ChatScheduler.onReplied} when a reply lands.
  */
-import { type Clock, systemClock, TIMER, TimerRegistry } from "../../core/timers";
+import {
+	type Clock,
+	systemClock,
+	TIMER,
+	TimerRegistry,
+} from "../../core/timers";
 
 /** What happened to an inbound interlocutor message, from the scheduler's view. */
 export type MessageOutcome =
