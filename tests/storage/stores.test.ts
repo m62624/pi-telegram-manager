@@ -4,8 +4,10 @@ import {
 	type ChatMessageRecord,
 	createChatStore,
 } from "../../src/storage/chat-store";
+import { createContactStore } from "../../src/storage/contact-store";
 import { createTelegramPaths } from "../../src/storage/paths";
 import { createSentRegistry } from "../../src/storage/sent-registry";
+import type { TelegramProfile } from "../../src/telegram/profile";
 import { FakeFs } from "../helpers/fake-fs";
 
 const paths = createTelegramPaths("/agent");
@@ -99,5 +101,72 @@ describe("sent-registry", () => {
 		for (let i = 0; i < 5; i++) await reg.recordSent("c", i);
 		expect(await reg.wasSentByBot("c", 0)).toBe(false); // evicted
 		expect(await reg.wasSentByBot("c", 4)).toBe(true);
+	});
+});
+
+describe("contact-store", () => {
+	const profile = (over: Partial<TelegramProfile> = {}): TelegramProfile => ({
+		userId: "42",
+		firstName: "Ada",
+		username: "ada",
+		displayName: "Ada",
+		...over,
+	});
+
+	it("creates a record on first contact with firstSeen", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		const rec = await store.upsertProfile(profile(), 1000);
+		expect(rec.firstSeen).toBe(1000);
+		expect(rec.updatedAt).toBe(1000);
+		expect(rec.facts).toEqual([]);
+		expect(rec.profile.displayName).toBe("Ada");
+		expect(await store.get("42")).toEqual(rec);
+	});
+
+	it("merges later profiles without dropping known fields, keeping firstSeen", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile({ phoneNumber: "+100" }), 1000);
+		// A plain message update lacks the phone number — it must survive.
+		const rec = await store.upsertProfile(
+			profile({ lastName: "Lovelace", displayName: "Ada Lovelace" }),
+			2000,
+		);
+		expect(rec.firstSeen).toBe(1000);
+		expect(rec.updatedAt).toBe(2000);
+		expect(rec.profile.phoneNumber).toBe("+100");
+		expect(rec.profile.lastName).toBe("Lovelace");
+	});
+
+	it("appends important facts, oldest-first", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile(), 1000);
+		await store.addFact("42", { text: "likes tea", timestamp: 1100 });
+		await store.addFact("42", {
+			text: "timezone UTC+3",
+			timestamp: 1200,
+			source: "manual",
+		});
+		const facts = await store.getFacts("42");
+		expect(facts.map((f) => f.text)).toEqual(["likes tea", "timezone UTC+3"]);
+	});
+
+	it("ignores facts for an unknown contact", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.addFact("999", { text: "orphan", timestamp: 1 });
+		expect(await store.getFacts("999")).toEqual([]);
+		expect(await store.get("999")).toBeNull();
+	});
+
+	it("isolates contacts per user id", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile({ userId: "1", displayName: "One" }), 1);
+		await store.upsertProfile(profile({ userId: "2", displayName: "Two" }), 1);
+		expect((await store.get("1"))?.profile.displayName).toBe("One");
+		expect((await store.get("2"))?.profile.displayName).toBe("Two");
 	});
 });

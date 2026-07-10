@@ -22,15 +22,20 @@ export interface TelegramPaths {
 	sentRegistryPath: string;
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
+	/** Per-contact profile + important-facts directory (both modes). */
+	contactsDir: string;
 	/** Working directory a mode-2 manager session is opened in. */
 	managerWorkspaceDir: string;
 	/** JSONL transcript path for one chat. */
 	chatFile(chatId: string): string;
+	/** JSON profile + facts path for one contact (keyed by Telegram user id). */
+	contactFile(userId: string): string;
 }
 
 export function createTelegramPaths(agentDir: string): TelegramPaths {
 	const extensionDir = join(agentDir, "extensions", EXTENSION_NAME);
 	const chatsDir = join(extensionDir, "chats");
+	const contactsDir = join(extensionDir, "contacts");
 	return {
 		agentDir,
 		extensionDir,
@@ -39,7 +44,10 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		businessPath: join(extensionDir, "business.json"),
 		sentRegistryPath: join(extensionDir, "sent-registry.json"),
 		chatsDir,
+		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),
 		chatFile: (chatId) => join(chatsDir, `${sanitizeSegment(chatId)}.jsonl`),
+		contactFile: (userId) =>
+			join(contactsDir, `${sanitizeSegment(userId)}.json`),
 	};
 }

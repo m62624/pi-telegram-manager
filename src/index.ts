@@ -34,6 +34,7 @@ import {
 } from "./pi/tool-visibility";
 import { loadSettings } from "./settings/manager";
 import { resolveSecret } from "./settings/secret";
+import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
@@ -49,6 +50,7 @@ import {
 	toBase64,
 } from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
+import { extractProfileFromUser } from "./telegram/profile";
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -60,6 +62,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
 	const paths = resolveTelegramPaths();
 	const singletonStore = createSingletonStore(fs, paths.singletonPath);
+	const contactStore = createContactStore(fs, paths);
 	const lifecycle = createLifecycleController({
 		store: singletonStore,
 		now: () => Date.now(),
@@ -347,6 +350,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						name: command.name,
 						description: command.description,
 					})),
+				onContact: async (user) => {
+					await contactStore.upsertProfile(
+						extractProfileFromUser(user),
+						Date.now(),
+					);
+				},
 				outbound,
 				abort,
 			});

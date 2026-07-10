@@ -11,7 +11,7 @@
  * AbortRegistry), so this pump is unit-testable; `index.ts` wires the ports to
  * real `pi.on` handlers and command context.
  */
-import type { Message } from "@grammyjs/types";
+import type { Message, User } from "@grammyjs/types";
 import type { AbortRegistry } from "../../core/abort";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
@@ -51,6 +51,8 @@ export interface ConnectControllerDeps {
 	onAbort?: () => Promise<void>;
 	/** Enumerate the registered Pi slash commands for the `/commands` discovery list. */
 	listCommands?: () => PiCommandInfo[];
+	/** Record/refresh the sender's profile in the contact store (best-effort). */
+	onContact?: (user: User) => Promise<void>;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -89,6 +91,12 @@ export class ConnectController {
 		if (event.kind !== "message" && event.kind !== "edited_message")
 			return false;
 		if (event.fromId !== this.deps.allowedUserId) return false;
+
+		// Capture/refresh the sender's profile (name, username, …) for the contact
+		// store — used now for a unified record and later relayed by the manager.
+		if (this.deps.onContact && event.message.from) {
+			void this.deps.onContact(event.message.from).catch(() => {});
+		}
 
 		// Intercept the bridge's own control commands (e.g. /clear) so they never
 		// reach the agent as a prompt. Unknown commands (and /start, /help) fall
