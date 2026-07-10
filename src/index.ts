@@ -35,6 +35,7 @@ import {
 } from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
 import { extractText, type PromptContent } from "./modes/connect/messages";
+import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import { ManagerController } from "./modes/manager/controller";
 import {
 	createManagerTools,
@@ -110,11 +111,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			const isolated = await manager.buildContextForActive();
 			if (!isolated) return {};
 			return {
-				messages: isolated.map((message) => ({
-					role: message.role,
-					content: message.content,
-					timestamp: Date.now(),
-				})),
+				messages: toRebuiltMessages(isolated, Date.now()),
 			} as never;
 		}
 		const filtered = contextReset.apply(event.messages);

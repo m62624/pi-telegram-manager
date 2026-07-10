@@ -76,3 +76,64 @@ export function buildIsolatedMessages(
 export function boundaryDirective(contactName: string): string {
 	return `[New chat with ${contactName}. This is a separate conversation; previous chats are not available.]`;
 }
+
+/** A rebuilt user message for the SDK's context event (string content is valid). */
+export interface RebuiltUserMessage {
+	role: "user";
+	content: string;
+	timestamp: number;
+}
+
+/**
+ * A rebuilt assistant message for the SDK's context event. It MUST carry
+ * block-array content and a `usage` object: the SDK's token estimator iterates
+ * assistant content as blocks and reads `usage.totalTokens` unguarded, so a
+ * string body or a missing `usage` crashes it ("Cannot read properties of
+ * undefined (reading 'totalTokens')"). Zero usage is skipped by the estimator.
+ */
+export interface RebuiltAssistantMessage {
+	role: "assistant";
+	content: { type: "text"; text: string }[];
+	timestamp: number;
+	stopReason: "stop";
+	usage: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+		totalTokens: number;
+	};
+}
+
+export type RebuiltMessage = RebuiltUserMessage | RebuiltAssistantMessage;
+
+const ZERO_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+} as const;
+
+/**
+ * Map the isolated (role, string) messages onto the well-formed shape the SDK's
+ * context event expects, so token estimation over our synthetic transcript
+ * never crashes. Assistant turns become block-array content with a zero `usage`;
+ * user turns keep their string content.
+ */
+export function toRebuiltMessages(
+	messages: readonly IsolatedMessage[],
+	now: number,
+): RebuiltMessage[] {
+	return messages.map((message) =>
+		message.role === "assistant"
+			? {
+					role: "assistant",
+					content: [{ type: "text", text: message.content }],
+					timestamp: now,
+					stopReason: "stop",
+					usage: { ...ZERO_USAGE },
+				}
+			: { role: "user", content: message.content, timestamp: now },
+	);
+}

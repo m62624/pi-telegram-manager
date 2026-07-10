@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	boundaryDirective,
 	buildIsolatedMessages,
+	toRebuiltMessages,
 } from "../../../src/modes/manager/context-isolation";
 import type { ChatMessageRecord } from "../../../src/storage/chat-store";
 
@@ -62,5 +63,30 @@ describe("buildIsolatedMessages", () => {
 			records: [rec({ text: "mine" })],
 		});
 		expect(JSON.stringify(messages)).not.toContain("other");
+	});
+});
+
+describe("toRebuiltMessages", () => {
+	it("gives assistant turns block content and a zero usage (SDK estimator safety)", () => {
+		const [user, assistant] = toRebuiltMessages(
+			[
+				{ role: "user", content: "hello" },
+				{ role: "assistant", content: "hi back" },
+			],
+			123,
+		);
+		// User keeps string content.
+		expect(user).toEqual({ role: "user", content: "hello", timestamp: 123 });
+		// Assistant carries a text-block array and a usage object, so the SDK's
+		// token estimator never dereferences an undefined `usage`.
+		expect(assistant).toMatchObject({
+			role: "assistant",
+			content: [{ type: "text", text: "hi back" }],
+			timestamp: 123,
+			stopReason: "stop",
+		});
+		expect(
+			(assistant as { usage: { totalTokens: number } }).usage.totalTokens,
+		).toBe(0);
 	});
 });
