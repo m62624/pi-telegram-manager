@@ -66,7 +66,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
-		labeler: "LLM agent:",
+		labeler: "LLM agent 🤖:",
 		instructionFiles: [],
 		subMode: "observer",
 		observer: {},
