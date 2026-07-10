@@ -15,7 +15,7 @@ import type { Message, User } from "@grammyjs/types";
 import type { AbortRegistry } from "../../core/abort";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
-import { buildPromptTurn } from "../../core/turns";
+import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
 import {
@@ -45,6 +45,24 @@ export interface ConnectControllerDeps {
 	sendFollowUp: (content: PromptContent) => Promise<void>;
 	/** Download an inbound message's image attachments as base64 (best-effort). */
 	loadImages?: (message: Message) => Promise<InboundImage[]>;
+	/**
+	 * Download an inbound message's non-image files to disk and report their
+	 * paths (plus any per-file errors) so the model can open and reason about
+	 * them. Images are delivered inline via {@link loadImages}, not saved here.
+	 */
+	saveAttachments?: (
+		message: Message,
+	) => Promise<{ savedFiles: TurnSavedFile[]; errors: string[] }>;
+	/**
+	 * Upload a file to the bound chat so the user receives it (the reverse of
+	 * `saveAttachments`). Exactly one of `path`/`url`. Throws on failure so the
+	 * calling tool can surface the exact error to the model.
+	 */
+	uploadFile?: (input: {
+		path?: string;
+		url?: string;
+		caption?: string;
+	}) => Promise<void>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
 	/** Handle a `/esc` (or `/cancel`) request to interrupt the running turn. */
@@ -107,9 +125,14 @@ export class ConnectController {
 		// even starts (there is queue/dispatch latency in between).
 		void this.sendTyping();
 
-		const turn = buildPromptTurn(
-			messageToTurnInput(event.message, this.deps.maxBytes),
-		);
+		// Save non-image files to disk (best-effort) so the model gets real paths;
+		// images ride along inline via loadImages.
+		const intake = await this.saveAttachments(event.message);
+		const turn = buildPromptTurn({
+			...messageToTurnInput(event.message, this.deps.maxBytes),
+			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
+			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
+		});
 
 		if (
 			event.kind === "edited_message" &&
@@ -161,6 +184,31 @@ export class ConnectController {
 	private async loadImages(message: Message): Promise<InboundImage[]> {
 		if (!this.deps.loadImages) return [];
 		return this.deps.loadImages(message).catch(() => []);
+	}
+
+	/** Save non-image attachments to disk, swallowing a wholesale failure. */
+	private async saveAttachments(
+		message: Message,
+	): Promise<{ savedFiles: TurnSavedFile[]; errors: string[] }> {
+		if (!this.deps.saveAttachments) return { savedFiles: [], errors: [] };
+		return this.deps
+			.saveAttachments(message)
+			.catch(() => ({ savedFiles: [], errors: [] }));
+	}
+
+	/**
+	 * Upload a file to the bound chat so the user receives it. Called by the
+	 * `telegram_attach` tool; propagates errors so the tool reports them.
+	 */
+	async sendFile(input: {
+		path?: string;
+		url?: string;
+		caption?: string;
+	}): Promise<void> {
+		if (!this.deps.uploadFile) {
+			throw new Error("file upload is not available in this session");
+		}
+		await this.deps.uploadFile(input);
 	}
 
 	/** Build the follow-up content for a queued turn: images (if any) then text. */

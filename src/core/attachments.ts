@@ -99,11 +99,17 @@ export function createAttachmentTools(
 				return fail(
 					"telegram_attach accepts only one of path or url, not both.",
 				);
-			await deps.sendAttachment({
-				path,
-				url,
-				caption: params.caption?.trim() || undefined,
-			});
+			try {
+				await deps.sendAttachment({
+					path,
+					url,
+					caption: params.caption?.trim() || undefined,
+				});
+			} catch (error) {
+				// Surface the exact failure (missing file, too large, upload rejected)
+				// so the model can explain it or retry differently.
+				return fail(`telegram_attach failed: ${String(error)}`);
+			}
 			return ok("Attachment sent to Telegram.");
 		},
 	});

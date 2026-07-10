@@ -16,17 +16,23 @@
  * context; `sendUserMessage` is used from the top-level `pi` for the same
  * reason.
  */
+import { join } from "node:path";
 import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { ContextReset } from "./core/context-reset";
-import { readInstructionFiles } from "./core/instructions";
+import { expandHome, readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
-import { loadManagerInstructions } from "./instructions/builtin";
+import type { TurnSavedFile } from "./core/turns";
+import {
+	loadConnectInstructions,
+	loadManagerInstructions,
+	SYSTEM_INSTRUCTIONS_HEADER,
+} from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
 import { extractText, type PromptContent } from "./modes/connect/messages";
 import { ManagerController } from "./modes/manager/controller";
@@ -55,6 +61,7 @@ import {
 	fileBaseUrl,
 	TelegramClient,
 } from "./telegram/client";
+import { formatBytes, resolveSaveName } from "./telegram/file-store";
 import {
 	describeAttachments,
 	type FileApi,
@@ -110,8 +117,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				})),
 			} as never;
 		}
-		const messages = contextReset.apply(event.messages);
-		return messages ? { messages } : {};
+		const filtered = contextReset.apply(event.messages);
+		// Mode 1: prepend the connect system instructions so the agent knows it is
+		// bridged to Telegram (files saved to disk, telegram_attach to send back).
+		if (connect && connectSystemBlock) {
+			return {
+				messages: [
+					{
+						role: "user",
+						content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
+						timestamp: Date.now(),
+					},
+					...(filtered ?? event.messages),
+				],
+			} as never;
+		}
+		return filtered ? { messages: filtered } : {};
 	});
 
 	// Live connect-mode runtime (null when inactive).
@@ -126,6 +147,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let draftPreviewsEnabled = false;
 	let draftText = "";
 	let lastDraftAt = 0;
+	// Mode-1 system instructions (bundled connect.md + user override), injected at
+	// the head of the context while connect is active; null when inactive.
+	let connectSystemBlock: string | null = null;
 
 	// Live manager-mode runtime (null when inactive).
 	let manager: ManagerController | null = null;
@@ -177,12 +201,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await connect?.sendToChat(text);
 		},
 		async sendAttachment(input) {
-			// File upload is not wired yet; forward a URL/caption as a message so the
-			// tool still does something useful. Local-path upload lands in Phase 5.
-			const note = input.caption
-				? `${input.caption}\n${input.url ?? input.path ?? ""}`.trim()
-				: (input.url ?? input.path);
-			if (note) await connect?.sendToChat(note);
+			// Route to the live connect controller, which uploads the file to the
+			// bound chat (local path or URL). Throwing here surfaces the exact error
+			// to the model via the tool's error result.
+			if (!connect) throw new Error("Telegram connect is not active.");
+			await connect.sendFile(input);
 		},
 	})) {
 		pi.registerTool(tool);
@@ -206,6 +229,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await client?.stop().catch(() => {});
 		client = null;
 		connect = null;
+		connectSystemBlock = null;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		contextReset.forget();
@@ -361,6 +385,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
+			// Assemble mode-1 instructions: bundled connect.md plus the user's
+			// global + connect override files (appended, never replacing defaults).
+			const connectOverride = await readInstructionFiles(fs, [
+				...settings.instructionFiles,
+				...settings.connect.instructionFiles,
+			]);
+			for (const file of connectOverride.missing) {
+				ctx.ui.notify(`Instruction file not found: ${file}`, "warning");
+			}
+			connectSystemBlock = await loadConnectInstructions({
+				fs,
+				overrideText: connectOverride.text,
+			});
+
 			client = new TelegramClient({
 				token,
 				onEvent: async (event) => {
@@ -417,12 +455,62 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				}
 				return images;
 			};
+			// Where inbound non-image files land: the configured dir, else the
+			// directory Pi runs in.
+			const downloadDir = settings.files.downloadDir
+				? expandHome(settings.files.downloadDir)
+				: process.cwd();
+			// Save every non-image attachment to disk and report its absolute path,
+			// so the model can open it with its normal tools. Per-file errors are
+			// collected and surfaced in the prompt, not swallowed.
+			const saveAttachments = async (
+				message: Parameters<typeof describeAttachments>[0],
+			) => {
+				const refs = describeAttachments(
+					message,
+					settings.files.maxBytes,
+				).filter((ref) => !isImage(ref));
+				const savedFiles: TurnSavedFile[] = [];
+				const errors: string[] = [];
+				const used = new Set<string>();
+				for (const ref of refs) {
+					const label = ref.fileName ?? ref.kind;
+					try {
+						const file = await media.download(ref);
+						const target = join(downloadDir, resolveSaveName(ref, used));
+						await fs.writeBytes(target, file.bytes);
+						savedFiles.push({
+							path: target,
+							kind: ref.kind,
+							size: formatBytes(file.bytes.length),
+							mimeType: ref.mimeType,
+						});
+					} catch (error) {
+						errors.push(`${label}: ${String(error)}`);
+					}
+				}
+				return { savedFiles, errors };
+			};
+			// Upload a local file or URL back to the bound chat (the telegram_attach
+			// tool). Validate a local path up front so the model gets a clear error.
+			const uploadFile = async (input: {
+				path?: string;
+				url?: string;
+				caption?: string;
+			}) => {
+				if (input.path && !(await fs.exists(input.path))) {
+					throw new Error(`file not found: ${input.path}`);
+				}
+				await client?.sendDocument({ chatId: allowedUserId, ...input });
+			};
 			connect = new ConnectController({
 				allowedUserId,
 				maxBytes: settings.files.maxBytes,
 				isIdle: () => !busy,
 				sendFollowUp,
 				loadImages,
+				saveAttachments,
+				uploadFile,
 				onClear: async () => {
 					// Clearing mid-turn could orphan a tool_use/tool_result pair, so
 					// only reset while the agent is idle.

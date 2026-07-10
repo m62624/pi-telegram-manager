@@ -8,10 +8,11 @@ import type { TelegramFs } from "../../src/storage/fs";
  */
 export class FakeFs implements TelegramFs {
 	readonly files = new Map<string, string>();
+	readonly binary = new Map<string, Uint8Array>();
 	private readonly dirs = new Set<string>(["/"]);
 
 	async exists(path: string): Promise<boolean> {
-		return this.files.has(path) || this.dirs.has(path);
+		return this.files.has(path) || this.binary.has(path) || this.dirs.has(path);
 	}
 
 	async isDirectory(path: string): Promise<boolean> {
@@ -85,6 +86,11 @@ export class FakeFs implements TelegramFs {
 	async writeText(path: string, content: string): Promise<void> {
 		await this.mkdirp(dirname(path));
 		this.files.set(path, content);
+	}
+
+	async writeBytes(path: string, bytes: Uint8Array): Promise<void> {
+		await this.mkdirp(dirname(path));
+		this.binary.set(path, bytes);
 	}
 
 	async writeTextAtomic(path: string, content: string): Promise<void> {

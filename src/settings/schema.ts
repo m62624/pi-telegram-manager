@@ -46,6 +46,12 @@ export interface TelegramSettings {
 	};
 	files: {
 		maxBytes: number;
+		/**
+		 * Directory where files a user sends to the bot (mode 1) are saved. Absolute
+		 * or `~`-relative. When unset, files are saved into the directory Pi runs in
+		 * (its current working directory).
+		 */
+		downloadDir?: string;
 	};
 }
 
@@ -282,6 +288,7 @@ export function normalizeSettings(
 				"files.maxBytes",
 				d.files.maxBytes,
 			),
+			downloadDir: asOptionalString(files.downloadDir, "files.downloadDir"),
 		},
 	};
 }

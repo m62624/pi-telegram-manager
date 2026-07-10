@@ -33,12 +33,25 @@ export interface TurnAttachment {
 	mimeType?: string;
 }
 
+/** A file saved to disk from an inbound message, surfaced to the model. */
+export interface TurnSavedFile {
+	path: string;
+	kind: string;
+	/** Human-readable size, e.g. "1.2 MB". */
+	size?: string;
+	mimeType?: string;
+}
+
 export interface TurnInput {
 	text?: string;
 	senderName?: string;
 	chatTitle?: string;
 	reply?: TurnReplyContext;
 	attachments?: readonly TurnAttachment[];
+	/** Non-image files saved to disk, with their absolute paths. */
+	savedFiles?: readonly TurnSavedFile[];
+	/** Human-readable errors for attachments that could not be downloaded/saved. */
+	attachmentErrors?: readonly string[];
 }
 
 /** Strip the characters that would break header framing, collapsing whitespace. */
@@ -84,12 +97,37 @@ export function buildAttachmentsLine(
 	return `[attachments: ${items.join(", ")}]`;
 }
 
+/**
+ * The `[saved files: …]` line listing absolute paths of files written to disk,
+ * so the model can open them with its normal tools. Empty when none.
+ */
+export function buildSavedFilesLine(
+	savedFiles: readonly TurnSavedFile[] | undefined,
+): string {
+	if (!savedFiles || savedFiles.length === 0) return "";
+	const items = savedFiles.map((file) => {
+		const meta = [file.size, file.mimeType].filter(Boolean).join(", ");
+		return meta ? `${file.path} (${meta})` : file.path;
+	});
+	return `[saved files: ${items.join("; ")}]`;
+}
+
+/** The `[attachment errors: …]` line, or empty when there are none. */
+export function buildAttachmentErrorsLine(
+	errors: readonly string[] | undefined,
+): string {
+	if (!errors || errors.length === 0) return "";
+	return `[attachment errors: ${errors.map((e) => sanitizeAttribute(e)).join("; ")}]`;
+}
+
 /** Build the full prompt-turn text: header lines, a blank line, then the body. */
 export function buildPromptTurn(input: TurnInput): string {
 	const header = [
 		buildHeader(input),
 		buildReplyLine(input.reply),
 		buildAttachmentsLine(input.attachments),
+		buildSavedFilesLine(input.savedFiles),
+		buildAttachmentErrorsLine(input.attachmentErrors),
 	]
 		.filter((line) => line.length > 0)
 		.join("\n");

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildAttachmentErrorsLine,
 	buildAttachmentsLine,
 	buildHeader,
 	buildPromptTurn,
 	buildReplyLine,
+	buildSavedFilesLine,
 	REPLY_QUOTE_MAX,
 } from "../../src/core/turns";
 
@@ -83,5 +85,50 @@ describe("buildPromptTurn", () => {
 
 	it("trims the body", () => {
 		expect(buildPromptTurn({ text: "  hi  " })).toBe("[telegram]\n\nhi");
+	});
+
+	it("lists saved files with their absolute paths and errors", () => {
+		const turn = buildPromptTurn({
+			text: "here you go",
+			savedFiles: [
+				{
+					path: "/work/report.pdf",
+					kind: "document",
+					size: "1.2 MB",
+					mimeType: "application/pdf",
+				},
+			],
+			attachmentErrors: ["huge.zip: too large"],
+		});
+		expect(turn).toContain(
+			"[saved files: /work/report.pdf (1.2 MB, application/pdf)]",
+		);
+		expect(turn).toContain("[attachment errors: huge.zip: too large]");
+		expect(turn.endsWith("here you go")).toBe(true);
+	});
+});
+
+describe("buildSavedFilesLine", () => {
+	it("is empty when there are no saved files", () => {
+		expect(buildSavedFilesLine(undefined)).toBe("");
+		expect(buildSavedFilesLine([])).toBe("");
+	});
+
+	it("joins multiple files with a semicolon", () => {
+		expect(
+			buildSavedFilesLine([
+				{ path: "/a.txt", kind: "document" },
+				{ path: "/b.bin", kind: "document", size: "2 KB" },
+			]),
+		).toBe("[saved files: /a.txt; /b.bin (2 KB)]");
+	});
+});
+
+describe("buildAttachmentErrorsLine", () => {
+	it("is empty without errors and lists them otherwise", () => {
+		expect(buildAttachmentErrorsLine([])).toBe("");
+		expect(buildAttachmentErrorsLine(["x: boom", "y: nope"])).toBe(
+			"[attachment errors: x: boom; y: nope]",
+		);
 	});
 });

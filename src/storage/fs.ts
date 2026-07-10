@@ -29,6 +29,8 @@ export interface TelegramFs {
 	removeDir(path: string): Promise<void>;
 	removeFile(path: string): Promise<void>;
 	writeText(path: string, content: string): Promise<void>;
+	/** Write raw bytes (creating parents), for saving inbound Telegram files. */
+	writeBytes(path: string, bytes: Uint8Array): Promise<void>;
 	/** Crash-safe write via temp-file + rename. Never observes a partial file. */
 	writeTextAtomic(path: string, content: string): Promise<void>;
 	/** Append to a file (creating it + parents if missing). Used for JSONL logs. */
@@ -87,6 +89,10 @@ export function createNodeFs(): TelegramFs {
 		async writeText(path, content) {
 			await mkdir(dirname(path), { recursive: true });
 			await writeFile(path, content, "utf8");
+		},
+		async writeBytes(path, bytes) {
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, bytes);
 		},
 		async writeTextAtomic(path, content) {
 			// Write-then-rename: a crash or concurrent read mid-write can never

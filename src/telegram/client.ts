@@ -11,7 +11,7 @@
  * update into a dispatched event) is factored into pure functions that are unit
  * tested; the grammY `Bot` wiring itself is glue.
  */
-import { Bot, type PollingOptions, type RawApi } from "grammy";
+import { Bot, InputFile, type PollingOptions, type RawApi } from "grammy";
 import { classifyUpdate, type TelegramEvent } from "./updates";
 
 /** A classified event handler; may be async. Thrown errors go to `onError`. */
@@ -95,6 +95,29 @@ export class TelegramClient {
 	/** The base URL for downloading files uploaded to this bot. */
 	get fileBaseUrl(): string {
 		return fileBaseUrl(this.options.token);
+	}
+
+	/**
+	 * Upload a file to a chat as a document (preserving the exact bytes, unlike
+	 * sendPhoto which re-encodes and caps at 10 MB). A local `path` is streamed
+	 * via multipart; a `url` is handed to Telegram to fetch. Standard Bot API
+	 * caps: 50 MB for uploads, 20 MB for a URL Telegram fetches.
+	 */
+	async sendDocument(input: {
+		chatId: number;
+		path?: string;
+		url?: string;
+		caption?: string;
+	}): Promise<void> {
+		const document = input.path ? new InputFile(input.path) : input.url;
+		if (!document) {
+			throw new Error("sendDocument requires a local path or a url");
+		}
+		await this.bot.api.sendDocument(
+			input.chatId,
+			document,
+			input.caption ? { caption: input.caption } : {},
+		);
 	}
 
 	/** Begin long polling. Resolves only when the bot stops, so callers rarely await it. */

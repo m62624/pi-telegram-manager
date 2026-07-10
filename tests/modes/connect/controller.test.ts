@@ -164,6 +164,38 @@ describe("ConnectController", () => {
 		expect(typeof sendFollowUp.mock.calls[0][0]).toBe("string");
 	});
 
+	it("reports saved file paths and attachment errors in the prompt turn", async () => {
+		const saveAttachments = vi.fn(async () => ({
+			savedFiles: [
+				{ path: "/work/report.pdf", kind: "document", size: "1.2 MB" },
+			],
+			errors: ["huge.zip: too large"],
+		}));
+		const { controller, sendFollowUp } = setup({ saveAttachments });
+		await controller.onEvent(messageEvent("see attached"));
+		expect(saveAttachments).toHaveBeenCalledTimes(1);
+		const content = sendFollowUp.mock.calls[0][0] as string;
+		expect(content).toContain("[saved files: /work/report.pdf (1.2 MB)]");
+		expect(content).toContain("[attachment errors: huge.zip: too large]");
+	});
+
+	it("sendFile routes to the uploadFile port", async () => {
+		const uploadFile = vi.fn(async () => {});
+		const { controller } = setup({ uploadFile });
+		await controller.sendFile({ path: "/tmp/a.pdf", caption: "here" });
+		expect(uploadFile).toHaveBeenCalledWith({
+			path: "/tmp/a.pdf",
+			caption: "here",
+		});
+	});
+
+	it("sendFile throws when no upload port is wired", async () => {
+		const { controller } = setup();
+		await expect(controller.sendFile({ path: "/tmp/a.pdf" })).rejects.toThrow(
+			/not available/,
+		);
+	});
+
 	it("broadcasts a typing action to the bound chat", async () => {
 		const { controller, api } = setup();
 		await controller.sendTyping();
