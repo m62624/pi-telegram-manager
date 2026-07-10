@@ -24,6 +24,8 @@ export interface QueueItem {
 	id: string;
 	lane: QueueLane;
 	text: string;
+	/** Inline images (base64 + mimeType) that rode along with this turn. */
+	images?: Array<{ data: string; mimeType: string }>;
 	/** Telegram message ids this turn was assembled from (for edit/remove). */
 	sourceMessageIds: number[];
 }

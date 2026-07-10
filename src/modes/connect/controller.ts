@@ -11,12 +11,18 @@
  * AbortRegistry), so this pump is unit-testable; `index.ts` wires the ports to
  * real `pi.on` handlers and command context.
  */
+import type { Message } from "@grammyjs/types";
 import type { AbortRegistry } from "../../core/abort";
-import { MessageQueue } from "../../core/queue";
+import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn } from "../../core/turns";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
 import type { TelegramEvent } from "../../telegram/updates";
-import { lastAssistantReply, messageToTurnInput } from "./messages";
+import {
+	type InboundImage,
+	lastAssistantReply,
+	messageToTurnInput,
+	type PromptContent,
+} from "./messages";
 
 export interface ConnectControllerDeps {
 	/** Only messages from this Telegram user are accepted (their private chat id). */
@@ -26,7 +32,9 @@ export interface ConnectControllerDeps {
 	/** Whether the agent is currently idle (not streaming). */
 	isIdle: () => boolean;
 	/** Deliver a prompt turn to the agent as a follow-up (no interruption). */
-	sendFollowUp: (text: string) => Promise<void>;
+	sendFollowUp: (content: PromptContent) => Promise<void>;
+	/** Download an inbound message's image attachments as base64 (best-effort). */
+	loadImages?: (message: Message) => Promise<InboundImage[]>;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -62,14 +70,35 @@ export class ConnectController {
 			return true; // still queued — rewrote it in place, no new dispatch
 		}
 
+		const images = await this.loadImages(event.message);
 		this.queue.enqueue({
 			id: `turn-${this.turnCounter++}`,
 			lane: "default",
 			text: turn,
+			images: images.length > 0 ? images : undefined,
 			sourceMessageIds: [event.message.message_id],
 		});
 		await this.dispatch();
 		return true;
+	}
+
+	/** Download image attachments for a message, swallowing per-file failures. */
+	private async loadImages(message: Message): Promise<InboundImage[]> {
+		if (!this.deps.loadImages) return [];
+		return this.deps.loadImages(message).catch(() => []);
+	}
+
+	/** Build the follow-up content for a queued turn: images (if any) then text. */
+	private toContent(item: QueueItem): PromptContent {
+		if (!item.images || item.images.length === 0) return item.text;
+		return [
+			...item.images.map((img) => ({
+				type: "image" as const,
+				data: img.data,
+				mimeType: img.mimeType,
+			})),
+			{ type: "text" as const, text: item.text },
+		];
 	}
 
 	/** Release the next queued turn to the agent, but only while it is idle. */
@@ -77,7 +106,7 @@ export class ConnectController {
 		if (!this.deps.isIdle()) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
-		await this.deps.sendFollowUp(item.text);
+		await this.deps.sendFollowUp(this.toContent(item));
 	}
 
 	/** Arm interruption for the turn that just started. */

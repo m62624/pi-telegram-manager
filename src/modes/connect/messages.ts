@@ -15,6 +15,33 @@ import type { Message, User } from "@grammyjs/types";
 import type { TurnInput } from "../../core/turns";
 import { describeAttachments } from "../../telegram/media";
 
+/** A text part of a prompt turn (structurally the SDK's `TextContent`). */
+export interface PromptTextPart {
+	type: "text";
+	text: string;
+}
+
+/** An inline image part of a prompt turn (structurally the SDK's `ImageContent`). */
+export interface PromptImagePart {
+	type: "image";
+	/** Base64-encoded image bytes. */
+	data: string;
+	mimeType: string;
+}
+
+/**
+ * What a prompt turn delivers to the agent: either plain text, or a mixed array
+ * of image + text parts when the message carried pictures. Structurally
+ * assignable to `sendUserMessage`'s `string | (TextContent | ImageContent)[]`.
+ */
+export type PromptContent = string | Array<PromptTextPart | PromptImagePart>;
+
+/** A downloaded inbound image, ready to become a `PromptImagePart`. */
+export interface InboundImage {
+	data: string;
+	mimeType: string;
+}
+
 /** A person's display name: full name if present, else @username, else a fallback. */
 export function senderDisplayName(from: User | undefined): string | undefined {
 	if (!from) return undefined;

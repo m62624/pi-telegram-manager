@@ -20,6 +20,7 @@ import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import { ConnectController } from "./modes/connect/controller";
+import type { PromptContent } from "./modes/connect/messages";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import {
@@ -30,7 +31,18 @@ import { loadSettings } from "./settings/manager";
 import { resolveSecret } from "./settings/secret";
 import { createNodeFs } from "./storage/fs";
 import { createSingletonStore } from "./storage/singleton-store";
-import { fileBaseUrl, TelegramClient } from "./telegram/client";
+import {
+	fetchBytesFromUrl,
+	fileBaseUrl,
+	TelegramClient,
+} from "./telegram/client";
+import {
+	describeAttachments,
+	type FileApi,
+	isImage,
+	MediaDownloader,
+	toBase64,
+} from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
@@ -60,8 +72,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
 
-	const sendFollowUp = async (text: string): Promise<void> => {
-		await pi.sendUserMessage(text, { deliverAs: "followUp" });
+	const sendFollowUp = async (content: PromptContent): Promise<void> => {
+		await pi.sendUserMessage(content, { deliverAs: "followUp" });
 	};
 
 	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
@@ -171,15 +183,46 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 			});
 			const outbound = new OutboundSender(client.api as unknown as OutboundApi);
+			const media = new MediaDownloader({
+				api: client.api as unknown as FileApi,
+				fetchBytes: fetchBytesFromUrl,
+				fileBaseUrl: fileBaseUrl(token),
+				maxBytes: settings.files.maxBytes,
+			});
+			// Download a message's image attachments so the model actually sees the
+			// picture, not just the "[attachments: photo]" text header. Telegram
+			// photos have no mime type (always JPEG); over-cap/unavailable files are
+			// skipped per-file so a bad attachment never sinks the whole turn.
+			const loadImages = async (
+				message: Parameters<typeof describeAttachments>[0],
+			) => {
+				const refs = describeAttachments(
+					message,
+					settings.files.maxBytes,
+				).filter(isImage);
+				const images: { data: string; mimeType: string }[] = [];
+				for (const ref of refs) {
+					try {
+						const file = await media.download(ref);
+						images.push({
+							data: toBase64(file.bytes),
+							mimeType: ref.mimeType ?? "image/jpeg",
+						});
+					} catch {
+						// too large / unavailable — the text header still mentions it.
+					}
+				}
+				return images;
+			};
 			connect = new ConnectController({
 				allowedUserId,
 				maxBytes: settings.files.maxBytes,
 				isIdle: () => !busy,
 				sendFollowUp,
+				loadImages,
 				outbound,
 				abort,
 			});
-			void fileBaseUrl(token); // reserved for media downloads (Phase 5)
 			void client.start();
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();

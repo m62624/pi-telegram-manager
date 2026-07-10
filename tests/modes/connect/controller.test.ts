@@ -141,6 +141,29 @@ describe("ConnectController", () => {
 		});
 	});
 
+	it("delivers a downloaded image as content parts alongside the turn text", async () => {
+		const loadImages = vi.fn(async () => [
+			{ data: "BASE64", mimeType: "image/jpeg" },
+		]);
+		const { controller, sendFollowUp } = setup({ loadImages });
+		await controller.onEvent(messageEvent("what is this?"));
+		expect(loadImages).toHaveBeenCalledTimes(1);
+		const content = sendFollowUp.mock.calls[0][0];
+		expect(Array.isArray(content)).toBe(true);
+		expect(content).toEqual([
+			{ type: "image", data: "BASE64", mimeType: "image/jpeg" },
+			{ type: "text", text: expect.stringContaining("what is this?") },
+		]);
+	});
+
+	it("sends plain text (not an array) when there are no images", async () => {
+		const { controller, sendFollowUp } = setup({
+			loadImages: async () => [],
+		});
+		await controller.onEvent(messageEvent("just text"));
+		expect(typeof sendFollowUp.mock.calls[0][0]).toBe("string");
+	});
+
 	it("broadcasts a typing action to the bound chat", async () => {
 		const { controller, api } = setup();
 		await controller.sendTyping();
