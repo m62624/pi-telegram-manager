@@ -19,4 +19,22 @@ describe("managerBannerLines", () => {
 		const lines = managerBannerLines({ subMode: "observer", queued: 0 });
 		expect(lines[1]).toContain("idle");
 	});
+
+	it("shows chats held in the owner-reply window", () => {
+		const lines = managerBannerLines({
+			subMode: "observer",
+			queued: 0,
+			holding: 2,
+		});
+		expect(lines[1]).toContain("holding: 2");
+	});
+
+	it("omits holding when zero to keep the idle banner clean", () => {
+		const lines = managerBannerLines({
+			subMode: "observer",
+			queued: 0,
+			holding: 0,
+		});
+		expect(lines[1]).not.toContain("holding");
+	});
 });

@@ -195,6 +195,10 @@ export class ManagerController {
 		const text = messageText(input.message);
 		const messageId = input.message.message_id;
 		const now = this.deps.clock.now();
+		// Telegram `date` is Unix seconds; use the real send time as the record's
+		// timestamp so backlog delivered after downtime carries its true age (the
+		// gate/scheduler timers still run off the wall clock, i.e. from arrival).
+		const messageTime = input.message.date ? input.message.date * 1000 : now;
 		const connection = await this.deps.businessStore.get(input.connectionId);
 		const ownerId = connection?.userId;
 		const fromOwnerSide =
@@ -211,7 +215,7 @@ export class ManagerController {
 			await this.deps.chatStore.append(chatId, {
 				author: "owner",
 				text: withMessageContext(input.message, stripBotMarker(text)),
-				timestamp: now,
+				timestamp: messageTime,
 				senderId: ownerId,
 				messageId,
 			});
@@ -246,7 +250,7 @@ export class ManagerController {
 		await this.deps.chatStore.append(chatId, {
 			author: "interlocutor",
 			text: storedText,
-			timestamp: now,
+			timestamp: messageTime,
 			senderId: from ? String(from.id) : undefined,
 			senderName: contactName,
 			messageId,
@@ -396,12 +400,19 @@ export class ManagerController {
 	}
 
 	/** Status for the banner/footer. */
-	status(): { subMode: ManagerSubMode; activeChat?: string; queued: number } {
+	status(): {
+		subMode: ManagerSubMode;
+		activeChat?: string;
+		queued: number;
+		holding: number;
+	} {
 		const active = this.scheduler.activeChat();
 		return {
 			subMode: this.deps.subMode,
 			activeChat: active ?? undefined,
 			queued: this.scheduler.pending().length,
+			// Chats held in the owner-reply (5-min) window — waiting, not yet queued.
+			holding: this.gate.pendingCount(),
 		};
 	}
 

@@ -96,6 +96,11 @@ export class ReplyGate {
 		return this.pending.has(chatId);
 	}
 
+	/** How many chats are held in the owner-reply window (not yet handed on). */
+	pendingCount(): number {
+		return this.pending.size;
+	}
+
 	/** Ms left on the owner-reply window, or null when none is armed. */
 	windowRemaining(chatId: string): number | null {
 		return this.timers.remaining(chatId, TIMER.ownerReply);

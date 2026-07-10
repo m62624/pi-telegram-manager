@@ -14,16 +14,21 @@ export interface ManagerBannerStatus {
 	subMode: "observer" | "takeover";
 	/** The chat currently being served, if any. */
 	activeChat?: string;
-	/** How many chats are waiting their turn. */
+	/** How many chats are waiting their turn (past the owner-reply window). */
 	queued: number;
+	/** How many chats are held in the owner-reply (5-min) window. */
+	holding?: number;
 }
 
 /** The banner text lines for `ui.setWidget`. */
 export function managerBannerLines(status: ManagerBannerStatus): string[] {
 	const active = status.activeChat ? `active: ${status.activeChat}` : "idle";
+	// "holding" = chats still inside the owner-reply window (the owner's first
+	// chance). Shown only when non-zero so the common idle banner stays clean.
+	const holding = status.holding ? ` · holding: ${status.holding}` : "";
 	return [
 		"⚠️ Telegram MANAGER is running in this session.",
-		`mode: ${status.subMode} · ${active} · queued: ${status.queued}`,
+		`mode: ${status.subMode} · ${active}${holding} · queued: ${status.queued}`,
 		"Stop it (/telegram-manager-stop) and start a new session to use Pi normally.",
 	];
 }

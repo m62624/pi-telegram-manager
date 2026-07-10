@@ -25,6 +25,38 @@ describe("DecisionState + resolveDecision", () => {
 		expect(resolveDecision({ kind: "none" })).toBeNull();
 	});
 
+	it("downgrades a self-contradicting chatter reply to silence", () => {
+		// The model replied but its own self-check says no reply is needed on chatter.
+		expect(
+			resolveDecision({
+				kind: "reply",
+				text: "lol",
+				category: "chatter",
+				needsReply: false,
+			}),
+		).toBeNull();
+	});
+
+	it("never downgrades when the model deems a reply needed", () => {
+		expect(
+			resolveDecision({
+				kind: "reply",
+				text: "Yes, in stock.",
+				category: "question",
+				needsReply: true,
+			}),
+		).toBe("Yes, in stock.");
+		// chatter but the model still wants to reply → respected.
+		expect(
+			resolveDecision({
+				kind: "reply",
+				text: "haha true",
+				category: "chatter",
+				needsReply: true,
+			}),
+		).toBe("haha true");
+	});
+
 	it("keeps the first decisive call (a later one cannot override)", () => {
 		const state = new DecisionState();
 		state.record({ kind: "reply", text: "first" });

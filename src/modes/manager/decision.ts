@@ -85,11 +85,22 @@ export class DecisionState implements DecisionSink {
 	}
 }
 
-/** Resolve the turn's outcome: reply text to send, or null to stay silent. */
+/**
+ * Resolve the turn's outcome: reply text to send, or null to stay silent.
+ *
+ * Safe self-contradiction downgrade: if the model called `manager_reply` yet its
+ * OWN self-check says no reply is needed (`needs_reply: false`) and it classified
+ * the message as pure `chatter`, honour that judgement and stay silent. This cuts
+ * the false-positive case (blurting into banter) without ever swallowing a reply
+ * the model deemed necessary — a `question`/`addressed_to_bot` or any
+ * `needs_reply: true` reply is always delivered.
+ */
 export function resolveDecision(decision: ManagerDecision): string | null {
-	return decision.kind === "reply" && decision.text.trim()
-		? decision.text
-		: null;
+	if (decision.kind !== "reply" || !decision.text.trim()) return null;
+	if (decision.needsReply === false && decision.category === "chatter") {
+		return null;
+	}
+	return decision.text;
 }
 
 function ok(text: string) {

@@ -708,6 +708,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			onEvent: routeManagerEvent,
 			onError: (error) =>
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+			// Keep the backlog: messages that arrived while the manager was offline
+			// are redelivered on start, so the bot can catch up on what it missed
+			// (mode 1 keeps the default drop — stale terminal commands are unwanted).
+			dropPendingUpdates: false,
 		});
 		// Download an interlocutor message's inline images so the model can scan
 		// them (mode-2 vision); documents are never downloaded here (refused by the
