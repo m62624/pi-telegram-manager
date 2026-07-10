@@ -13,8 +13,10 @@
  */
 import type { Message } from "@grammyjs/types";
 import type { AbortRegistry } from "../../core/abort";
+import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn } from "../../core/turns";
+import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
 import {
 	type ToolCallActivity,
@@ -53,6 +55,10 @@ const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 export class ConnectController {
 	private readonly queue = new MessageQueue();
 	private turnCounter = 0;
+	/** Non-zero id of the current streaming draft; 0 when none is active. */
+	private draftId = 0;
+	/** Monotonic source of draft ids, so each message animates as its own draft. */
+	private draftCounter = 0;
 
 	constructor(private readonly deps: ConnectControllerDeps) {}
 
@@ -161,6 +167,43 @@ export class ConnectController {
 	/** Send arbitrary markdown to the bound chat (used by the outbound tools). */
 	async sendToChat(markdown: string): Promise<void> {
 		await this.deps.outbound.sendMarkdown(this.target, markdown);
+	}
+
+	/**
+	 * Mirror a prompt typed at the Pi terminal into the bound chat, clearly
+	 * marked, so the Telegram history reflects everything asked — from either
+	 * side. Best-effort; the real reply is still mirrored on `agent_end`.
+	 */
+	async mirrorTerminalInput(text: string): Promise<void> {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		await this.deps.outbound
+			.sendMarkdown(this.target, `_${TERMINAL_ORIGIN_MARKER}_\n\n${trimmed}`)
+			.catch(() => {});
+	}
+
+	/** Open a fresh streaming-draft id for the assistant message about to stream. */
+	beginDraft(): void {
+		// Non-zero and distinct per message so drafts never animate across replies.
+		this.draftCounter = (this.draftCounter % 1_000_000) + 1;
+		this.draftId = this.draftCounter;
+	}
+
+	/**
+	 * Push a partial assistant reply as an ephemeral animated draft. Best-effort:
+	 * a draft is a transient preview, so any failure (bot not eligible, too long)
+	 * is ignored and never blocks the turn or the final send.
+	 */
+	async streamDraft(text: string): Promise<void> {
+		if (this.draftId === 0 || !text.trim()) return;
+		await this.deps.outbound
+			.draft(this.target, this.draftId, buildRichMarkdownMessage(text))
+			.catch(() => {});
+	}
+
+	/** Close the current streaming draft (the real reply is sent separately). */
+	endDraft(): void {
+		this.draftId = 0;
 	}
 
 	/**

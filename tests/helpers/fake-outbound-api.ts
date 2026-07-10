@@ -11,6 +11,11 @@ export interface SentRich extends TargetArgs {
 	rich_message: InputRichMessage;
 }
 
+export interface SentDraft extends TargetArgs {
+	draft_id: number;
+	rich_message: InputRichMessage;
+}
+
 export interface SentAction extends TargetArgs {
 	action: ChatAction;
 }
@@ -28,7 +33,7 @@ export interface SentText extends TargetArgs {
 export class FakeOutboundApi implements OutboundApi {
 	readonly sent: SentRich[] = [];
 	readonly texts: SentText[] = [];
-	readonly drafts: SentRich[] = [];
+	readonly drafts: SentDraft[] = [];
 	readonly actions: SentAction[] = [];
 	failRich = false;
 	private nextId: number;
@@ -48,7 +53,7 @@ export class FakeOutboundApi implements OutboundApi {
 		return { message_id: this.nextId++ };
 	}
 
-	async sendRichMessageDraft(args: SentRich): Promise<unknown> {
+	async sendRichMessageDraft(args: SentDraft): Promise<unknown> {
 		this.drafts.push(args);
 		return true;
 	}

@@ -20,8 +20,12 @@ import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { ContextReset } from "./core/context-reset";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
+import {
+	classifyInputSource,
+	shouldMirrorToTelegram,
+} from "./core/prompt-origin";
 import { ConnectController } from "./modes/connect/controller";
-import type { PromptContent } from "./modes/connect/messages";
+import { extractText, type PromptContent } from "./modes/connect/messages";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import {
@@ -49,6 +53,7 @@ import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const TYPING_REFRESH_MS = 4_000;
+const DRAFT_THROTTLE_MS = 700;
 const STATUS_KEY = "telegram";
 
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
@@ -83,6 +88,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let busy = false;
 	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
 	let toolActivityEnabled = false;
+	// Stream the assistant reply as an animated draft while it generates.
+	let draftPreviewsEnabled = false;
+	let draftText = "";
+	let lastDraftAt = 0;
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
@@ -133,6 +142,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		toolActivityEnabled = false;
+		draftPreviewsEnabled = false;
 		contextReset.forget();
 		await lifecycle.deactivate("connect");
 		visibility.setActive(false);
@@ -147,6 +157,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_end", async (event) => {
 		busy = false;
 		stopTyping();
+		connect?.endDraft();
 		await connect?.onAgentEnd(event.messages);
 	});
 	pi.on("tool_execution_start", async (event) => {
@@ -154,6 +165,40 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await connect
 			.sendToolActivity({ toolName: event.toolName, args: event.args })
 			.catch(() => {});
+	});
+
+	// Live streaming preview: open a draft when the assistant message starts and
+	// animate it (throttled) as tokens arrive. The draft is ephemeral — it never
+	// edits or deletes a real message; the final reply is a fresh send in
+	// onAgentEnd, so the full history is preserved.
+	pi.on("message_start", (event) => {
+		if (!connect || !draftPreviewsEnabled) return;
+		if ((event.message as { role?: string })?.role !== "assistant") return;
+		connect.beginDraft();
+		draftText = "";
+		lastDraftAt = 0;
+	});
+	pi.on("message_update", async (event) => {
+		if (!connect || !draftPreviewsEnabled) return;
+		const text = extractText(
+			(event.message as { content?: unknown }).content as never,
+		);
+		if (!text || text === draftText) return;
+		draftText = text;
+		const now = Date.now();
+		if (now - lastDraftAt < DRAFT_THROTTLE_MS) return;
+		lastDraftAt = now;
+		await connect.streamDraft(text);
+	});
+
+	// Mirror prompts typed at the Pi terminal into Telegram for a unified history.
+	// We key off Pi's own provenance (InputEvent.source) — our Telegram injections
+	// arrive as "extension" and are not mirrored, so there is no echo loop.
+	pi.on("input", async (event) => {
+		if (connect && shouldMirrorToTelegram(classifyInputSource(event.source))) {
+			await connect.mirrorTerminalInput(event.text).catch(() => {});
+		}
+		return { action: "continue" };
 	});
 	pi.on("session_shutdown", async () => {
 		if (connect) {
@@ -274,6 +319,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				abort,
 			});
 			toolActivityEnabled = settings.assistant.toolActivity;
+			draftPreviewsEnabled = settings.assistant.draftPreviews;
 			void client.start();
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();

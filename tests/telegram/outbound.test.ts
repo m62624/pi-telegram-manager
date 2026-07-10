@@ -108,11 +108,14 @@ describe("OutboundSender", () => {
 		expect(ids).toHaveLength(1);
 	});
 
-	it("pushes a streaming draft", async () => {
+	it("pushes an animated streaming draft keyed by draft_id", async () => {
 		const api = new FakeOutboundApi();
-		await new OutboundSender(api).draft({ chatId: 2 }, { markdown: "partial" });
+		await new OutboundSender(api).draft({ chatId: 2 }, 7, {
+			markdown: "partial",
+		});
 		expect(api.drafts[0]).toEqual({
 			chat_id: 2,
+			draft_id: 7,
 			rich_message: { markdown: "partial" },
 		});
 		expect(api.sent).toHaveLength(0);

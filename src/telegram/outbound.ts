@@ -52,7 +52,7 @@ export interface OutboundApi {
 		args: TargetArgs & { text: string },
 	): Promise<{ message_id: number }>;
 	sendRichMessageDraft(
-		args: TargetArgs & { rich_message: InputRichMessage },
+		args: TargetArgs & { draft_id: number; rich_message: InputRichMessage },
 	): Promise<unknown>;
 	sendChatAction(args: TargetArgs & { action: ChatAction }): Promise<unknown>;
 }
@@ -174,13 +174,21 @@ export class OutboundSender {
 		await this.api.sendChatAction({ ...targetArgs(target), action });
 	}
 
-	/** Push an ephemeral streaming draft (finalize later with a real send). */
+	/**
+	 * Push an ephemeral streaming draft — a live, animated 30-second preview that
+	 * does NOT create or edit any real message. Updates with the same non-zero
+	 * `draftId` animate in place; the turn is finalized separately by a real
+	 * `sendRichMessage` (in `onAgentEnd`), which persists a fresh message and
+	 * leaves the whole prior history intact.
+	 */
 	async draft(
 		target: OutboundTarget,
+		draftId: number,
 		richMessage: InputRichMessage,
 	): Promise<void> {
 		await this.api.sendRichMessageDraft({
 			...targetArgs(target),
+			draft_id: draftId,
 			rich_message: richMessage,
 		});
 	}

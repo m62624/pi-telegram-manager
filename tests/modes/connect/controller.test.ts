@@ -199,6 +199,50 @@ describe("ConnectController", () => {
 		expect(html).toContain("<code>bash</code>");
 	});
 
+	it("mirrors a terminal prompt to the chat with an origin marker", async () => {
+		const { controller, api } = setup();
+		await controller.mirrorTerminalInput("what is 2+2?");
+		const markdown = api.sent.at(-1)?.rich_message.markdown ?? "";
+		expect(markdown).toContain("from Pi terminal");
+		expect(markdown).toContain("what is 2+2?");
+	});
+
+	it("skips mirroring an empty terminal prompt", async () => {
+		const { controller, api } = setup();
+		await controller.mirrorTerminalInput("   ");
+		expect(api.sent).toHaveLength(0);
+	});
+
+	it("streams an animated draft with a stable non-zero id, cleared on end", async () => {
+		const { controller, api } = setup();
+		await controller.streamDraft("partial"); // no active draft yet → ignored
+		expect(api.drafts).toHaveLength(0);
+
+		controller.beginDraft();
+		await controller.streamDraft("hel");
+		await controller.streamDraft("hello");
+		expect(api.drafts).toHaveLength(2);
+		expect(api.drafts[0].draft_id).toBeGreaterThan(0);
+		// Same message → same draft_id so Telegram animates in place.
+		expect(api.drafts[0].draft_id).toBe(api.drafts[1].draft_id);
+		expect(api.drafts[1].rich_message.markdown).toBe("hello");
+
+		controller.endDraft();
+		await controller.streamDraft("after end"); // no active draft → ignored
+		expect(api.drafts).toHaveLength(2);
+	});
+
+	it("uses a fresh draft id for the next message", async () => {
+		const { controller, api } = setup();
+		controller.beginDraft();
+		await controller.streamDraft("a");
+		const first = api.drafts[0].draft_id;
+		controller.endDraft();
+		controller.beginDraft();
+		await controller.streamDraft("b");
+		expect(api.drafts[1].draft_id).not.toBe(first);
+	});
+
 	it("arms and clears the abort handler around a turn", async () => {
 		const { controller, abort } = setup();
 		const stop = vi.fn();
