@@ -71,6 +71,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
+	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
+	let toolActivityEnabled = false;
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
@@ -120,6 +122,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await client?.stop().catch(() => {});
 		client = null;
 		connect = null;
+		toolActivityEnabled = false;
 		await lifecycle.deactivate("connect");
 		visibility.setActive(false);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -134,6 +137,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		busy = false;
 		stopTyping();
 		await connect?.onAgentEnd(event.messages);
+	});
+	pi.on("tool_execution_start", async (event) => {
+		if (!connect || !toolActivityEnabled) return;
+		await connect
+			.sendToolActivity({ toolName: event.toolName, args: event.args })
+			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
 		if (connect) {
@@ -239,6 +248,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				outbound,
 				abort,
 			});
+			toolActivityEnabled = settings.assistant.toolActivity;
 			void client.start();
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();

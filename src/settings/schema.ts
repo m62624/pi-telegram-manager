@@ -12,6 +12,8 @@ export interface TelegramSettings {
 	assistant: {
 		rendering: "rich" | "html";
 		draftPreviews: boolean;
+		/** Mirror each agent tool call to Telegram as a collapsible block (mode 1). */
+		toolActivity: boolean;
 	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
@@ -48,7 +50,7 @@ export interface TelegramSettings {
 }
 
 export const DEFAULT_SETTINGS: TelegramSettings = {
-	assistant: { rendering: "rich", draftPreviews: true },
+	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -196,6 +198,11 @@ export function normalizeSettings(
 				assistant.draftPreviews,
 				"assistant.draftPreviews",
 				d.assistant.draftPreviews,
+			),
+			toolActivity: asBoolean(
+				assistant.toolActivity,
+				"assistant.toolActivity",
+				d.assistant.toolActivity,
 			),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),

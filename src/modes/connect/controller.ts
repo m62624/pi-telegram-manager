@@ -16,6 +16,10 @@ import type { AbortRegistry } from "../../core/abort";
 import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn } from "../../core/turns";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
+import {
+	type ToolCallActivity,
+	toolActivityMessage,
+} from "../../telegram/tool-activity";
 import type { TelegramEvent } from "../../telegram/updates";
 import {
 	type InboundImage,
@@ -130,6 +134,17 @@ export class ConnectController {
 	/** Send arbitrary markdown to the bound chat (used by the outbound tools). */
 	async sendToChat(markdown: string): Promise<void> {
 		await this.deps.outbound.sendMarkdown(this.target, markdown);
+	}
+
+	/**
+	 * Surface an agent tool invocation to the bound chat as a collapsible block
+	 * (tool name + folded parameters). Best-effort: a formatting/send failure
+	 * must never interrupt the agent's turn.
+	 */
+	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
+		await this.deps.outbound
+			.sendMessages(this.target, [toolActivityMessage(activity)])
+			.catch(() => {});
 	}
 
 	/** Pending (not yet dispatched) turn count — for footer/status. */

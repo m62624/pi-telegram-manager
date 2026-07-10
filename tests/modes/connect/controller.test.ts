@@ -170,6 +170,17 @@ describe("ConnectController", () => {
 		expect(api.actions).toEqual([{ chat_id: ALLOWED, action: "typing" }]);
 	});
 
+	it("sends a collapsible tool-activity block to the bound chat", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity({
+			toolName: "bash",
+			args: { command: "ls" },
+		});
+		const html = api.sent.at(-1)?.rich_message.html ?? "";
+		expect(html).toContain("<details><summary>");
+		expect(html).toContain("<code>bash</code>");
+	});
+
 	it("arms and clears the abort handler around a turn", async () => {
 		const { controller, abort } = setup();
 		const stop = vi.fn();
