@@ -20,11 +20,13 @@ import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { ContextReset } from "./core/context-reset";
+import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { loadManagerInstructions } from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
 import { extractText, type PromptContent } from "./modes/connect/messages";
 import { ManagerController } from "./modes/manager/controller";
@@ -46,6 +48,7 @@ import { createChatStore } from "./storage/chat-store";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
 import { createSentRegistry } from "./storage/sent-registry";
+import type { ManagerSubMode } from "./storage/singleton-store";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -514,102 +517,146 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand(COMMANDS.manager, {
-		description: "Start the Telegram business manager (mode 2).",
-		handler: async (_args, ctx) => {
-			if (manager || connect) {
-				ctx.ui.notify("A Telegram mode is already active.", "warning");
-				return;
-			}
-			const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
-			for (const warning of warnings) ctx.ui.notify(warning, "warning");
-			const token = resolveSecret(settings.botToken);
-			if (!token) {
-				ctx.ui.notify(
-					'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN").',
-					"error",
-				);
-				return;
-			}
+	// Shared launcher for both manager sub-modes; the sub-mode comes from the
+	// command the user ran (observer or takeover), not from settings.
+	const startManager = async (
+		ctx: ExtensionCommandContext,
+		subMode: ManagerSubMode,
+	): Promise<void> => {
+		if (manager || connect) {
+			ctx.ui.notify("A Telegram mode is already active.", "warning");
+			return;
+		}
+		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
+		for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		const token = resolveSecret(settings.botToken);
+		if (!token) {
+			ctx.ui.notify(
+				'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN").',
+				"error",
+			);
+			return;
+		}
 
-			const activation = await lifecycle.activate({
-				mode: "manager",
-				workdir: paths.managerWorkspaceDir,
-				subMode: settings.manager.subMode,
-			});
-			if (!activation.ok) {
-				ctx.ui.notify(`Cannot start manager: ${activation.reason}`, "error");
-				return;
-			}
+		const activation = await lifecycle.activate({
+			mode: "manager",
+			workdir: paths.managerWorkspaceDir,
+			subMode,
+		});
+		if (!activation.ok) {
+			ctx.ui.notify(`Cannot start manager: ${activation.reason}`, "error");
+			return;
+		}
 
-			// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
-			// terminal — it staleness-poisons the captured `ctx` and the module-level
-			// `pi`, but the manager needs `pi.sendUserMessage` on every turn from the
-			// polling loop. So the manager runs in the current session; per-chat
-			// isolation is guaranteed by pi.on("context") rebuilding messages, and the
-			// banner tells the user this session is now the manager.
+		// Assemble the manager's system instructions: the bundled defaults for this
+		// sub-mode plus any user override files (global + manager + sub-mode).
+		const overrideFiles = [
+			...settings.instructionFiles,
+			...settings.manager.instructionFiles,
+			...(subMode === "takeover"
+				? [settings.manager.takeover.instructionFile]
+				: [
+						settings.manager.observer.interlocutorInstructionFile,
+						settings.manager.observer.ownerInstructionFile,
+					]),
+		].filter((file): file is string => Boolean(file));
+		const override = await readInstructionFiles(fs, overrideFiles);
+		for (const file of override.missing) {
+			ctx.ui.notify(`Instruction file not found: ${file}`, "warning");
+		}
+		const firstMessageOverride = settings.manager.firstMessageTemplate
+			? (
+					await readInstructionFiles(fs, [
+						settings.manager.firstMessageTemplate,
+					])
+				).text || undefined
+			: undefined;
+		const instructions = await loadManagerInstructions({
+			fs,
+			subMode,
+			overrideText: override.text,
+			firstMessageOverride,
+		});
 
-			managerClient = new TelegramClient({
-				token,
-				onEvent: routeManagerEvent,
-				onError: (error) =>
-					ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
-			});
-			const api = managerClient.api as unknown as {
-				sendMessage(args: {
-					business_connection_id: string;
-					chat_id: number;
-					text: string;
-				}): Promise<{ message_id: number }>;
-				sendChatAction(args: {
-					business_connection_id: string;
-					chat_id: number;
-					action: "typing";
-				}): Promise<unknown>;
-			};
-			manager = new ManagerController({
-				subMode: settings.manager.subMode,
-				labeler: settings.manager.labeler,
-				rememberMessages: settings.manager.rememberMessages,
-				continueWindowMs: settings.manager.continueWindowMs,
-				ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
-				clock: { now: () => Date.now() },
-				chatStore: createChatStore(fs, paths),
-				contactStore,
-				sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
-				businessStore: createBusinessStore(fs, paths.businessPath),
-				isIdle: () => !busy,
-				triggerAgent: async (prompt) => {
-					pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-				},
-				sendReply: async ({ connectionId, chatId, text }) => {
-					const sent = await api.sendMessage({
-						business_connection_id: connectionId,
-						chat_id: Number(chatId),
-						text,
-					});
-					return sent.message_id;
-				},
-				typing: async ({ connectionId, chatId }) => {
-					await api.sendChatAction({
-						business_connection_id: connectionId,
-						chat_id: Number(chatId),
-						action: "typing",
-					});
-				},
-			});
-			void managerClient.start();
-			visibility.setActive("manager", true);
-			managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
-			updateManagerBanner();
-			managerTick = setInterval(() => {
-				void manager?.onTick().then(updateManagerBanner);
-			}, MANAGER_TICK_MS);
-			managerHeartbeat = setInterval(() => {
-				void lifecycle.heartbeat();
-			}, HEARTBEAT_INTERVAL_MS);
-			ctx.ui.notify(`Telegram manager: active (${settings.manager.subMode}).`);
-		},
+		// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
+		// terminal — it staleness-poisons the captured `ctx` and the module-level
+		// `pi`, but the manager needs `pi.sendUserMessage` on every turn from the
+		// polling loop. So the manager runs in the current session; per-chat
+		// isolation is guaranteed by pi.on("context") rebuilding messages, and the
+		// banner tells the user this session is now the manager.
+
+		managerClient = new TelegramClient({
+			token,
+			onEvent: routeManagerEvent,
+			onError: (error) =>
+				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+		});
+		const api = managerClient.api as unknown as {
+			sendMessage(args: {
+				business_connection_id: string;
+				chat_id: number;
+				text: string;
+			}): Promise<{ message_id: number }>;
+			sendChatAction(args: {
+				business_connection_id: string;
+				chat_id: number;
+				action: "typing";
+			}): Promise<unknown>;
+		};
+		manager = new ManagerController({
+			subMode,
+			instructions,
+			labeler: settings.manager.labeler,
+			rememberMessages: settings.manager.rememberMessages,
+			continueWindowMs: settings.manager.continueWindowMs,
+			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
+			clock: { now: () => Date.now() },
+			chatStore: createChatStore(fs, paths),
+			contactStore,
+			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
+			businessStore: createBusinessStore(fs, paths.businessPath),
+			isIdle: () => !busy,
+			triggerAgent: async (prompt) => {
+				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+			},
+			sendReply: async ({ connectionId, chatId, text }) => {
+				const sent = await api.sendMessage({
+					business_connection_id: connectionId,
+					chat_id: Number(chatId),
+					text,
+				});
+				return sent.message_id;
+			},
+			typing: async ({ connectionId, chatId }) => {
+				await api.sendChatAction({
+					business_connection_id: connectionId,
+					chat_id: Number(chatId),
+					action: "typing",
+				});
+			},
+		});
+		void managerClient.start();
+		visibility.setActive("manager", true);
+		managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
+		updateManagerBanner();
+		managerTick = setInterval(() => {
+			void manager?.onTick().then(updateManagerBanner);
+		}, MANAGER_TICK_MS);
+		managerHeartbeat = setInterval(() => {
+			void lifecycle.heartbeat();
+		}, HEARTBEAT_INTERVAL_MS);
+		ctx.ui.notify(`Telegram manager: active (${subMode}).`);
+	};
+
+	pi.registerCommand(COMMANDS.managerObserver, {
+		description:
+			"Start the Telegram business manager in observer (co-pilot) sub-mode.",
+		handler: (_args, ctx) => startManager(ctx, "observer"),
+	});
+	pi.registerCommand(COMMANDS.managerTakeover, {
+		description:
+			"Start the Telegram business manager in takeover (auto-reply) sub-mode.",
+		handler: (_args, ctx) => startManager(ctx, "takeover"),
 	});
 	pi.registerCommand(COMMANDS.managerStop, {
 		description: "Stop the Telegram business manager (mode 2).",

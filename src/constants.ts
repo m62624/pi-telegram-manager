@@ -15,9 +15,11 @@ export const COMMANDS = {
 	disconnect: "telegram-disconnect",
 	/** Mode 1/2 — print the active bridge status. */
 	status: "telegram-status",
-	/** Mode 2 — open a fresh manager session in a dedicated directory. */
-	manager: "telegram-manager",
-	/** Mode 2 — explicitly stop the manager. */
+	/** Mode 2 — start the manager in the observer (co-pilot) sub-mode. */
+	managerObserver: "telegram-manager-observer",
+	/** Mode 2 — start the manager in the takeover sub-mode. */
+	managerTakeover: "telegram-manager-takeover",
+	/** Mode 2 — explicitly stop the manager (either sub-mode). */
 	managerStop: "telegram-manager-stop",
 } as const;
 

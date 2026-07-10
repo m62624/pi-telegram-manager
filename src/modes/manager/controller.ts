@@ -19,6 +19,10 @@
 import type { BusinessConnection, Message, User } from "@grammyjs/types";
 import { applyLabeler } from "../../core/render";
 import type { Clock } from "../../core/timers";
+import {
+	type ManagerInstructions,
+	SYSTEM_INSTRUCTIONS_HEADER,
+} from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
 import type { ChatStore } from "../../storage/chat-store";
 import type { ContactStore } from "../../storage/contact-store";
@@ -43,8 +47,19 @@ export interface BusinessMessageInput {
 	message: Message;
 }
 
+/**
+ * Final directive appended to the rebuilt context so a small local model
+ * reliably ends the turn with a tool call rather than free-form text.
+ */
+export const MANAGER_ACTION_TRIGGER =
+	"[Now reply to the latest message above. You are the Owner. End this turn by " +
+	"calling exactly one tool — manager_reply to send a message, or " +
+	"manager_silent to stay quiet. Do not write plain text.]";
+
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
+	/** Assembled system-instruction blocks injected at the top of the context. */
+	instructions: ManagerInstructions;
 	labeler: string;
 	rememberMessages: number;
 	continueWindowMs: number;
@@ -222,7 +237,13 @@ export class ManagerController {
 		}
 	}
 
-	/** Rebuild the isolated message array for the active chat, or null when idle. */
+	/**
+	 * Rebuild the full message array the model sees for the active chat, or null
+	 * when idle. Structure: the injected system-instruction block (so the model
+	 * always knows it is the manager and must answer via a tool — present after a
+	 * compaction too, since this runs before every LLM call), then the isolated
+	 * chat history, then a final action directive.
+	 */
 	async buildContextForActive(): Promise<IsolatedMessage[] | null> {
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
@@ -231,10 +252,24 @@ export class ManagerController {
 			this.deps.rememberMessages,
 		);
 		const meta = this.chats.get(active);
-		return buildIsolatedMessages({
+		const isolated = buildIsolatedMessages({
 			records,
 			boundary: boundaryDirective(meta?.contactName ?? active),
 		});
+		// First contact = no bot reply yet and at most this one interlocutor line.
+		const isFirstMessage =
+			!records.some((record) => record.author === "bot") &&
+			records.filter((record) => record.author === "interlocutor").length <= 1;
+		const system =
+			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
+			(isFirstMessage && this.deps.instructions.firstMessage
+				? `\n\n${this.deps.instructions.firstMessage}`
+				: "");
+		return [
+			{ role: "user", content: system },
+			...isolated,
+			{ role: "user", content: MANAGER_ACTION_TRIGGER },
+		];
 	}
 
 	/** Status for the banner/footer. */

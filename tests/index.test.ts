@@ -30,7 +30,8 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"telegram-connect",
 			"telegram-disconnect",
 			"telegram-status",
-			"telegram-manager",
+			"telegram-manager-observer",
+			"telegram-manager-takeover",
 			"telegram-manager-stop",
 		]) {
 			expect(commands.has(command)).toBe(true);

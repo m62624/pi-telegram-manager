@@ -56,6 +56,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 	let idle = true;
 	const deps: ManagerControllerDeps = {
 		subMode,
+		instructions: { base: "BASE MANAGER RULES", firstMessage: "FIRST CONTACT" },
 		labeler: "LLM agent:",
 		rememberMessages: 20,
 		continueWindowMs: 90_000,
@@ -197,11 +198,19 @@ describe("ManagerController", () => {
 			message: interlocutorMsg("hi there"),
 		});
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("New chat with Alice");
-		expect(ctx?.at(-1)).toEqual({
-			role: "user",
-			content: "Interlocutor (Alice): hi there",
-		});
+		// First message = the system-instruction block (rules + first-contact).
+		expect(ctx?.[0].content).toContain("[SYSTEM_INSTRUCTIONS]");
+		expect(ctx?.[0].content).toContain("BASE MANAGER RULES");
+		expect(ctx?.[0].content).toContain("FIRST CONTACT");
+		// The chat boundary and the interlocutor's line are present in the middle.
+		expect(ctx?.some((m) => m.content.includes("New chat with Alice"))).toBe(
+			true,
+		);
+		expect(
+			ctx?.some((m) => m.content === "Interlocutor (Alice): hi there"),
+		).toBe(true);
+		// The turn ends with the action directive that forces a tool call.
+		expect(ctx?.at(-1)?.content).toContain("manager_reply");
 	});
 
 	it("queues a second chat while the first is active", async () => {
