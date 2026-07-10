@@ -47,6 +47,10 @@ export class ConnectController {
 			return false;
 		if (event.fromId !== this.deps.allowedUserId) return false;
 
+		// Acknowledge receipt immediately with a "typing…" hint, before the agent
+		// even starts (there is queue/dispatch latency in between).
+		void this.sendTyping();
+
 		const turn = buildPromptTurn(
 			messageToTurnInput(event.message, this.deps.maxBytes),
 		);
