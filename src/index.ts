@@ -35,7 +35,6 @@ import {
 } from "./modes/manager/decision";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
-import { createPiSession } from "./pi/session";
 import {
 	createToolVisibility,
 	registerToolVisibility,
@@ -135,11 +134,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	} | null = null;
 
 	const updateManagerBanner = (): void => {
-		if (manager && managerUi) {
+		if (!manager || !managerUi) return;
+		try {
 			managerUi.setWidget(
 				MANAGER_BANNER_KEY,
 				managerBannerLines(manager.status()),
 			);
+		} catch {
+			// A captured UI handle may go stale across a session reload; the banner
+			// is cosmetic, so a failed refresh must never break the manager.
 		}
 	};
 
@@ -539,21 +542,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return;
 			}
 
-			// Isolate the manager in its own Pi session/folder (best-effort — the
-			// runtime still works in the current session if this is unavailable).
-			try {
-				const created = await createPiSession({
-					fs,
-					agentDir: paths.agentDir,
-					cwd: paths.managerWorkspaceDir,
-				});
-				await ctx.switchSession(created.sessionFile);
-			} catch (error) {
-				ctx.ui.notify(
-					`Manager session isolation skipped: ${String(error)}`,
-					"warning",
-				);
-			}
+			// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
+			// terminal — it staleness-poisons the captured `ctx` and the module-level
+			// `pi`, but the manager needs `pi.sendUserMessage` on every turn from the
+			// polling loop. So the manager runs in the current session; per-chat
+			// isolation is guaranteed by pi.on("context") rebuilding messages, and the
+			// banner tells the user this session is now the manager.
 
 			managerClient = new TelegramClient({
 				token,
