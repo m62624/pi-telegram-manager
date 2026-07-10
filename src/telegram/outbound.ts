@@ -60,6 +60,11 @@ export interface OutboundSenderOptions {
 	renderer?: RichRenderer;
 }
 
+/** Telegram rejects an empty rich message (400); skip anything with no text. */
+function isEmptyRich(message: InputRichMessage): boolean {
+	return !message.markdown?.trim() && !message.html?.trim();
+}
+
 function targetArgs(target: OutboundTarget): TargetArgs {
 	const args: TargetArgs = { chat_id: target.chatId };
 	if (target.businessConnectionId !== undefined) {
@@ -97,6 +102,7 @@ export class OutboundSender {
 		const args = targetArgs(target);
 		const ids: number[] = [];
 		for (const richMessage of messages) {
+			if (isEmptyRich(richMessage)) continue;
 			const sent = await this.api.sendRichMessage({
 				...args,
 				rich_message: richMessage,

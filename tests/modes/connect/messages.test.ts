@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantReplyText,
 	extractText,
+	lastAssistantReply,
 	messageText,
 	messageToTurnInput,
 	senderDisplayName,
@@ -105,6 +106,16 @@ describe("extractText / assistantReplyText", () => {
 		).toBe("ab");
 	});
 
+	it("excludes private reasoning parts but keeps text of any other type", () => {
+		expect(
+			extractText([
+				{ type: "thinking", text: "secret reasoning" },
+				{ type: "reasoning", text: "more reasoning" },
+				{ type: "output_text", text: "visible reply" },
+			]),
+		).toBe("visible reply");
+	});
+
 	it("returns assistant reply text and ignores non-assistant messages", () => {
 		expect(assistantReplyText({ role: "assistant", content: "  hi  " })).toBe(
 			"hi",
@@ -113,5 +124,22 @@ describe("extractText / assistantReplyText", () => {
 		expect(
 			assistantReplyText({ role: "assistant", content: "   " }),
 		).toBeNull();
+	});
+});
+
+describe("lastAssistantReply", () => {
+	it("skips a trailing empty assistant message and returns the real reply", () => {
+		expect(
+			lastAssistantReply([
+				{ role: "user", content: "Привет!" },
+				{ role: "assistant", content: "Привет! Чем могу помочь?" },
+				{ role: "assistant", content: "" },
+			]),
+		).toBe("Привет! Чем могу помочь?");
+	});
+
+	it("returns null when no assistant message has text", () => {
+		expect(lastAssistantReply([{ role: "user", content: "hi" }])).toBeNull();
+		expect(lastAssistantReply([])).toBeNull();
 	});
 });

@@ -59,12 +59,23 @@ interface AgentMessageLike {
 	content?: string | Array<{ type?: string; text?: string }>;
 }
 
-/** Concatenate the text parts of a message's content. */
+/** Content-part types that carry the model's private reasoning — never sent to Telegram. */
+const THINKING_TYPES = new Set(["thinking", "reasoning", "redacted_thinking"]);
+
+/**
+ * Concatenate the visible text of a message's content. A plain string is used
+ * verbatim; for a parts array we keep every part that has string `text` except
+ * private reasoning parts, so the actual reply is captured even if the model
+ * labels its text part with a non-"text" type.
+ */
 export function extractText(content: AgentMessageLike["content"]): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.filter((part) => part.type === "text" && typeof part.text === "string")
+		.filter(
+			(part) =>
+				typeof part.text === "string" && !THINKING_TYPES.has(part.type ?? ""),
+		)
 		.map((part) => part.text)
 		.join("");
 }
@@ -74,4 +85,20 @@ export function assistantReplyText(message: AgentMessageLike): string | null {
 	if (message.role !== "assistant") return null;
 	const text = extractText(message.content).trim();
 	return text.length > 0 ? text : null;
+}
+
+/**
+ * The text to mirror back to Telegram from a finished agent run: the last
+ * assistant message that actually has visible text. Scanning backward skips a
+ * trailing empty/tool-only assistant message (which otherwise yields an empty
+ * send that Telegram rejects with "rich message must be non-empty").
+ */
+export function lastAssistantReply(
+	messages: readonly unknown[],
+): string | null {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const text = assistantReplyText(messages[i] as AgentMessageLike);
+		if (text) return text;
+	}
+	return null;
 }

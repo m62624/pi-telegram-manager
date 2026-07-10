@@ -126,6 +126,21 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 
+	it("skips a trailing empty assistant message when mirroring the reply", async () => {
+		const { controller, api } = setup();
+		await controller.onAgentEnd([
+			{ role: "assistant", content: "the answer" },
+			{ role: "assistant", content: "" },
+		]);
+		expect(api.sent.at(-1)?.rich_message).toEqual({ markdown: "the answer" });
+	});
+
+	it("broadcasts a typing action to the bound chat", async () => {
+		const { controller, api } = setup();
+		await controller.sendTyping();
+		expect(api.actions).toEqual([{ chat_id: ALLOWED, action: "typing" }]);
+	});
+
 	it("arms and clears the abort handler around a turn", async () => {
 		const { controller, abort } = setup();
 		const stop = vi.fn();

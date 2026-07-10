@@ -35,6 +35,7 @@ import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const TYPING_REFRESH_MS = 4_000;
 const STATUS_KEY = "telegram";
 
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
@@ -56,10 +57,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let connect: ConnectController | null = null;
 	let client: TelegramClient | null = null;
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
+	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
 
 	const sendFollowUp = async (text: string): Promise<void> => {
 		await pi.sendUserMessage(text, { deliverAs: "followUp" });
+	};
+
+	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
+	// while the agent is working on a turn.
+	const stopTyping = (): void => {
+		if (typingTimer) {
+			clearInterval(typingTimer);
+			typingTimer = null;
+		}
+	};
+	const startTyping = (): void => {
+		if (!connect) return;
+		void connect.sendTyping();
+		stopTyping();
+		typingTimer = setInterval(() => {
+			void connect?.sendTyping();
+		}, TYPING_REFRESH_MS);
 	};
 
 	// Registered once at load; the visibility gate hides them until a mode is
@@ -81,6 +100,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	}
 
 	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+		stopTyping();
 		if (heartbeat) {
 			clearInterval(heartbeat);
 			heartbeat = null;
@@ -96,9 +116,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
 		connect?.onAgentStart(() => ctx.abort());
+		startTyping();
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;
+		stopTyping();
 		await connect?.onAgentEnd(event.messages);
 	});
 	pi.on("session_shutdown", async () => {

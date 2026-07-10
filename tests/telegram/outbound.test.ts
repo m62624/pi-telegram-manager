@@ -76,6 +76,19 @@ describe("OutboundSender", () => {
 		]);
 	});
 
+	it("skips empty rich messages instead of sending them", async () => {
+		const api = new FakeOutboundApi();
+		const ids = await new OutboundSender(api).sendMessages({ chatId: 1 }, [
+			{ markdown: "" },
+			{ markdown: "   " },
+			{ html: "" },
+			{ markdown: "real" },
+		]);
+		expect(api.sent).toHaveLength(1);
+		expect(api.sent[0].rich_message).toEqual({ markdown: "real" });
+		expect(ids).toHaveLength(1);
+	});
+
 	it("pushes a streaming draft", async () => {
 		const api = new FakeOutboundApi();
 		await new OutboundSender(api).draft({ chatId: 2 }, { markdown: "partial" });

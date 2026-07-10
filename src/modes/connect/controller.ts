@@ -16,7 +16,7 @@ import { MessageQueue } from "../../core/queue";
 import { buildPromptTurn } from "../../core/turns";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
 import type { TelegramEvent } from "../../telegram/updates";
-import { assistantReplyText, messageToTurnInput } from "./messages";
+import { lastAssistantReply, messageToTurnInput } from "./messages";
 
 export interface ConnectControllerDeps {
 	/** Only messages from this Telegram user are accepted (their private chat id). */
@@ -84,10 +84,14 @@ export class ConnectController {
 	/** Mirror the finished reply back to Telegram, then pump the next queued turn. */
 	async onAgentEnd(messages: readonly unknown[]): Promise<void> {
 		this.deps.abort.clear();
-		const last = messages.at(-1);
-		const reply = last ? assistantReplyText(last as { role?: string }) : null;
+		const reply = lastAssistantReply(messages);
 		if (reply) await this.deps.outbound.sendMarkdown(this.target, reply);
 		await this.dispatch();
+	}
+
+	/** Show the Telegram "typing…" indicator on the bound chat (repeat while busy). */
+	async sendTyping(): Promise<void> {
+		await this.deps.outbound.chatAction(this.target, "typing").catch(() => {});
 	}
 
 	/** Send arbitrary markdown to the bound chat (used by the outbound tools). */
