@@ -24,8 +24,10 @@ import type { TelegramEvent } from "../../telegram/updates";
 import {
 	type InboundImage,
 	lastAssistantReply,
+	messageText,
 	messageToTurnInput,
 	type PromptContent,
+	parseSlashCommand,
 } from "./messages";
 
 export interface ConnectControllerDeps {
@@ -39,9 +41,14 @@ export interface ConnectControllerDeps {
 	sendFollowUp: (content: PromptContent) => Promise<void>;
 	/** Download an inbound message's image attachments as base64 (best-effort). */
 	loadImages?: (message: Message) => Promise<InboundImage[]>;
+	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
+	onClear?: () => Promise<void>;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
+
+/** Telegram bot commands the bridge handles itself instead of forwarding to the agent. */
+const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 
 export class ConnectController {
 	private readonly queue = new MessageQueue();
@@ -58,6 +65,11 @@ export class ConnectController {
 		if (event.kind !== "message" && event.kind !== "edited_message")
 			return false;
 		if (event.fromId !== this.deps.allowedUserId) return false;
+
+		// Intercept the bridge's own control commands (e.g. /clear) so they never
+		// reach the agent as a prompt. Unknown commands (and /start, /help) fall
+		// through and are treated as ordinary messages.
+		if (await this.tryControlCommand(event.message)) return true;
 
 		// Acknowledge receipt immediately with a "typing…" hint, before the agent
 		// even starts (there is queue/dispatch latency in between).
@@ -84,6 +96,21 @@ export class ConnectController {
 		});
 		await this.dispatch();
 		return true;
+	}
+
+	/**
+	 * Run a bridge control command if the message is one we handle. Returns true
+	 * when the message was consumed as a command (and must not be forwarded to
+	 * the agent). `/clear`, `/new`, `/reset` wipe the agent's history.
+	 */
+	private async tryControlCommand(message: Message): Promise<boolean> {
+		const command = parseSlashCommand(messageText(message));
+		if (!command) return false;
+		if (CLEAR_COMMANDS.has(command.name) && this.deps.onClear) {
+			await this.deps.onClear();
+			return true;
+		}
+		return false;
 	}
 
 	/** Download image attachments for a message, swallowing per-file failures. */

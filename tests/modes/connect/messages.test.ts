@@ -6,6 +6,7 @@ import {
 	lastAssistantReply,
 	messageText,
 	messageToTurnInput,
+	parseSlashCommand,
 	senderDisplayName,
 } from "../../../src/modes/connect/messages";
 
@@ -48,6 +49,32 @@ describe("messageText", () => {
 		expect(messageText(message({ text: "hi" }))).toBe("hi");
 		expect(messageText(message({ caption: "cap" }))).toBe("cap");
 		expect(messageText(message({}))).toBe("");
+	});
+});
+
+describe("parseSlashCommand", () => {
+	it("parses a bare command", () => {
+		expect(parseSlashCommand("/clear")).toEqual({ name: "clear", arg: "" });
+	});
+
+	it("lowercases the name and strips a @botname suffix", () => {
+		expect(parseSlashCommand("/Clear@MyBot")).toEqual({
+			name: "clear",
+			arg: "",
+		});
+	});
+
+	it("captures a trailing argument", () => {
+		expect(parseSlashCommand("/new some topic")).toEqual({
+			name: "new",
+			arg: "some topic",
+		});
+	});
+
+	it("returns null for ordinary text and prose containing a slash", () => {
+		expect(parseSlashCommand("hello")).toBeNull();
+		expect(parseSlashCommand("path is a/b")).toBeNull();
+		expect(parseSlashCommand("")).toBeNull();
 	});
 });
 

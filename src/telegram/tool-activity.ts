@@ -38,7 +38,10 @@ export interface ToolActivityOptions {
 }
 
 const DEFAULT_MAX_ARG_CHARS = 3500;
-const DEFAULT_MAX_HINT_CHARS = 80;
+const DEFAULT_MAX_HINT_CHARS = 56;
+
+/** Tools whose primary string argument is shell source, shown as a `bash` block. */
+const SHELL_TOOLS = new Set(["bash", "shell", "sh", "run"]);
 
 /** JSON-stringify without throwing on cycles/bigints; fall back to `String`. */
 function safeJson(value: unknown): string {
@@ -95,6 +98,40 @@ export function defaultDescribeArgs(
 	);
 }
 
+/** The single string argument of a one-key object (e.g. `{ command }`), else undefined. */
+function singleStringArg(
+	args: unknown,
+): { key: string; value: string } | undefined {
+	if (!args || typeof args !== "object") return undefined;
+	const keys = Object.keys(args as object);
+	if (keys.length !== 1) return undefined;
+	const value = (args as Record<string, unknown>)[keys[0]];
+	return typeof value === "string" ? { key: keys[0], value } : undefined;
+}
+
+/**
+ * Render the folded parameter block. A shell tool's command shows as a `bash`
+ * code block; any other single string argument shows as-is (no `{"key": …}`
+ * wrapper or escaped `\n`); everything else falls back to pretty JSON. This is
+ * what keeps a `find … | sort | …` pipeline readable instead of a JSON blob.
+ */
+function renderToolBody(
+	activity: ToolCallActivity,
+	maxChars: number,
+): RichHtml {
+	const { args, toolName } = activity;
+	if (typeof args === "string") {
+		return preformatted(formatToolArgs(args, maxChars));
+	}
+	const single = singleStringArg(args);
+	if (single) {
+		const language = SHELL_TOOLS.has(toolName) ? "bash" : undefined;
+		return preformatted(formatToolArgs(single.value, maxChars), language);
+	}
+	const json = formatToolArgs(args, maxChars);
+	return json ? preformatted(json, "json") : RichHtml.text("(no parameters)");
+}
+
 /** Build the collapsible Rich HTML for a tool call: summary line + folded params. */
 export function toolActivityHtml(
 	activity: ToolCallActivity,
@@ -115,11 +152,11 @@ export function toolActivityHtml(
 		);
 	}
 	const summary = RichHtml.join(summaryParts);
-	const body = formatToolArgs(activity.args, options.maxArgChars);
-	const content: RichHtml[] = body
-		? [preformatted(body, "json")]
-		: [RichHtml.text("(no parameters)")];
-	return details(summary, content, options.open ?? false);
+	const body = renderToolBody(
+		activity,
+		options.maxArgChars ?? DEFAULT_MAX_ARG_CHARS,
+	);
+	return details(summary, [body], options.open ?? false);
 }
 
 /** The tool call as a ready-to-send {@link InputRichMessage}. */

@@ -58,6 +58,20 @@ export function messageText(message: Message): string {
 	return message.text ?? message.caption ?? "";
 }
 
+/**
+ * Parse a leading Telegram bot command (`/name`, `/name@bot`, `/name arg`) into
+ * its lowercased name and trailing argument. Returns null when the text is not
+ * a command, so ordinary messages (and prose that merely contains a slash) pass
+ * through untouched.
+ */
+export function parseSlashCommand(
+	text: string,
+): { name: string; arg: string } | null {
+	const match = /^\/([a-z0-9_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text.trim());
+	if (!match) return null;
+	return { name: match[1].toLowerCase(), arg: (match[2] ?? "").trim() };
+}
+
 /** Map a Telegram message to the prompt-turn input (sender, reply, attachments). */
 export function messageToTurnInput(
 	message: Message,

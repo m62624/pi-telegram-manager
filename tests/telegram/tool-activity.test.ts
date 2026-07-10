@@ -66,7 +66,28 @@ describe("toolActivityHtml", () => {
 		expect(html).toContain("<code>bash</code>");
 		expect(html).toContain("🔧");
 		expect(html).toContain("echo hi"); // hint in summary
+		// A shell command renders as a bash block, not a JSON wrapper.
+		expect(html).toContain('<pre><code class="language-bash">');
+		expect(html).not.toContain("language-json");
+		expect(html).not.toContain('"command"');
+	});
+
+	it("renders a single non-shell string arg plainly, without a JSON wrapper", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "/a/b.ts" },
+		}).html;
+		expect(html).toContain("<pre>/a/b.ts</pre>");
+		expect(html).not.toContain('"file_path"');
+	});
+
+	it("falls back to pretty JSON for multi-argument tools", () => {
+		const html = toolActivityHtml({
+			toolName: "grep",
+			args: { pattern: "TODO", path: "src" },
+		}).html;
 		expect(html).toContain('<pre><code class="language-json">');
+		expect(html).toContain('"pattern"');
 	});
 
 	it("can render expanded", () => {

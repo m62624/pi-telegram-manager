@@ -18,6 +18,7 @@
 import { COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { ContextReset } from "./core/context-reset";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import { ConnectController } from "./modes/connect/controller";
 import type { PromptContent } from "./modes/connect/messages";
@@ -62,8 +63,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS,
 	});
 	const abort = new AbortRegistry();
+	const contextReset = new ContextReset();
 	const visibility = createToolVisibility(pi, TELEGRAM_TOOL_NAMES);
 	registerToolVisibility(pi, visibility);
+
+	// Apply the /clear boundary on every LLM call: once a clear is requested from
+	// Telegram, the model stops seeing messages older than it. No boundary set →
+	// leave the context untouched.
+	pi.on("context", (event) => {
+		const messages = contextReset.apply(event.messages);
+		return messages ? { messages } : {};
+	});
 
 	// Live connect-mode runtime (null when inactive).
 	let connect: ConnectController | null = null;
@@ -123,6 +133,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		toolActivityEnabled = false;
+		contextReset.forget();
 		await lifecycle.deactivate("connect");
 		visibility.setActive(false);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -245,6 +256,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				isIdle: () => !busy,
 				sendFollowUp,
 				loadImages,
+				onClear: async () => {
+					// Clearing mid-turn could orphan a tool_use/tool_result pair, so
+					// only reset while the agent is idle.
+					if (busy) {
+						await connect?.sendToChat(
+							"⏳ Busy right now — send /clear again once I finish.",
+						);
+						return;
+					}
+					contextReset.clear(Date.now());
+					await connect?.sendToChat(
+						"🧹 History cleared — starting fresh. (Shared session: the terminal sees the cleared context too.)",
+					);
+				},
 				outbound,
 				abort,
 			});
@@ -275,6 +300,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Telegram connect is not active.", "warning");
 				return;
 			}
+			// Tell the chat before we tear down the poller/sender.
+			await connect
+				.sendToChat("🔌 Disconnected from the Pi terminal session.")
+				.catch(() => {});
 			await stopConnect(ctx);
 			ctx.ui.notify("Telegram connect: stopped.");
 		},

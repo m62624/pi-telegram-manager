@@ -170,6 +170,24 @@ describe("ConnectController", () => {
 		expect(api.actions).toEqual([{ chat_id: ALLOWED, action: "typing" }]);
 	});
 
+	it("intercepts /clear as a control command instead of a prompt", async () => {
+		const onClear = vi.fn(async () => {});
+		const { controller, sendFollowUp } = setup({ onClear });
+		const handled = await controller.onEvent(messageEvent("/clear"));
+		expect(handled).toBe(true);
+		expect(onClear).toHaveBeenCalledTimes(1);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(controller.pendingCount()).toBe(0);
+	});
+
+	it("forwards an unknown command (e.g. /start) to the agent as a prompt", async () => {
+		const onClear = vi.fn(async () => {});
+		const { controller, sendFollowUp } = setup({ onClear });
+		await controller.onEvent(messageEvent("/start"));
+		expect(onClear).not.toHaveBeenCalled();
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+	});
+
 	it("sends a collapsible tool-activity block to the bound chat", async () => {
 		const { controller, api } = setup();
 		await controller.sendToolActivity({
