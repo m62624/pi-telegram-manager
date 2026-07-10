@@ -1,17 +1,18 @@
 /**
- * Gate this extension's tools so the model only sees `telegram_*` /
- * `manager_*` tools while a Telegram mode is actually active.
+ * Gate this extension's tools so the model only sees a mode's tools while that
+ * mode is active — and never sees the *other* mode's tools.
  *
- * Pi has no per-turn unregister; instead `pi.setActiveTools(names)` sets the
- * whole active tool list. So we register every tool at load, then keep a set of
- * *our* gated names and, whenever visibility needs refreshing, recompute the
- * active list = all tools minus our gated ones (when inactive) or all tools
- * (when active). Mirrors pi-planner's `index.tool-visibility.ts`.
+ * Tools are grouped (`connect` → `telegram_*`, `manager` → `manager_*`). Pi has
+ * no per-turn unregister; instead `pi.setActiveTools(names)` sets the whole
+ * active list. So we register every tool at load, then keep each group's gated
+ * names and, on refresh, recompute the active list = all tools minus the names
+ * of every group that is *not* active. Activating mode 1 reveals only its tools;
+ * the manager's `manager_reply`/`manager_silent` stay hidden until mode 2 runs.
+ * Mirrors pi-planner's `index.tool-visibility.ts`.
  *
  * IMPORTANT: `getAllTools()` / `setActiveTools()` are action methods that must
  * NOT be called during extension load. `registerToolVisibility` therefore only
- * refreshes on `session_start` and before each provider request — the same
- * safe points pi-planner uses.
+ * refreshes on `session_start` and before each provider request.
  */
 import type { ExtensionAPI } from "./sdk";
 
@@ -21,43 +22,63 @@ export interface ToolRegistryApi {
 	setActiveTools(names: string[]): void;
 }
 
-/** All tool names, minus the gated ones when inactive. */
+/** Named groups of gated tool names. */
+export type ToolGroups = Record<string, Iterable<string>>;
+
+/** Tool names hidden right now: those belonging to any inactive group. */
+export function hiddenToolNames(
+	groups: ReadonlyMap<string, ReadonlySet<string>>,
+	activeGroups: ReadonlySet<string>,
+): Set<string> {
+	const hidden = new Set<string>();
+	for (const [group, names] of groups) {
+		if (activeGroups.has(group)) continue;
+		for (const name of names) hidden.add(name);
+	}
+	return hidden;
+}
+
+/** All tool names, minus those in inactive groups. */
 export function visibleToolNames(
 	allToolNames: readonly string[],
-	gatedToolNames: ReadonlySet<string>,
-	active: boolean,
+	groups: ReadonlyMap<string, ReadonlySet<string>>,
+	activeGroups: ReadonlySet<string>,
 ): string[] {
-	if (active) return [...allToolNames];
-	return allToolNames.filter((name) => !gatedToolNames.has(name));
+	const hidden = hiddenToolNames(groups, activeGroups);
+	return allToolNames.filter((name) => !hidden.has(name));
 }
 
 export interface ToolVisibility {
 	/** Re-apply the active tool list from the current active state. */
 	refresh(): void;
-	/** Set whether a Telegram mode is active, then re-apply. */
-	setActive(active: boolean): void;
-	isActive(): boolean;
+	/** Set whether a group's mode is active, then re-apply. */
+	setActive(group: string, active: boolean): void;
+	isActive(group: string): boolean;
 }
 
-/** Create a visibility controller over the tool registry, gating `gated` names. */
+/** Create a visibility controller over the tool registry for the given groups. */
 export function createToolVisibility(
 	api: ToolRegistryApi,
-	gated: Iterable<string>,
+	groups: ToolGroups,
 ): ToolVisibility {
-	const gatedSet = new Set(gated);
-	let active = false;
+	const groupMap = new Map<string, Set<string>>();
+	for (const [group, names] of Object.entries(groups)) {
+		groupMap.set(group, new Set(names));
+	}
+	const activeGroups = new Set<string>();
 	const refresh = (): void => {
 		const all = api.getAllTools().map((tool) => tool.name);
-		api.setActiveTools(visibleToolNames(all, gatedSet, active));
+		api.setActiveTools(visibleToolNames(all, groupMap, activeGroups));
 	};
 	return {
 		refresh,
-		setActive(next: boolean): void {
-			active = next;
+		setActive(group: string, active: boolean): void {
+			if (active) activeGroups.add(group);
+			else activeGroups.delete(group);
 			refresh();
 		},
-		isActive(): boolean {
-			return active;
+		isActive(group: string): boolean {
+			return activeGroups.has(group);
 		},
 	};
 }

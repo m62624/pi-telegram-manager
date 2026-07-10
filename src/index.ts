@@ -26,16 +26,26 @@ import {
 } from "./core/prompt-origin";
 import { ConnectController } from "./modes/connect/controller";
 import { extractText, type PromptContent } from "./modes/connect/messages";
+import { ManagerController } from "./modes/manager/controller";
+import {
+	createManagerTools,
+	type DecisionSink,
+	MANAGER_TOOL_NAMES,
+} from "./modes/manager/decision";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import { createPiSession } from "./pi/session";
 import {
 	createToolVisibility,
 	registerToolVisibility,
 } from "./pi/tool-visibility";
 import { loadSettings } from "./settings/manager";
 import { resolveSecret } from "./settings/secret";
+import { createBusinessStore } from "./storage/business-store";
+import { createChatStore } from "./storage/chat-store";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
+import { createSentRegistry } from "./storage/sent-registry";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -51,12 +61,16 @@ import {
 } from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
+import type { TelegramEvent } from "./telegram/updates";
+import { managerBannerLines } from "./ui/manager-banner";
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
+const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
+const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
@@ -72,13 +86,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	});
 	const abort = new AbortRegistry();
 	const contextReset = new ContextReset();
-	const visibility = createToolVisibility(pi, TELEGRAM_TOOL_NAMES);
+	const visibility = createToolVisibility(pi, {
+		connect: TELEGRAM_TOOL_NAMES,
+		manager: MANAGER_TOOL_NAMES,
+	});
 	registerToolVisibility(pi, visibility);
 
-	// Apply the /clear boundary on every LLM call: once a clear is requested from
-	// Telegram, the model stops seeing messages older than it. No boundary set →
-	// leave the context untouched.
-	pi.on("context", (event) => {
+	// Rebuild the LLM context per mode: the manager replaces it with the active
+	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
+	// mode / no boundary → leave the context untouched.
+	pi.on("context", async (event) => {
+		if (manager) {
+			const isolated = await manager.buildContextForActive();
+			if (!isolated) return {};
+			return {
+				messages: isolated.map((message) => ({
+					role: message.role,
+					content: message.content,
+					timestamp: Date.now(),
+				})),
+			} as never;
+		}
 		const messages = contextReset.apply(event.messages);
 		return messages ? { messages } : {};
 	});
@@ -95,6 +123,24 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let draftPreviewsEnabled = false;
 	let draftText = "";
 	let lastDraftAt = 0;
+
+	// Live manager-mode runtime (null when inactive).
+	let manager: ManagerController | null = null;
+	let managerClient: TelegramClient | null = null;
+	let managerTick: ReturnType<typeof setInterval> | null = null;
+	let managerHeartbeat: ReturnType<typeof setInterval> | null = null;
+	let managerUi: {
+		setWidget: ExtensionCommandContext["ui"]["setWidget"];
+	} | null = null;
+
+	const updateManagerBanner = (): void => {
+		if (manager && managerUi) {
+			managerUi.setWidget(
+				MANAGER_BANNER_KEY,
+				managerBannerLines(manager.status()),
+			);
+		}
+	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
@@ -135,6 +181,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		pi.registerTool(tool);
 	}
 
+	// Manager decision tools, gated by the "manager" visibility group. They route
+	// to whichever ManagerController is live via a stable proxy sink.
+	const managerDecisionSink: DecisionSink = {
+		record: (decision) => manager?.decisionSink().record(decision),
+	};
+	for (const tool of createManagerTools(managerDecisionSink)) {
+		pi.registerTool(tool);
+	}
+
 	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		stopTyping();
 		if (heartbeat) {
@@ -148,8 +203,46 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		draftPreviewsEnabled = false;
 		contextReset.forget();
 		await lifecycle.deactivate("connect");
-		visibility.setActive(false);
+		visibility.setActive("connect", false);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
+	};
+
+	const stopManager = async (): Promise<void> => {
+		if (managerTick) {
+			clearInterval(managerTick);
+			managerTick = null;
+		}
+		if (managerHeartbeat) {
+			clearInterval(managerHeartbeat);
+			managerHeartbeat = null;
+		}
+		await managerClient?.stop().catch(() => {});
+		managerClient = null;
+		manager = null;
+		visibility.setActive("manager", false);
+		managerUi?.setWidget(MANAGER_BANNER_KEY, undefined);
+		managerUi = null;
+		await lifecycle.deactivate("manager");
+	};
+
+	// Route business updates to the manager controller.
+	const routeManagerEvent = async (event: TelegramEvent): Promise<void> => {
+		if (!manager) return;
+		if (event.kind === "business_connection") {
+			await manager.onBusinessConnection({
+				connectionId: event.connectionId,
+				connection: event.connection,
+				isEnabled: event.isEnabled,
+			});
+		} else if (event.kind === "business_message") {
+			await manager.onBusinessMessage({
+				connectionId: event.connectionId,
+				chatId: String(event.chatId),
+				fromId: event.fromId,
+				message: event.message,
+			});
+			updateManagerBanner();
+		}
 	};
 
 	pi.on("agent_start", async (_event, ctx) => {
@@ -162,6 +255,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		stopTyping();
 		connect?.endDraft();
 		await connect?.onAgentEnd(event.messages);
+		if (manager) {
+			await manager.onAgentEnd();
+			updateManagerBanner();
+		}
 	});
 	pi.on("tool_execution_start", async (event) => {
 		if (!connect || !toolActivityEnabled) return;
@@ -369,7 +466,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			heartbeat = setInterval(() => {
 				void lifecycle.heartbeat();
 			}, HEARTBEAT_INTERVAL_MS);
-			visibility.setActive(true);
+			visibility.setActive("connect", true);
 			ctx.ui.setStatus(
 				STATUS_KEY,
 				`Telegram: connected (chat ${allowedUserId})`,
@@ -416,19 +513,118 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.manager, {
 		description: "Start the Telegram business manager (mode 2).",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify(
-				"/telegram-manager is not implemented yet (Phase 4).",
-				"warning",
-			);
+			if (manager || connect) {
+				ctx.ui.notify("A Telegram mode is already active.", "warning");
+				return;
+			}
+			const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
+			for (const warning of warnings) ctx.ui.notify(warning, "warning");
+			const token = resolveSecret(settings.botToken);
+			if (!token) {
+				ctx.ui.notify(
+					'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN").',
+					"error",
+				);
+				return;
+			}
+
+			const activation = await lifecycle.activate({
+				mode: "manager",
+				workdir: paths.managerWorkspaceDir,
+				subMode: settings.manager.subMode,
+			});
+			if (!activation.ok) {
+				ctx.ui.notify(`Cannot start manager: ${activation.reason}`, "error");
+				return;
+			}
+
+			// Isolate the manager in its own Pi session/folder (best-effort — the
+			// runtime still works in the current session if this is unavailable).
+			try {
+				const created = await createPiSession({
+					fs,
+					agentDir: paths.agentDir,
+					cwd: paths.managerWorkspaceDir,
+				});
+				await ctx.switchSession(created.sessionFile);
+			} catch (error) {
+				ctx.ui.notify(
+					`Manager session isolation skipped: ${String(error)}`,
+					"warning",
+				);
+			}
+
+			managerClient = new TelegramClient({
+				token,
+				onEvent: routeManagerEvent,
+				onError: (error) =>
+					ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+			});
+			const api = managerClient.api as unknown as {
+				sendMessage(args: {
+					business_connection_id: string;
+					chat_id: number;
+					text: string;
+				}): Promise<{ message_id: number }>;
+				sendChatAction(args: {
+					business_connection_id: string;
+					chat_id: number;
+					action: "typing";
+				}): Promise<unknown>;
+			};
+			manager = new ManagerController({
+				subMode: settings.manager.subMode,
+				labeler: settings.manager.labeler,
+				rememberMessages: settings.manager.rememberMessages,
+				continueWindowMs: settings.manager.continueWindowMs,
+				ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
+				clock: { now: () => Date.now() },
+				chatStore: createChatStore(fs, paths),
+				contactStore,
+				sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
+				businessStore: createBusinessStore(fs, paths.businessPath),
+				isIdle: () => !busy,
+				triggerAgent: async (prompt) => {
+					pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+				},
+				sendReply: async ({ connectionId, chatId, text }) => {
+					const sent = await api.sendMessage({
+						business_connection_id: connectionId,
+						chat_id: Number(chatId),
+						text,
+					});
+					return sent.message_id;
+				},
+				typing: async ({ connectionId, chatId }) => {
+					await api.sendChatAction({
+						business_connection_id: connectionId,
+						chat_id: Number(chatId),
+						action: "typing",
+					});
+				},
+			});
+			void managerClient.start();
+			visibility.setActive("manager", true);
+			managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
+			updateManagerBanner();
+			managerTick = setInterval(() => {
+				void manager?.onTick().then(updateManagerBanner);
+			}, MANAGER_TICK_MS);
+			managerHeartbeat = setInterval(() => {
+				void lifecycle.heartbeat();
+			}, HEARTBEAT_INTERVAL_MS);
+			ctx.ui.notify(`Telegram manager: active (${settings.manager.subMode}).`);
 		},
 	});
 	pi.registerCommand(COMMANDS.managerStop, {
 		description: "Stop the Telegram business manager (mode 2).",
 		handler: async (_args, ctx) => {
-			ctx.ui.notify(
-				"/telegram-manager-stop is not implemented yet (Phase 4).",
-				"warning",
-			);
+			if (!manager) {
+				ctx.ui.notify("Telegram manager is not active.", "warning");
+				return;
+			}
+			await stopManager();
+			ctx.ui.notify("Telegram manager: stopped.");
 		},
 	});
 }

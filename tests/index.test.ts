@@ -38,6 +38,8 @@ describe("piTelegramManagerExtension (composition root)", () => {
 		expect(tools.map((t) => t.name)).toEqual([
 			"telegram_message",
 			"telegram_attach",
+			"manager_reply",
+			"manager_silent",
 		]);
 		for (const event of [
 			"session_start",
