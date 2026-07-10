@@ -43,6 +43,15 @@ export interface ContactStore {
 	upsertProfile(profile: TelegramProfile, now: number): Promise<ContactRecord>;
 	/** Append an important fact to a contact (the record must already exist). */
 	addFact(userId: string, fact: ContactFact): Promise<void>;
+	/**
+	 * Append several facts at once, keeping only the newest `limit` (when given).
+	 * No-op for an unknown contact.
+	 */
+	appendFacts(
+		userId: string,
+		facts: ContactFact[],
+		limit?: number,
+	): Promise<void>;
 	/** A contact's important facts, oldest-first (empty when none/unseen). */
 	getFacts(userId: string): Promise<ContactFact[]>;
 }
@@ -85,6 +94,21 @@ export function createContactStore(
 				if (!existing) return; // a fact needs a known contact
 				existing.facts.push(fact);
 				existing.updatedAt = fact.timestamp;
+				await writeJson(fs, path, existing);
+			});
+		},
+
+		async appendFacts(userId, facts, limit) {
+			if (facts.length === 0) return;
+			const path = paths.contactFile(userId);
+			await withFileWriteLock(path, async () => {
+				const existing = await read(userId);
+				if (!existing) return; // facts need a known contact
+				existing.facts.push(...facts);
+				if (limit !== undefined && existing.facts.length > limit) {
+					existing.facts = existing.facts.slice(-limit);
+				}
+				existing.updatedAt = facts[facts.length - 1].timestamp;
 				await writeJson(fs, path, existing);
 			});
 		},

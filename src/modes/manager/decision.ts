@@ -60,11 +60,41 @@ function asCategory(value: unknown): MessageCategory {
 }
 
 /** Names of the tools defined here — fed to the visibility gate. */
-export const MANAGER_TOOL_NAMES = ["manager_reply", "manager_silent"] as const;
+export const MANAGER_TOOL_NAMES = [
+	"manager_reply",
+	"manager_silent",
+	"manager_remember",
+	"manager_skip",
+] as const;
 
 /** A per-turn holder the tools write their decision into. */
 export interface DecisionSink {
 	record(decision: ManagerDecision): void;
+}
+
+/** A per-turn holder the memory tools write recorded facts into. */
+export interface FactSink {
+	record(facts: string[]): void;
+}
+
+/** Collects durable facts recorded this turn via `manager_remember`. */
+export class FactState implements FactSink {
+	private facts: string[] = [];
+
+	reset(): void {
+		this.facts = [];
+	}
+
+	record(facts: string[]): void {
+		for (const fact of facts) {
+			const trimmed = fact.trim();
+			if (trimmed && !this.facts.includes(trimmed)) this.facts.push(trimmed);
+		}
+	}
+
+	current(): string[] {
+		return [...this.facts];
+	}
 }
 
 /** A mutable decision holder: reset each turn, read on turn end. */
@@ -115,8 +145,15 @@ function fail(text: string) {
 	};
 }
 
-/** Build the manager decision tools bound to `sink`. Register with `pi.registerTool`. */
-export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
+/**
+ * Build the manager tools. `sink` receives the terminal reply/silent decision;
+ * `factSink` receives durable facts from `manager_remember`. Register each with
+ * `pi.registerTool`.
+ */
+export function createManagerTools(
+	sink: DecisionSink,
+	factSink: FactSink,
+): ToolDefinition[] {
 	const categoryParam = {
 		type: "string",
 		enum: MESSAGE_CATEGORIES,
@@ -195,5 +232,49 @@ export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 		},
 	});
 
-	return [managerReply, managerSilent];
+	const managerRemember = defineTool({
+		name: "manager_remember",
+		label: "Manager Remember",
+		description:
+			"Save durable, useful facts about the CURRENT interlocutor (their name, city, preferences, agreements, context) to private long-term memory. Facts persist and are shown to you next time they write. Not shared with anyone. Only save stable facts, not passing chatter. On a normal turn you may call this in addition to your manager_reply/manager_silent.",
+		parameters: {
+			type: "object",
+			properties: {
+				facts: {
+					type: "array",
+					items: { type: "string" },
+					description: "One short durable fact per item.",
+				},
+			},
+			required: ["facts"],
+			additionalProperties: false,
+		} as never,
+		async execute(_toolCallId, params: { facts?: string[] }) {
+			const facts = Array.isArray(params.facts) ? params.facts : [];
+			factSink.record(facts);
+			return ok(`Remembered ${facts.length} fact(s).`);
+		},
+	});
+
+	const managerSkip = defineTool({
+		name: "manager_skip",
+		label: "Manager Skip",
+		description:
+			"End a memory-consolidation turn without saving anything (nothing durable is worth remembering).",
+		parameters: {
+			type: "object",
+			properties: {
+				reason: {
+					type: "string",
+					description: "Optional short reason for saving nothing.",
+				},
+			},
+			additionalProperties: false,
+		} as never,
+		async execute() {
+			return ok("Nothing saved.");
+		},
+	});
+
+	return [managerReply, managerSilent, managerRemember, managerSkip];
 }

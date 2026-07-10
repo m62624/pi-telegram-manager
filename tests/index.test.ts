@@ -41,6 +41,8 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"telegram_attach",
 			"manager_reply",
 			"manager_silent",
+			"manager_remember",
+			"manager_skip",
 		]);
 		for (const event of [
 			"session_start",

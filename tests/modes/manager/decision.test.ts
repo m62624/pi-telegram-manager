@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
 	createManagerTools,
 	DecisionState,
+	FactState,
 	MANAGER_TOOL_NAMES,
 	resolveDecision,
 } from "../../../src/modes/manager/decision";
 
-function toolMap(sink: DecisionState) {
-	const tools = createManagerTools(sink);
+function toolMap(sink: DecisionState, facts: FactState = new FactState()) {
+	const tools = createManagerTools(sink, facts);
 	return new Map(tools.map((t) => [t.name, t]));
 }
 
@@ -73,8 +74,22 @@ describe("DecisionState + resolveDecision", () => {
 });
 
 describe("manager tools", () => {
-	it("exposes the two tool names", () => {
-		expect(MANAGER_TOOL_NAMES).toEqual(["manager_reply", "manager_silent"]);
+	it("exposes the manager tool names incl. memory tools", () => {
+		expect(MANAGER_TOOL_NAMES).toEqual([
+			"manager_reply",
+			"manager_silent",
+			"manager_remember",
+			"manager_skip",
+		]);
+	});
+
+	it("manager_remember records de-duplicated non-empty facts", async () => {
+		const facts = new FactState();
+		const tools = toolMap(new DecisionState(), facts);
+		await tools
+			.get("manager_remember")
+			?.execute("t1", { facts: ["lives in Almaty", "  ", "lives in Almaty"] });
+		expect(facts.current()).toEqual(["lives in Almaty"]);
 	});
 
 	it("manager_reply records the text with its category and self-check", async () => {

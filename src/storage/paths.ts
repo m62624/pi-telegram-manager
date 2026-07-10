@@ -20,6 +20,8 @@ export interface TelegramPaths {
 	businessPath: string;
 	/** Registry of message ids/UUIDs the bot sent (bot-vs-owner identity). */
 	sentRegistryPath: string;
+	/** Persisted queue of chats awaiting idle memory consolidation. */
+	consolidationQueuePath: string;
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
 	/** Per-contact profile + important-facts directory (both modes). */
@@ -43,6 +45,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		settingsPath: join(extensionDir, "settings.json"),
 		businessPath: join(extensionDir, "business.json"),
 		sentRegistryPath: join(extensionDir, "sent-registry.json"),
+		consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
 		chatsDir,
 		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),

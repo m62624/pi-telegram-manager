@@ -9,6 +9,11 @@ import type { ManagerSubMode } from "../storage/singleton-store";
 export interface TelegramSettings {
 	botToken?: string;
 	allowedUserId?: number;
+	/**
+	 * IANA timezone (e.g. "Asia/Almaty") for the `[Now: …]` line shown to the
+	 * model in both modes. Unset → the host's system timezone.
+	 */
+	timezone?: string;
 	assistant: {
 		rendering: "rich" | "html";
 		draftPreviews: boolean;
@@ -46,6 +51,13 @@ export interface TelegramSettings {
 		};
 		/** Last-N messages remembered per chat. */
 		rememberMessages: number;
+		/** Last-N durable facts kept + injected per contact. Default 20. */
+		factsLimit: number;
+		/**
+		 * Quiet period (ms) after a chat's last activity before the manager may run
+		 * an idle memory-consolidation pass on it. Default 1800000 (30 min).
+		 */
+		factConsolidationQuietMs: number;
 		responseMode: "smart" | "active" | "mention";
 		markRead: boolean;
 		throttleMs: number;
@@ -85,6 +97,8 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		allowedTools: [],
 		media: { images: true, documents: false },
 		rememberMessages: 20,
+		factsLimit: 20,
+		factConsolidationQuietMs: 1_800_000,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -172,6 +186,7 @@ function asRecord(value: unknown, path: string): Record<string, unknown> {
 const KNOWN_TOP_LEVEL = new Set([
 	"botToken",
 	"allowedUserId",
+	"timezone",
 	"assistant",
 	"instructionFiles",
 	"connect",
@@ -216,6 +231,7 @@ export function normalizeSettings(
 	return {
 		botToken: asOptionalString(root.botToken, "botToken"),
 		allowedUserId,
+		timezone: asOptionalString(root.timezone, "timezone"),
 		assistant: {
 			rendering: asEnum(
 				assistant.rendering,
@@ -274,6 +290,16 @@ export function normalizeSettings(
 				manager.rememberMessages,
 				"manager.rememberMessages",
 				d.manager.rememberMessages,
+			),
+			factsLimit: asPositiveInt(
+				manager.factsLimit,
+				"manager.factsLimit",
+				d.manager.factsLimit,
+			),
+			factConsolidationQuietMs: asPositiveInt(
+				manager.factConsolidationQuietMs,
+				"manager.factConsolidationQuietMs",
+				d.manager.factConsolidationQuietMs,
 			),
 			responseMode: asEnum(
 				manager.responseMode,

@@ -8,6 +8,7 @@ import {
 import { hasBotMarker } from "../../../src/modes/manager/identity";
 import { createBusinessStore } from "../../../src/storage/business-store";
 import { createChatStore } from "../../../src/storage/chat-store";
+import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
 import { createSentRegistry } from "../../../src/storage/sent-registry";
@@ -61,11 +62,17 @@ async function setup(subMode: ManagerSubMode = "observer") {
 		rememberMessages: 20,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
+		factsLimit: 20,
+		factConsolidationQuietMs: 1_800_000,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
 		chatStore: createChatStore(fs, paths),
 		contactStore: createContactStore(fs, paths),
+		consolidationQueue: createConsolidationQueue(
+			fs,
+			paths.consolidationQueuePath,
+		),
 		sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 		businessStore,
 		isIdle: () => idle,
@@ -335,6 +342,71 @@ describe("ManagerController", () => {
 		await controller.onAgentEnd();
 		expect(controller.status().activeChat).toBeUndefined();
 		expect(triggerAgent).not.toHaveBeenCalled();
+	});
+
+	it("injects known facts and a [Now:] line into the context", async () => {
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		await deps.contactStore.appendFacts(
+			"5",
+			[{ text: "likes green tea", timestamp: 0, source: "manager" }],
+			20,
+		);
+		clock.advance(300_001);
+		await controller.onTick();
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.[0].content).toContain("Known facts about Alice");
+		expect(ctx?.[0].content).toContain("likes green tea");
+		expect(ctx?.[0].content).toContain("[Now:");
+	});
+
+	it("persists facts recorded via manager_remember on turn end", async () => {
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.factSink().record(["name is Bob"]);
+		controller.decisionSink().record({ kind: "reply", text: "Hello Bob" });
+		await controller.onAgentEnd();
+		const facts = await deps.contactStore.getFacts("5");
+		expect(facts.map((f) => f.text)).toContain("name is Bob");
+	});
+
+	it("runs an idle consolidation turn once a chat is settled and quiet", async () => {
+		const { controller, deps, triggerAgent, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		await controller.onTick(); // chat 42 active, reply turn
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd(); // bot replied → 1:30 continuation + queued
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		// Past the continuation window AND the 30-min quiet period.
+		clock.advance(1_800_001);
+		await controller.onTick(); // releases 42, then starts consolidation
+		expect(triggerAgent).toHaveBeenCalledTimes(2);
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.[0].content).toContain("long-term memory");
+		expect(ctx?.at(-1)?.content).toContain("manager_remember");
+		// The consolidation turn saves a fact.
+		controller.factSink().record(["ordered a laptop"]);
+		await controller.onAgentEnd();
+		const facts = await deps.contactStore.getFacts("5");
+		expect(facts.map((f) => f.text)).toContain("ordered a laptop");
 	});
 
 	it("persists a business connection with the owner id", async () => {

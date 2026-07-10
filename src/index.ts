@@ -21,6 +21,7 @@ import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { ContextReset } from "./core/context-reset";
+import { formatNowLine } from "./core/datetime";
 import { expandHome, readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -41,6 +42,7 @@ import { ManagerController } from "./modes/manager/controller";
 import {
 	createManagerTools,
 	type DecisionSink,
+	type FactSink,
 	MANAGER_TOOL_NAMES,
 } from "./modes/manager/decision";
 import { resolveTelegramPaths } from "./pi/agent-dir";
@@ -62,6 +64,7 @@ import {
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
+import { createConsolidationQueue } from "./storage/consolidation-queue";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
 import { createSentRegistry } from "./storage/sent-registry";
@@ -132,13 +135,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		const filtered = contextReset.apply(event.messages);
 		// Mode 1: prepend the connect system instructions so the agent knows it is
-		// bridged to Telegram (files saved to disk, telegram_attach to send back).
+		// bridged to Telegram (files saved to disk, telegram_attach to send back),
+		// plus the current date/time line.
 		if (connect && connectSystemBlock) {
 			return {
 				messages: [
 					{
 						role: "user",
-						content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
+						content:
+							`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}\n\n` +
+							formatNowLine(Date.now(), connectTimezone),
 						timestamp: Date.now(),
 					},
 					...(filtered ?? event.messages),
@@ -163,6 +169,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
+	// Timezone for the mode-1 `[Now: …]` line (from settings; system zone if unset).
+	let connectTimezone: string | undefined;
 
 	// Live manager-mode runtime (null when inactive).
 	let manager: ManagerController | null = null;
@@ -231,7 +239,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const managerDecisionSink: DecisionSink = {
 		record: (decision) => manager?.decisionSink().record(decision),
 	};
-	for (const tool of createManagerTools(managerDecisionSink)) {
+	const managerFactSink: FactSink = {
+		record: (facts) => manager?.factSink().record(facts),
+	};
+	for (const tool of createManagerTools(managerDecisionSink, managerFactSink)) {
 		pi.registerTool(tool);
 	}
 
@@ -245,6 +256,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		connectSystemBlock = null;
+		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		contextReset.forget();
@@ -415,6 +427,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				fs,
 				overrideText: connectOverride.text,
 			});
+			connectTimezone = settings.timezone;
 
 			client = new TelegramClient({
 				token,
@@ -703,6 +716,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		const chatStore = createChatStore(fs, paths);
 		const businessStore = createBusinessStore(fs, paths.businessPath);
+		const consolidationQueue = createConsolidationQueue(
+			fs,
+			paths.consolidationQueuePath,
+		);
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
@@ -762,12 +779,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			rememberMessages: settings.manager.rememberMessages,
 			continueWindowMs: settings.manager.continueWindowMs,
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
+			factsLimit: settings.manager.factsLimit,
+			factConsolidationQuietMs: settings.manager.factConsolidationQuietMs,
+			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
 			media: settings.manager.media,
 			loadImages: loadManagerImages,
 			clock: { now: () => Date.now() },
 			chatStore,
 			contactStore,
+			consolidationQueue,
 			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 			businessStore,
 			isIdle: () => !busy,

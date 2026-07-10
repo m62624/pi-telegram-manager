@@ -23,6 +23,7 @@
  * with fakes; `index.ts` wires the ports to the live runtime.
  */
 import type { BusinessConnection, Message, User } from "@grammyjs/types";
+import { formatNowLine } from "../../core/datetime";
 import { applyLabeler } from "../../core/render";
 import type { Clock } from "../../core/timers";
 import { buildContextLines } from "../../core/turns";
@@ -32,7 +33,8 @@ import {
 } from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
 import type { ChatStore } from "../../storage/chat-store";
-import type { ContactStore } from "../../storage/contact-store";
+import type { ConsolidationQueue } from "../../storage/consolidation-queue";
+import type { ContactFact, ContactStore } from "../../storage/contact-store";
 import type { SentRegistry } from "../../storage/sent-registry";
 import type { ManagerSubMode } from "../../storage/singleton-store";
 import { describeAttachments, isImage } from "../../telegram/media";
@@ -45,7 +47,7 @@ import {
 	type IsolatedMessage,
 } from "./context-isolation";
 import { analyzeChat, type ConversationState } from "./conversation-state";
-import { DecisionState, resolveDecision } from "./decision";
+import { DecisionState, FactState, resolveDecision } from "./decision";
 import { isBotMessage, stripBotMarker, tagBotText } from "./identity";
 import { ChatScheduler } from "./scheduler";
 import { ReplyGate } from "./submode";
@@ -72,7 +74,21 @@ export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
 	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
-	"observing. Never write plain text and never write a tool name as text.]";
+	"observing. You may also call manager_remember first to save a durable fact. " +
+	"Never write plain text and never write a tool name as text.]";
+
+/** System block for an idle memory-consolidation turn (no reply is sent). */
+export const CONSOLIDATION_INSTRUCTIONS =
+	"You are reviewing a finished Telegram conversation to update your private " +
+	"long-term memory about this specific person. Do NOT reply to anyone — nothing " +
+	"you write reaches Telegram. Extract only durable, useful facts (name, city, " +
+	"role, preferences, agreements, ongoing context), not passing chatter.";
+
+/** Final directive for a consolidation turn. */
+export const CONSOLIDATION_TRIGGER =
+	"[Save any durable facts about this person by calling manager_remember({ facts: " +
+	"[...] }), or call manager_skip if nothing is worth remembering. End the turn " +
+	"with exactly one of those two tools.]";
 
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
@@ -82,6 +98,12 @@ export interface ManagerControllerDeps {
 	rememberMessages: number;
 	continueWindowMs: number;
 	ownerReplyWindowMs: number;
+	/** Last-N durable facts kept + injected per contact. */
+	factsLimit: number;
+	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
+	factConsolidationQuietMs: number;
+	/** IANA timezone for the `[Now: …]` line; undefined → system zone. */
+	timezone?: string;
 	/** Byte cap for describing/downloading inbound attachments. */
 	maxBytes: number;
 	/** Which inbound media reaches the model (images vision / documents). */
@@ -89,6 +111,7 @@ export interface ManagerControllerDeps {
 	clock: Clock;
 	chatStore: ChatStore;
 	contactStore: ContactStore;
+	consolidationQueue: ConsolidationQueue;
 	sentRegistry: SentRegistry;
 	businessStore: BusinessStore;
 	/** Whether the agent is free to take a new turn. */
@@ -110,6 +133,8 @@ export interface ManagerControllerDeps {
 interface ChatMeta {
 	connectionId: string;
 	contactName: string;
+	/** The interlocutor's Telegram user id — where durable facts are stored. */
+	userId?: string;
 }
 
 /** Text a message carries — body or media caption. */
@@ -142,11 +167,14 @@ export class ManagerController {
 	private readonly scheduler: ChatScheduler;
 	private readonly gate: ReplyGate;
 	private readonly decision = new DecisionState();
+	private readonly facts = new FactState();
 	private readonly chats = new Map<string, ChatMeta>();
 	/** Chats with an interlocutor message the model has not answered yet. */
 	private readonly unserved = new Set<string>();
 	/** Freshest downloaded images per chat (in-memory, newest turn only). */
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
+	/** The chat currently being memory-consolidated (idle pass), if any. */
+	private consolidating: { chatId: string; userId?: string } | null = null;
 
 	constructor(private readonly deps: ManagerControllerDeps) {
 		this.scheduler = new ChatScheduler({
@@ -163,6 +191,11 @@ export class ManagerController {
 	/** The per-turn decision sink the manager tools write into. */
 	decisionSink(): DecisionState {
 		return this.decision;
+	}
+
+	/** The per-turn fact sink the memory tool writes into. */
+	factSink(): FactState {
+		return this.facts;
 	}
 
 	/** Persist a connected/updated business account. */
@@ -225,6 +258,7 @@ export class ManagerController {
 			this.gate.onOwnerMessage(chatId);
 			this.unserved.delete(chatId);
 			this.latestImages.delete(chatId);
+			await this.touchConsolidation(chatId, messageTime);
 			return;
 		}
 
@@ -233,7 +267,11 @@ export class ManagerController {
 		const contactName = from
 			? extractProfileFromUser(from).displayName
 			: chatId;
-		this.chats.set(chatId, { connectionId: input.connectionId, contactName });
+		this.chats.set(chatId, {
+			connectionId: input.connectionId,
+			contactName,
+			userId: from ? String(from.id) : undefined,
+		});
 		if (from) {
 			await this.deps.contactStore.upsertProfile(
 				extractProfileFromUser(from),
@@ -256,6 +294,7 @@ export class ManagerController {
 			messageId,
 			kind: media.kind,
 		});
+		await this.touchConsolidation(chatId, messageTime);
 		this.unserved.add(chatId);
 		if (this.scheduler.activeChat() === chatId) {
 			// A continuation of the active chat: cancel its continuation-release so it
@@ -315,16 +354,26 @@ export class ManagerController {
 
 	/** Resolve the finished turn's decision and deliver a reply if the model chose to. */
 	async onAgentEnd(): Promise<void> {
+		// A consolidation turn produced no reply — just persist facts and move on.
+		if (this.consolidating) {
+			await this.finishConsolidation();
+			return;
+		}
 		const active = this.scheduler.activeChat();
-		if (active === null) return;
+		if (active === null) {
+			this.facts.reset();
+			return;
+		}
 		const text = resolveDecision(this.decision.current());
 		this.decision.reset();
+		const meta = this.chats.get(active);
+		// Persist any durable facts the model recorded mid-conversation.
+		await this.persistRecordedFacts(meta?.userId);
 		// This chat has been served this turn, whatever the model decided.
 		this.unserved.delete(active);
 		this.latestImages.delete(active);
 		this.gate.clearServed(active);
 		if (text) {
-			const meta = this.chats.get(active);
 			if (meta) {
 				const outgoing = tagBotText(applyLabeler(text, this.deps.labeler));
 				const messageId = await this.deps.sendReply({
@@ -333,12 +382,14 @@ export class ManagerController {
 					text: outgoing,
 				});
 				await this.deps.sentRegistry.recordSent(active, messageId);
+				const now = this.deps.clock.now();
 				await this.deps.chatStore.append(active, {
 					author: "bot",
 					text,
-					timestamp: this.deps.clock.now(),
+					timestamp: now,
 					messageId,
 				});
+				await this.touchConsolidation(active, now);
 			}
 			// Replied: keep the chat active and arm the 1:30 continuation window.
 			this.scheduler.onReplied();
@@ -359,7 +410,9 @@ export class ManagerController {
 			this.scheduler.onMessage(chatId);
 		}
 		this.scheduler.onTick();
-		await this.triggerTurn();
+		const started = await this.triggerTurn();
+		// Only consolidate memory in the idle gaps — never ahead of a reply.
+		if (!started) await this.maybeStartConsolidation();
 	}
 
 	/**
@@ -370,6 +423,7 @@ export class ManagerController {
 	 * action directive.
 	 */
 	async buildContextForActive(): Promise<IsolatedMessage[] | null> {
+		if (this.consolidating) return this.buildConsolidationContext();
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
 		const records = await this.deps.chatStore.getRecent(
@@ -386,16 +440,43 @@ export class ManagerController {
 		const isFirstMessage =
 			!records.some((record) => record.author === "bot") &&
 			records.filter((record) => record.author === "interlocutor").length <= 1;
+		const known = await this.knownFactsBlock(meta);
 		const system =
 			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
 			(isFirstMessage && this.deps.instructions.firstMessage
 				? `\n\n${this.deps.instructions.firstMessage}`
 				: "") +
+			`\n\n${this.nowLine()}` +
+			(known ? `\n\n${known}` : "") +
 			`\n\n${stateSummary(analyzeChat(records))}`;
 		return [
 			{ role: "user", content: system },
 			...isolated,
 			{ role: "user", content: MANAGER_ACTION_TRIGGER },
+		];
+	}
+
+	/** Build the isolated context for an idle memory-consolidation turn. */
+	private async buildConsolidationContext(): Promise<IsolatedMessage[]> {
+		const { chatId } = this.consolidating as { chatId: string };
+		const records = await this.deps.chatStore.getRecent(
+			chatId,
+			this.deps.rememberMessages,
+		);
+		const meta = this.chats.get(chatId);
+		const isolated = buildIsolatedMessages({
+			records,
+			boundary: boundaryDirective(meta?.contactName ?? chatId),
+		});
+		const known = await this.knownFactsBlock(meta);
+		const system =
+			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}` +
+			`\n\n${this.nowLine()}` +
+			(known ? `\n\n${known}` : "");
+		return [
+			{ role: "user", content: system },
+			...isolated,
+			{ role: "user", content: CONSOLIDATION_TRIGGER },
 		];
 	}
 
@@ -427,8 +508,8 @@ export class ManagerController {
 	 * but a window still pending) is left alone; the unserved guard then stops the
 	 * agent re-triggering on it.
 	 */
-	private async triggerTurn(): Promise<void> {
-		if (!this.deps.isIdle()) return;
+	private async triggerTurn(): Promise<boolean> {
+		if (!this.deps.isIdle() || this.consolidating) return false;
 		while (
 			this.scheduler.activeChat() !== null &&
 			!this.unserved.has(this.scheduler.activeChat() as string) &&
@@ -437,8 +518,9 @@ export class ManagerController {
 			this.scheduler.next();
 		}
 		const active = this.scheduler.activeChat();
-		if (active === null || !this.unserved.has(active)) return;
+		if (active === null || !this.unserved.has(active)) return false;
 		this.decision.reset();
+		this.facts.reset();
 		const meta = this.chats.get(active);
 		if (meta) {
 			await this.deps
@@ -448,6 +530,81 @@ export class ManagerController {
 		await this.deps.triggerAgent(
 			"Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
 		);
+		return true;
+	}
+
+	/** The `[Now: …]` line injected into every context. */
+	private nowLine(): string {
+		return formatNowLine(this.deps.clock.now(), this.deps.timezone);
+	}
+
+	/** A "Known facts about X" block for a chat's contact, or "" when none. */
+	private async knownFactsBlock(meta: ChatMeta | undefined): Promise<string> {
+		if (!meta?.userId) return "";
+		const facts = await this.deps.contactStore.getFacts(meta.userId);
+		if (facts.length === 0) return "";
+		const recent = facts.slice(-this.deps.factsLimit);
+		const lines = recent.map((fact) => `- ${fact.text}`).join("\n");
+		return `Known facts about ${meta.contactName}:\n${lines}`;
+	}
+
+	/** Persist the facts the model recorded this turn (capped to factsLimit). */
+	private async persistRecordedFacts(
+		userId: string | undefined,
+	): Promise<void> {
+		const recorded = this.facts.current();
+		this.facts.reset();
+		if (!userId || recorded.length === 0) return;
+		const now = this.deps.clock.now();
+		const facts: ContactFact[] = recorded.map((text) => ({
+			text,
+			timestamp: now,
+			source: "manager",
+		}));
+		await this.deps.contactStore.appendFacts(
+			userId,
+			facts,
+			this.deps.factsLimit,
+		);
+	}
+
+	/** Mark a chat as a consolidation candidate, refreshing its quiet timer. */
+	private async touchConsolidation(
+		chatId: string,
+		activityAt: number,
+	): Promise<void> {
+		const userId = this.chats.get(chatId)?.userId;
+		if (!userId) return; // nothing to remember without a known contact
+		await this.deps.consolidationQueue.upsert({ chatId, userId, activityAt });
+	}
+
+	/**
+	 * When fully idle (nothing to answer, no active turn), pop an eligible chat
+	 * (quiet long enough) and run a memory-consolidation turn for it. Never
+	 * pre-empts a reply — the caller only invokes this when no turn was started.
+	 */
+	private async maybeStartConsolidation(): Promise<void> {
+		if (!this.deps.isIdle() || this.consolidating) return;
+		if (this.scheduler.activeChat() !== null || this.unserved.size > 0) return;
+		const entry = await this.deps.consolidationQueue.eligible(
+			this.deps.clock.now(),
+			this.deps.factConsolidationQuietMs,
+		);
+		if (!entry) return;
+		this.consolidating = { chatId: entry.chatId, userId: entry.userId };
+		this.facts.reset();
+		await this.deps.triggerAgent(
+			"Review the recent Telegram conversation and update your long-term memory with manager_remember or manager_skip.",
+		);
+	}
+
+	/** Persist facts from a consolidation turn and drop the chat from the queue. */
+	private async finishConsolidation(): Promise<void> {
+		const current = this.consolidating;
+		this.consolidating = null;
+		if (!current) return;
+		await this.persistRecordedFacts(current.userId);
+		await this.deps.consolidationQueue.remove(current.chatId);
 	}
 }
 
