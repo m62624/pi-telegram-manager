@@ -942,11 +942,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// to the owner's private chat with the bot — sent AS the bot (no business
 		// connection), so it never leaks into the managed conversation.
 		if (settings.manager.debugFeed) {
-			// Resolve the owner's private-chat id. For a business bot this is
-			// `user_chat_id` (the guaranteed DM with the account owner); fall back to
-			// the user id. The bot can only reach the owner if they have opened a chat
-			// with it — otherwise Telegram forbids the send, which we surface once.
+			// Resolve the owner's private-chat id. `allowedUserId` is the configured
+			// owner and the exact DM mode 1 talks to, so it is the reliable target —
+			// the business store can be empty (the manager runs off each message's
+			// connectionId, so no business_connection is guaranteed to be persisted).
+			// Fall back to the stored connection's `user_chat_id` only if unset.
 			const ownerChatId = async (): Promise<number | null> => {
+				if (settings.allowedUserId) return settings.allowedUserId;
 				const connections = await businessStore.all();
 				const connection =
 					connections.find((c) => c.isEnabled) ?? connections[0];
