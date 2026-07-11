@@ -38,7 +38,10 @@ function ownerMsg(text: string, messageId = 100): Message {
 	} as Message;
 }
 
-async function setup(subMode: ManagerSubMode = "observer") {
+async function setup(
+	subMode: ManagerSubMode = "observer",
+	mentionWords: string[] = [],
+) {
 	const fs = new FakeFs();
 	const paths = createTelegramPaths("/agent");
 	const clock = new ManualClock(0);
@@ -63,6 +66,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 			reopen: "WELCOME BACK",
 		},
 		labeler: "LLM agent:",
+		mentionWords,
 		rememberMessages: 20,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
@@ -255,6 +259,63 @@ describe("ManagerController", () => {
 		const ctx = await controller.buildContextForActive();
 		expect(ctx?.[0].content).toContain("WELCOME BACK");
 		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
+	});
+
+	it("fast-tracks an interlocutor wake-word past the owner-reply window", async () => {
+		const { controller, triggerAgent } = await setup("observer", ["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hey llm, are you there?"),
+		});
+		// Ready immediately — no 5-minute hold, no clock advance.
+		expect(controller.status()).toMatchObject({ activeChat: "42", holding: 0 });
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		// The model is nudged to judge whether it is really addressed.
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.at(-1)?.content).toContain("wake-word");
+	});
+
+	it("without a wake-word the interlocutor still waits out the owner window", async () => {
+		const { controller } = await setup("observer", ["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("just chatting here"),
+		});
+		expect(controller.status()).toMatchObject({
+			activeChat: undefined,
+			holding: 1,
+		});
+	});
+
+	it("observer: an owner wake-word summons the bot immediately", async () => {
+		const { controller, triggerAgent } = await setup("observer", ["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("llm, please reply to them"),
+		});
+		expect(controller.status().activeChat).toBe("42");
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it("takeover: an owner wake-word is ignored (owner presence still freezes)", async () => {
+		const { controller, triggerAgent } = await setup("takeover", ["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("llm, do this"),
+		});
+		expect(controller.status().activeChat).toBeUndefined();
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
 	it("stays silent when the model chooses manager_silent (no send)", async () => {

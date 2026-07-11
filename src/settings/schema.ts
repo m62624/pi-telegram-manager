@@ -75,6 +75,12 @@ export interface TelegramSettings {
 		throttleMs: number;
 		/** Prefix prepended to each outgoing business message ("" = none). */
 		labeler: string;
+		/**
+		 * Wake-words (case-insensitive). A message containing one jumps the owner-reply
+		 * window straight into processing (the model still decides whether it is a
+		 * direct question worth answering). Empty = disabled. Default `["llm"]`.
+		 */
+		mentionWords: string[];
 		instructionFiles: string[];
 		/** Required template for the first message from a new interlocutor. */
 		firstMessageTemplate?: string;
@@ -125,6 +131,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		markRead: true,
 		throttleMs: 0,
 		labeler: "LLM agent 🤖:",
+		mentionWords: ["llm"],
 		instructionFiles: [],
 		subMode: "observer",
 		observer: {},
@@ -350,6 +357,12 @@ export function normalizeSettings(
 				d.manager.throttleMs,
 			),
 			labeler: asString(manager.labeler, "manager.labeler", d.manager.labeler),
+			// Absent → the default wake-word; an explicit array (incl. []) is honoured,
+			// so `[]` disables the feature.
+			mentionWords:
+				manager.mentionWords === undefined
+					? [...d.manager.mentionWords]
+					: asStringArray(manager.mentionWords, "manager.mentionWords"),
 			instructionFiles: asStringArray(
 				manager.instructionFiles,
 				"manager.instructionFiles",

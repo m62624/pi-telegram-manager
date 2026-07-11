@@ -59,6 +59,18 @@ describe("normalizeSettings", () => {
 		expect(s.manager.takeover.instructionFile).toBe("~/t.md");
 	});
 
+	it("defaults mentionWords to [llm]; an explicit array (incl. []) is honoured", () => {
+		expect(normalizeSettings({}).manager.mentionWords).toEqual(["llm"]);
+		expect(
+			normalizeSettings({ manager: { mentionWords: ["qwen", "bot"] } }).manager
+				.mentionWords,
+		).toEqual(["qwen", "bot"]);
+		// Explicit empty array disables the feature.
+		expect(
+			normalizeSettings({ manager: { mentionWords: [] } }).manager.mentionWords,
+		).toEqual([]);
+	});
+
 	it("defaults reopenAfterMs to 24h and accepts 0 to disable + an override file", () => {
 		expect(normalizeSettings({}).manager.reopenAfterMs).toBe(86_400_000);
 		const s = normalizeSettings({

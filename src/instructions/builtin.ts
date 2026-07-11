@@ -52,6 +52,8 @@ export async function loadManagerInstructions(input: {
 	subMode: ManagerSubMode;
 	/** The bot's name in the chat (the labeler); people may address it by this. */
 	labeler?: string;
+	/** Configured wake-words; surfaced so the model knows how it may be addressed. */
+	mentionWords?: string[];
 	overrideText?: string;
 	firstMessageOverride?: string;
 	reopenOverride?: string;
@@ -68,9 +70,20 @@ export async function loadManagerInstructions(input: {
 
 	const parts = [common, submode];
 	const name = input.labeler?.trim().replace(/:\s*$/, "");
-	if (name) {
+	const wake = (input.mentionWords ?? [])
+		.map((w) => w.trim())
+		.filter(Boolean)
+		.map((w) => `"${w}"`)
+		.join(", ");
+	if (name || wake) {
+		const nameLine = name
+			? `You appear in this chat as **${name}**. Treat being addressed by "${name}" (or as an AI/LLM/bot/assistant) as a message to you.`
+			: "";
+		const wakeLine = wake
+			? `You also answer to the wake-word(s) ${wake} — but only when they are a direct question or request to you, never when merely mentioned in passing.`
+			: "";
 		parts.push(
-			`## Your name\n\nYou appear in this chat as **${name}**. Treat being addressed by "${name}" (or as an AI/LLM/bot/assistant) as a message to you.`,
+			`## Your name\n\n${[nameLine, wakeLine].filter(Boolean).join(" ")}`,
 		);
 	}
 	if (input.overrideText?.trim()) parts.push(input.overrideText.trim());

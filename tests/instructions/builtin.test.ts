@@ -66,6 +66,17 @@ describe("loadManagerInstructions", () => {
 		expect(result.reopen).toBe("MY REOPEN TEMPLATE");
 	});
 
+	it("surfaces the configured wake-words to the model", async () => {
+		const result = await loadManagerInstructions({
+			fs: stubFs(BUNDLED),
+			subMode: "observer",
+			labeler: "Assistant:",
+			mentionWords: ["llm", "qwen"],
+		});
+		expect(result.base).toContain('"llm", "qwen"');
+		expect(result.base).toContain("wake-word");
+	});
+
 	it("survives missing bundled files without throwing", async () => {
 		const result = await loadManagerInstructions({
 			fs: stubFs({}),

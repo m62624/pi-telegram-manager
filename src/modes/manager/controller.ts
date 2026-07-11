@@ -62,6 +62,7 @@ import {
 	isDone,
 	ProbeState,
 } from "./interrogation";
+import { matchesMention } from "./mention";
 import { ChatScheduler } from "./scheduler";
 import { ReplyGate } from "./submode";
 
@@ -115,6 +116,16 @@ export function reviseDirective(draft: string): string {
 	);
 }
 
+/**
+ * Nudge added when the latest interlocutor message contains a configured
+ * wake-word: it fast-tracked the message here, but only a genuine question to the
+ * bot warrants a reply — a word used in passing does not.
+ */
+export const MENTION_HINT =
+	"[A wake-word for you appears in the latest message. Reply ONLY if it is a " +
+	"direct question or request addressed to you; if the word is just mentioned in " +
+	"passing (describing something, not asking you), stay silent.]";
+
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -166,6 +177,8 @@ export interface ManagerControllerDeps {
 	/** Assembled system-instruction blocks injected at the top of the context. */
 	instructions: ManagerInstructions;
 	labeler: string;
+	/** Case-insensitive wake-words that fast-track a message past the owner window. */
+	mentionWords: string[];
 	rememberMessages: number;
 	continueWindowMs: number;
 	ownerReplyWindowMs: number;
@@ -408,13 +421,33 @@ export class ManagerController {
 				senderId: ownerId,
 				messageId,
 			});
+			await this.touchConsolidation(chatId, messageTime);
+			// Observer only: an explicit wake-word from the owner summons the bot even
+			// though it normally never acts on owner messages. In takeover the owner
+			// being present always freezes the chat (they are at the wheel), so the
+			// wake-word is ignored for the owner there. A stale/backlog message never
+			// wakes.
+			if (
+				this.deps.subMode === "observer" &&
+				now - messageTime <= this.deps.liveFreshnessMs &&
+				matchesMention(text, this.deps.mentionWords)
+			) {
+				const existing = this.chats.get(chatId);
+				this.chats.set(chatId, {
+					connectionId: input.connectionId,
+					contactName: existing?.contactName ?? chatId,
+					userId: existing?.userId,
+				});
+				this.unserved.add(chatId);
+				this.scheduler.onMessage(chatId);
+				return;
+			}
 			// The owner answered inside the window — cancel this chat's pending batch
 			// (takeover also freezes). The bot never replies to owner messages, and
 			// the chat is no longer waiting on us.
 			this.gate.onOwnerMessage(chatId);
 			this.unserved.delete(chatId);
 			this.latestImages.delete(chatId);
-			await this.touchConsolidation(chatId, messageTime);
 			return;
 		}
 
@@ -467,6 +500,11 @@ export class ManagerController {
 		if (this.scheduler.activeChat() === chatId) {
 			// A continuation of the active chat: cancel its continuation-release so it
 			// stays active; it will be served on the next tick. No 5-min wait.
+			this.scheduler.onMessage(chatId);
+		} else if (matchesMention(text, this.deps.mentionWords)) {
+			// A wake-word: skip the owner-reply window and make the chat ready now. The
+			// scheduler still applies who-first / never-replied priority; the model
+			// still decides whether the message is actually a question worth answering.
 			this.scheduler.onMessage(chatId);
 		} else {
 			// First engagement: arm the owner-reply window and let the owner answer
@@ -652,12 +690,22 @@ export class ManagerController {
 			: pending
 				? reviseDirective(pending.text)
 				: MANAGER_ACTION_TRIGGER;
+		// Flag a wake-word in the latest interlocutor line so the model weighs whether
+		// it is really addressed vs. the word just being mentioned.
+		const lastInterlocutor = [...records]
+			.reverse()
+			.find((record) => record.author === "interlocutor");
+		const mentionHint =
+			lastInterlocutor &&
+			matchesMention(lastInterlocutor.text, this.deps.mentionWords)
+				? `\n\n${MENTION_HINT}`
+				: "";
 		return [
 			{ role: "user", content: system },
 			...isolated,
 			{
 				role: "user",
-				content: `${this.nowLine()}\n\n${stateSummary(state)}\n\n${directive}`,
+				content: `${this.nowLine()}\n\n${stateSummary(state)}${mentionHint}\n\n${directive}`,
 			},
 		];
 	}
