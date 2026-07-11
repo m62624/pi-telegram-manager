@@ -15,6 +15,7 @@ import type { Message, User } from "@grammyjs/types";
 import type { TurnInput } from "../../core/turns";
 import { describeAttachments } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
+import { bullet, card, note } from "./format";
 
 /** A text part of a prompt turn (structurally the SDK's `TextContent`). */
 export interface PromptTextPart {
@@ -88,21 +89,15 @@ export interface PiCommandInfo {
 export function formatPiCommandList(
 	commands: readonly PiCommandInfo[],
 ): string {
-	const header = "*Pi commands* (run these in the terminal):";
-	// Keep the empty case on the same formatted footing as the populated one — a
-	// bold header plus an italic note — rather than a bare single line.
+	// Keep the empty case on the same footing as the populated one — a titled card
+	// with an italic note — rather than a bare single line.
 	if (commands.length === 0) {
-		return [header, "_No commands are registered yet._"].join("\n");
+		return card("🧩", "Pi commands", [note("No commands are registered yet.")]);
 	}
 	const lines = [...commands]
 		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((command) => {
-			const description = command.description
-				? ` — ${command.description}`
-				: "";
-			return `/${command.name}${description}`;
-		});
-	return [header, ...lines].join("\n");
+		.map((command) => bullet(`/${command.name}`, command.description));
+	return card("🧩", "Pi commands (run in the terminal)", lines);
 }
 
 /** Map a Telegram message to the prompt-turn input (sender, reply, attachments). */

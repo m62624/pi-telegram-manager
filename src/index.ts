@@ -36,6 +36,7 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
+import { card, note } from "./modes/connect/format";
 import { extractText, type PromptContent } from "./modes/connect/messages";
 import { selectCatchUpChats } from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
@@ -395,18 +396,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// agent error path.
 	pi.on("session_before_compact", async () => {
 		await connect
-			?.sendToChat("🗜 Compacting context to free up space — one moment…")
+			?.sendToChat(
+				card("🗜", "Compacting context", [
+					note("Freeing up space — one moment…"),
+				]),
+			)
 			.catch(() => {});
 	});
 	pi.on("session_compact", async () => {
 		await connect
-			?.sendToChat("✅ Context compacted — continuing.")
+			?.sendToChat(card("✅", "Context compacted", [note("Continuing.")]))
 			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
 		if (connect) {
 			await connect
-				.sendToChat("Pi session closed. The bridge is no longer active.")
+				.sendToChat(
+					card("🔌", "Pi session closed", [
+						note("The bridge is no longer active."),
+					]),
+				)
 				.catch(() => {});
 		}
 	});
@@ -563,13 +572,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					// only reset while the agent is idle.
 					if (busy) {
 						await connect?.sendToChat(
-							"⏳ Busy right now — send /clear again once I finish.",
+							card("⏳", "Busy right now", [
+								note("Send /clear again once I finish."),
+							]),
 						);
 						return;
 					}
 					contextReset.clear(Date.now());
 					await connect?.sendToChat(
-						"🧹 History cleared — starting fresh. (Shared session: the terminal sees the cleared context too.)",
+						card("🧹", "History cleared", [
+							"Starting fresh.",
+							note(
+								"Shared session: the terminal sees the cleared context too.",
+							),
+						]),
 					);
 				},
 				onAbort: async () => {
@@ -577,8 +593,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					const stopped = await abort.abort();
 					await connect?.sendToChat(
 						stopped
-							? "⎋ Cancelled the current turn."
-							: "Nothing to cancel — the agent is idle.",
+							? card("⎋", "Cancelled", [note("Stopped the current turn.")])
+							: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
 					);
 				},
 				// Discovery only: list every registered Pi command (incl. other
@@ -616,7 +632,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await outbound
 				.notify(
 					{ chatId: allowedUserId },
-					"Connected to the Pi terminal session.",
+					card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
 				)
 				.catch(() => {});
 			ctx.ui.notify("Telegram connect: active.");
@@ -632,7 +648,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			// Tell the chat before we tear down the poller/sender.
 			await connect
-				.sendToChat("🔌 Disconnected from the Pi terminal session.")
+				.sendToChat(
+					card("🔌", "Disconnected", [note("From the Pi terminal session.")]),
+				)
 				.catch(() => {});
 			await stopConnect(ctx);
 			ctx.ui.notify("Telegram connect: stopped.");

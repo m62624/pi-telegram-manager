@@ -80,24 +80,24 @@ describe("parseSlashCommand", () => {
 });
 
 describe("formatPiCommandList", () => {
-	it("lists commands sorted, slash-prefixed, with descriptions", () => {
+	it("lists commands sorted, slash-prefixed, as a titled card of bullets", () => {
 		const out = formatPiCommandList([
 			{ name: "telegram-connect", description: "Bind chat" },
 			{ name: "planner-create", description: "New plan" },
 			{ name: "bare" },
 		]);
-		expect(out).toContain("run these in the terminal");
-		const lines = out.split("\n").slice(1);
-		expect(lines).toEqual([
-			"/bare",
-			"/planner-create — New plan",
-			"/telegram-connect — Bind chat",
+		expect(out).toContain("*Pi commands (run in the terminal)*");
+		const bullets = out.split("\n").filter((line) => line.startsWith("•"));
+		expect(bullets).toEqual([
+			"• /bare",
+			"• /planner-create — New plan",
+			"• /telegram-connect — Bind chat",
 		]);
 	});
 
-	it("keeps an empty registry on the same formatted footing (header + note)", () => {
+	it("keeps an empty registry on the same formatted footing (titled card + note)", () => {
 		expect(formatPiCommandList([])).toBe(
-			"*Pi commands* (run these in the terminal):\n_No commands are registered yet._",
+			"🧩 *Pi commands*\n\n_No commands are registered yet._",
 		);
 	});
 });

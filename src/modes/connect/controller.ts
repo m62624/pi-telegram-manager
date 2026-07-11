@@ -23,6 +23,7 @@ import {
 	toolActivityMessage,
 } from "../../telegram/tool-activity";
 import type { TelegramEvent } from "../../telegram/updates";
+import { bullet, card } from "./format";
 import {
 	formatPiCommandList,
 	type InboundImage,
@@ -83,12 +84,12 @@ const HELP_COMMANDS = new Set(["help"]);
 const LIST_COMMANDS = new Set(["commands", "menu"]);
 
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
-const HELP_TEXT = [
-	"*Pi terminal bridge*",
-	"/esc — cancel the current turn",
-	"/clear — clear the conversation history",
-	"/help — show this help",
-].join("\n");
+const HELP_TEXT = card("🧭", "Pi terminal bridge", [
+	bullet("/esc", "cancel the current turn"),
+	bullet("/clear", "clear the conversation history"),
+	bullet("/commands", "list available Pi commands"),
+	bullet("/help", "show this help"),
+]);
 
 export class ConnectController {
 	private readonly queue = new MessageQueue();
