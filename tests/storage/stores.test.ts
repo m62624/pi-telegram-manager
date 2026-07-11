@@ -169,4 +169,24 @@ describe("contact-store", () => {
 		expect((await store.get("1"))?.profile.displayName).toBe("One");
 		expect((await store.get("2"))?.profile.displayName).toBe("Two");
 	});
+
+	it("clearAllFacts wipes every contact's facts but keeps profiles", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile({ userId: "1", displayName: "One" }), 1);
+		await store.upsertProfile(profile({ userId: "2", displayName: "Two" }), 1);
+		await store.addFact("1", { text: "a", timestamp: 1 });
+		await store.addFact("2", { text: "b", timestamp: 1 });
+		await store.clearAllFacts();
+		expect(await store.getFacts("1")).toEqual([]);
+		expect(await store.getFacts("2")).toEqual([]);
+		expect((await store.get("1"))?.profile.displayName).toBe("One");
+		expect((await store.get("2"))?.profile.displayName).toBe("Two");
+	});
+
+	it("clearAllFacts is a no-op when no contacts exist", async () => {
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await expect(store.clearAllFacts()).resolves.toBeUndefined();
+	});
 });

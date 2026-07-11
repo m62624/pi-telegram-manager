@@ -13,9 +13,28 @@
 import type { TelegramProfile } from "../telegram/profile";
 import { mergeProfile } from "../telegram/profile";
 import { withFileWriteLock } from "./file-lock";
-import type { TelegramFs } from "./fs";
+import { safeReaddir, type TelegramFs } from "./fs";
 import { readJsonIfExists, writeJson } from "./json";
 import type { TelegramPaths } from "./paths";
+
+/**
+ * How a durable fact shapes the model's behaviour when resurfaced. Each kind maps
+ * to a distinct instruction in the "Known facts" block (see the manager
+ * controller's `knownFactsBlock`), so a fact does work rather than being a flat
+ * note:
+ *  - `identity`   — who they are (name, role, city): ground answers, address correctly;
+ *  - `preference` — likes/dislikes/style/language: adapt tone and format;
+ *  - `agreement`  — commitments/promises: honour and follow up on them;
+ *  - `context`    — an ongoing situation: background that may go stale.
+ */
+export type FactKind = "identity" | "preference" | "agreement" | "context";
+
+export const FACT_KINDS: readonly FactKind[] = [
+	"identity",
+	"preference",
+	"agreement",
+	"context",
+];
 
 /** One curated fact about a contact (added manually or, later, by the manager). */
 export interface ContactFact {
@@ -23,6 +42,14 @@ export interface ContactFact {
 	timestamp: number;
 	/** Where the fact came from, e.g. "manual", "manager". */
 	source?: string;
+	/**
+	 * The confirmed person this fact is about (the contact's display name at
+	 * capture). A fact is only ever stored about the interlocutor, so this makes
+	 * a misattribution (e.g. the owner's name here) visible and auditable.
+	 */
+	subject?: string;
+	/** How this fact should steer the model when resurfaced. */
+	kind?: FactKind;
 }
 
 /** Everything persisted about one contact. */
@@ -54,6 +81,12 @@ export interface ContactStore {
 	): Promise<void>;
 	/** A contact's important facts, oldest-first (empty when none/unseen). */
 	getFacts(userId: string): Promise<ContactFact[]>;
+	/**
+	 * Wipe every contact's `facts` list (profiles kept). Used by the one-off memory
+	 * migration when the fact schema changes, so stale mis-attributed facts don't
+	 * linger under the new rules.
+	 */
+	clearAllFacts(): Promise<void>;
 }
 
 export function createContactStore(
@@ -116,6 +149,21 @@ export function createContactStore(
 		async getFacts(userId) {
 			const record = await read(userId);
 			return record?.facts ?? [];
+		},
+
+		async clearAllFacts() {
+			const entries = await safeReaddir(fs, paths.contactsDir);
+			for (const name of entries) {
+				if (!name.endsWith(".json")) continue;
+				const userId = name.slice(0, -".json".length);
+				const path = paths.contactFile(userId);
+				await withFileWriteLock(path, async () => {
+					const existing = await read(userId);
+					if (!existing || existing.facts.length === 0) return;
+					existing.facts = [];
+					await writeJson(fs, path, existing);
+				});
+			}
 		},
 	};
 }

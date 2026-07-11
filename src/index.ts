@@ -69,6 +69,7 @@ import {
 import { createConsolidationQueue } from "./storage/consolidation-queue";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
+import { migrateMemory } from "./storage/memory-migration";
 import { createSentRegistry } from "./storage/sent-registry";
 import type { ManagerSubMode } from "./storage/singleton-store";
 import { createSingletonStore } from "./storage/singleton-store";
@@ -711,6 +712,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// polling loop. So the manager runs in the current session; per-chat
 		// isolation is guaranteed by pi.on("context") rebuilding messages, and the
 		// banner tells the user this session is now the manager.
+
+		// One-off memory migration: wipe pre-v2 contact facts (captured without
+		// subject attribution, so mis-attributed under the who-is-who firewall).
+		// Runs once, guarded by the version marker; failure never blocks the manager.
+		if (
+			await migrateMemory(fs, paths.memoryVersionPath, contactStore).catch(
+				() => false,
+			)
+		) {
+			ctx.ui.notify(
+				"Memory upgraded: previous contact facts were cleared.",
+				"warning",
+			);
+		}
 
 		const chatStore = createChatStore(fs, paths);
 		const businessStore = createBusinessStore(fs, paths.businessPath);

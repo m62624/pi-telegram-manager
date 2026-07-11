@@ -22,6 +22,8 @@ export interface TelegramPaths {
 	sentRegistryPath: string;
 	/** Persisted queue of chats awaiting idle memory consolidation. */
 	consolidationQueuePath: string;
+	/** Marker of the applied contact-fact schema version (one-off migrations). */
+	memoryVersionPath: string;
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
 	/** Per-contact profile + important-facts directory (both modes). */
@@ -46,6 +48,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		businessPath: join(extensionDir, "business.json"),
 		sentRegistryPath: join(extensionDir, "sent-registry.json"),
 		consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
+		memoryVersionPath: join(extensionDir, "memory-version.json"),
 		chatsDir,
 		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),
