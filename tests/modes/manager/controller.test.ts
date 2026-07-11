@@ -409,6 +409,64 @@ describe("ManagerController", () => {
 		expect(facts.map((f) => f.text)).toContain("ordered a laptop");
 	});
 
+	it("turnDecided() gates the loop on the terminal decision, not a bare remember", async () => {
+		const { controller } = await setup();
+		// Fresh normal turn: nothing decided yet.
+		expect(controller.turnDecided()).toBe(false);
+		// A durable-fact record alone is NOT terminal — the model may still reply.
+		controller.factSink().record(["name is Bob"]);
+		expect(controller.turnDecided()).toBe(false);
+		// reply/silent ends the turn.
+		controller.decisionSink().record({ kind: "silent" });
+		expect(controller.turnDecided()).toBe(true);
+	});
+
+	it("swaps the action trigger for a done directive once decided (amnesia guard)", async () => {
+		const { controller, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		// Before deciding, the trigger asks for a tool call.
+		const before = await controller.buildContextForActive();
+		expect(before?.at(-1)?.content).toContain("manager_reply");
+		// After a decision, a re-sampled context tells the model to stop instead of
+		// presenting byte-identical input that would repeat the same tool call.
+		controller.decisionSink().record({ kind: "silent" });
+		const after = await controller.buildContextForActive();
+		expect(after?.at(-1)?.content).toContain("already decided");
+		expect(after?.at(-1)?.content).not.toContain("manager_reply");
+	});
+
+	it("treats manager_skip as the terminal action of a consolidation turn", async () => {
+		const { controller, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd();
+		clock.advance(1_800_001);
+		await controller.onTick(); // starts a consolidation turn
+		// Before skipping: not terminal, trigger still asks to remember/skip.
+		expect(controller.turnDecided()).toBe(false);
+		const before = await controller.buildContextForActive();
+		expect(before?.at(-1)?.content).toContain("manager_remember");
+		// manager_skip records nothing durable but still ends the turn.
+		controller.noteSkip();
+		expect(controller.turnDecided()).toBe(true);
+		const after = await controller.buildContextForActive();
+		expect(after?.at(-1)?.content).toContain("already decided");
+	});
+
 	it("persists a business connection with the owner id", async () => {
 		const { controller, deps } = await setup();
 		const connection = {

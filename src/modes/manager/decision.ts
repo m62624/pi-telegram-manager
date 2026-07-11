@@ -147,12 +147,15 @@ function fail(text: string) {
 
 /**
  * Build the manager tools. `sink` receives the terminal reply/silent decision;
- * `factSink` receives durable facts from `manager_remember`. Register each with
- * `pi.registerTool`.
+ * `factSink` receives durable facts from `manager_remember`. `onSkip` (optional)
+ * fires when `manager_skip` runs, so the runtime can treat it as the terminal
+ * action of a consolidation turn (which otherwise records nothing observable).
+ * Register each with `pi.registerTool`.
  */
 export function createManagerTools(
 	sink: DecisionSink,
 	factSink: FactSink,
+	onSkip?: () => void,
 ): ToolDefinition[] {
 	const categoryParam = {
 		type: "string",
@@ -272,6 +275,7 @@ export function createManagerTools(
 			additionalProperties: false,
 		} as never,
 		async execute() {
+			onSkip?.();
 			return ok("Nothing saved.");
 		},
 	});

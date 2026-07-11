@@ -242,7 +242,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const managerFactSink: FactSink = {
 		record: (facts) => manager?.factSink().record(facts),
 	};
-	for (const tool of createManagerTools(managerDecisionSink, managerFactSink)) {
+	for (const tool of createManagerTools(
+		managerDecisionSink,
+		managerFactSink,
+		() => manager?.noteSkip(),
+	)) {
 		pi.registerTool(tool);
 	}
 
@@ -309,6 +313,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		busy = true;
 		connect?.onAgentStart(() => ctx.abort());
 		startTyping();
+	});
+	// End the manager's agent run as soon as it has made the turn's terminal
+	// decision. A single manager tool does not end the agentic loop (a tool call
+	// re-samples the model), and pi.on("context") rebuilds byte-identical context
+	// each sample, so without this the model repeats the same decision dozens of
+	// times until it happens to emit plain text. Aborting here caps it at one
+	// inference; the reply is still delivered from onAgentEnd (reading the recorded
+	// decision, not the messages the abort may orphan).
+	pi.on("turn_end", (_event, ctx) => {
+		if (manager?.turnDecided()) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;

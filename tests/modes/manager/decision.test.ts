@@ -92,6 +92,17 @@ describe("manager tools", () => {
 		expect(facts.current()).toEqual(["lives in Almaty"]);
 	});
 
+	it("manager_skip fires the onSkip signal so the runtime can end the turn", async () => {
+		let skipped = false;
+		const tools = new Map(
+			createManagerTools(new DecisionState(), new FactState(), () => {
+				skipped = true;
+			}).map((t) => [t.name, t]),
+		);
+		await tools.get("manager_skip")?.execute("t1", {});
+		expect(skipped).toBe(true);
+	});
+
 	it("manager_reply records the text with its category and self-check", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);

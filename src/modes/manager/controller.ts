@@ -77,6 +77,17 @@ export const MANAGER_ACTION_TRIGGER =
 	"observing. You may also call manager_remember first to save a durable fact. " +
 	"Never write plain text and never write a tool name as text.]";
 
+/**
+ * Replaces the action trigger once the turn's terminal decision is already
+ * recorded. If the agent loop re-samples the model before the turn-end abort
+ * lands (a race, or after a non-terminal manager_remember), this tells the model
+ * the decision is made so it ends the turn instead of repeating the same tool
+ * call against otherwise-identical context.
+ */
+export const MANAGER_TURN_DONE =
+	"[You have already decided this turn. Do not call any more tools. Reply with a " +
+	"single word to end the turn.]";
+
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -175,6 +186,8 @@ export class ManagerController {
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
 	/** The chat currently being memory-consolidated (idle pass), if any. */
 	private consolidating: { chatId: string; userId?: string } | null = null;
+	/** Set when manager_skip ran this turn (the terminal action of consolidation). */
+	private skipRecorded = false;
 
 	constructor(private readonly deps: ManagerControllerDeps) {
 		this.scheduler = new ChatScheduler({
@@ -196,6 +209,25 @@ export class ManagerController {
 	/** The per-turn fact sink the memory tool writes into. */
 	factSink(): FactState {
 		return this.facts;
+	}
+
+	/** Note that manager_skip ran (the terminal action of a consolidation turn). */
+	noteSkip(): void {
+		this.skipRecorded = true;
+	}
+
+	/**
+	 * Whether the model has made this turn's terminal decision, so the agent loop
+	 * can stop re-sampling instead of spinning on identical context. Terminality is
+	 * turn-type specific: a normal turn ends on reply/silent (a bare
+	 * manager_remember does NOT end it — the model may still reply); a consolidation
+	 * turn ends on manager_remember (facts recorded) or manager_skip.
+	 */
+	turnDecided(): boolean {
+		if (this.consolidating) {
+			return this.skipRecorded || this.facts.current().length > 0;
+		}
+		return this.decision.current().kind !== "none";
 	}
 
 	/** Persist a connected/updated business account. */
@@ -452,7 +484,12 @@ export class ManagerController {
 		return [
 			{ role: "user", content: system },
 			...isolated,
-			{ role: "user", content: MANAGER_ACTION_TRIGGER },
+			{
+				role: "user",
+				content: this.turnDecided()
+					? MANAGER_TURN_DONE
+					: MANAGER_ACTION_TRIGGER,
+			},
 		];
 	}
 
@@ -476,7 +513,10 @@ export class ManagerController {
 		return [
 			{ role: "user", content: system },
 			...isolated,
-			{ role: "user", content: CONSOLIDATION_TRIGGER },
+			{
+				role: "user",
+				content: this.turnDecided() ? MANAGER_TURN_DONE : CONSOLIDATION_TRIGGER,
+			},
 		];
 	}
 
@@ -521,6 +561,7 @@ export class ManagerController {
 		if (active === null || !this.unserved.has(active)) return false;
 		this.decision.reset();
 		this.facts.reset();
+		this.skipRecorded = false;
 		const meta = this.chats.get(active);
 		if (meta) {
 			await this.deps
@@ -593,6 +634,7 @@ export class ManagerController {
 		if (!entry) return;
 		this.consolidating = { chatId: entry.chatId, userId: entry.userId };
 		this.facts.reset();
+		this.skipRecorded = false;
 		await this.deps.triggerAgent(
 			"Review the recent Telegram conversation and update your long-term memory with manager_remember or manager_skip.",
 		);
