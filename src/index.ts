@@ -148,19 +148,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		const filtered = contextReset.apply(event.messages);
 		// Mode 1: prepend the connect system instructions so the agent knows it is
-		// bridged to Telegram (files saved to disk, telegram_attach to send back),
-		// plus the current date/time line.
+		// bridged to Telegram (files saved to disk, telegram_attach to send back).
+		// The prepended block is kept byte-identical across calls (constant content +
+		// a stable timestamp) so the provider's prompt cache holds over the whole
+		// shared terminal session; the volatile date/time goes in a SEPARATE trailing
+		// message, outside the cached prefix, so a fresh clock never invalidates the
+		// entire context (which made a big terminal session re-prefill every turn).
 		if (connect && connectSystemBlock) {
 			return {
 				messages: [
 					{
 						role: "user",
-						content:
-							`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}\n\n` +
-							formatNowLine(Date.now(), connectTimezone),
-						timestamp: Date.now(),
+						content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
+						timestamp: 0,
 					},
 					...(filtered ?? event.messages),
+					{
+						role: "user",
+						content: formatNowLine(Date.now(), connectTimezone),
+						timestamp: Date.now(),
+					},
 				],
 			} as never;
 		}

@@ -639,23 +639,25 @@ export class ManagerController {
 				? this.deps.instructions.reopen
 				: "";
 		const known = await this.knownFactsBlock(meta);
+		// The instruction prefix stays stable across a chat's turns (so the provider
+		// caches it); the volatile bits — the clock, the per-message state line, and
+		// the action directive — live in a single trailing message.
 		const system =
 			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
 			(opener ? `\n\n${opener}` : "") +
-			`\n\n${this.nowLine()}` +
-			(known ? `\n\n${known}` : "") +
-			`\n\n${stateSummary(state)}`;
+			(known ? `\n\n${known}` : "");
 		const pending = this.pendingReply.get(active);
+		const directive = this.turnDecided()
+			? MANAGER_TURN_DONE
+			: pending
+				? reviseDirective(pending.text)
+				: MANAGER_ACTION_TRIGGER;
 		return [
 			{ role: "user", content: system },
 			...isolated,
 			{
 				role: "user",
-				content: this.turnDecided()
-					? MANAGER_TURN_DONE
-					: pending
-						? reviseDirective(pending.text)
-						: MANAGER_ACTION_TRIGGER,
+				content: `${this.nowLine()}\n\n${stateSummary(state)}\n\n${directive}`,
 			},
 		];
 	}
@@ -683,17 +685,14 @@ export class ManagerController {
 		const known = await this.knownFactsBlock(meta);
 		const system =
 			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}` +
-			`\n\n${this.nowLine()}` +
 			(known ? `\n\n${known}` : "");
+		const directive = this.turnDecided()
+			? MANAGER_TURN_DONE
+			: currentProbe(current.loop).directive;
 		return [
 			{ role: "user", content: system },
 			...isolated,
-			{
-				role: "user",
-				content: this.turnDecided()
-					? MANAGER_TURN_DONE
-					: currentProbe(current.loop).directive,
-			},
+			{ role: "user", content: `${this.nowLine()}\n\n${directive}` },
 		];
 	}
 

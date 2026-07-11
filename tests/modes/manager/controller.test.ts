@@ -512,7 +512,9 @@ describe("ManagerController", () => {
 		const ctx = await controller.buildContextForActive();
 		expect(ctx?.[0].content).toContain("Known facts about Alice");
 		expect(ctx?.[0].content).toContain("likes green tea");
-		expect(ctx?.[0].content).toContain("[Now:");
+		// The clock lives in the trailing directive, not the cacheable prefix block.
+		expect(ctx?.[0].content).not.toContain("[Now:");
+		expect(ctx?.at(-1)?.content).toContain("[Now:");
 	});
 
 	it("groups known facts into per-kind sections with their directives", async () => {
