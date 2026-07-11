@@ -65,16 +65,20 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	const { log, subMode, nowLine, thinking, tools } = entry;
 	const blocks: RichHtml[] = [];
 
-	// Header: the interlocutor this turn is about (the important thing — which
-	// conversation), the chat id as a small disambiguator, and the sub-mode.
+	// Header: the interlocutor this turn is about — full name, with @username and
+	// phone (when shared) in parentheses; the sub-mode. Ids and the rest live in a
+	// folded "Contact" block below.
 	const modeBadge = subMode === "takeover" ? "🎛️ takeover" : "👁️ observer";
+	const paren: string[] = [];
+	if (log.username) paren.push(`@${log.username}`);
+	if (log.phone) paren.push(log.phone);
+	const parenSuffix = paren.length > 0 ? ` (${paren.join(", ")})` : "";
 	blocks.push(
 		paragraph(
 			RichHtml.join([
 				"💬 ",
 				bold(log.contactName),
-				"  ",
-				inlineCode(`chat #${log.chatId}`),
+				parenSuffix,
 				`  ·  ${modeBadge}`,
 			]),
 		),
@@ -122,6 +126,28 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 		);
 		blocks.push(details(`🔧 Tools (${tools.length})`, rows));
 	}
+
+	// Everything else about the contact, folded: the ids and flags you rarely need.
+	const detailRows: RichHtml[] = [
+		paragraph(RichHtml.join(["Chat: ", inlineCode(`#${log.chatId}`)])),
+	];
+	if (log.userId) {
+		detailRows.push(
+			paragraph(RichHtml.join(["User ID: ", inlineCode(log.userId)])),
+		);
+	}
+	if (log.username) detailRows.push(paragraph(`Username: @${log.username}`));
+	if (log.phone) detailRows.push(paragraph(`Phone: ${log.phone}`));
+	if (log.languageCode) {
+		detailRows.push(paragraph(`Language: ${log.languageCode}`));
+	}
+	if (log.isPremium !== undefined) {
+		detailRows.push(paragraph(`Premium: ${log.isPremium ? "yes" : "no"}`));
+	}
+	if (log.isBot !== undefined) {
+		detailRows.push(paragraph(`Bot: ${log.isBot ? "yes" : "no"}`));
+	}
+	blocks.push(details("ℹ️ Contact", detailRows));
 
 	blocks.push(paragraph(italic(nowLine)));
 	return RichHtml.join(blocks);

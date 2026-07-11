@@ -194,6 +194,18 @@ export type ManagerTurnOutcome = "reply" | "silent" | "held" | "corrected";
 export interface ManagerTurnLog {
 	chatId: string;
 	contactName: string;
+	/** The interlocutor's @username, when known. */
+	username?: string;
+	/** The interlocutor's phone, only when they shared their contact card. */
+	phone?: string;
+	/** The interlocutor's Telegram user id, when known. */
+	userId?: string;
+	/** Telegram language code of the interlocutor, when known. */
+	languageCode?: string;
+	/** Whether the interlocutor has Telegram Premium, when known. */
+	isPremium?: boolean;
+	/** Whether the interlocutor is a bot, when known. */
+	isBot?: boolean;
 	outcome: ManagerTurnOutcome;
 	/** The message category the model assigned, when it called a tool. */
 	category?: string;
@@ -661,6 +673,21 @@ export class ManagerController {
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		const contactName = meta?.contactName ?? active;
+		// The interlocutor's identity fields for the debug-feed card (username/phone
+		// come from the stored profile; phone only exists if they shared a contact).
+		const profile = meta?.userId
+			? (await this.deps.contactStore.get(meta.userId))?.profile
+			: undefined;
+		const contact = {
+			chatId: active,
+			contactName,
+			username: profile?.username,
+			phone: profile?.phoneNumber,
+			userId: meta?.userId,
+			languageCode: profile?.languageCode,
+			isPremium: profile?.isPremium,
+			isBot: profile?.isBot,
+		};
 		// Persist any durable facts the model recorded mid-conversation.
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		this.gate.clearServed(active);
@@ -673,12 +700,7 @@ export class ManagerController {
 				this.proseRetried.add(active);
 				this.correction.set(active, PROSE_CORRECTION);
 				await this.triggerTurn();
-				return {
-					chatId: active,
-					contactName,
-					outcome: "corrected",
-					text: prose,
-				};
+				return { ...contact, outcome: "corrected", text: prose };
 			}
 			text = prose;
 			requestedReplyTo = undefined;
@@ -695,7 +717,7 @@ export class ManagerController {
 				this.reviseCount.set(active, cycles + 1);
 				this.pendingReply.set(active, { text, replyTo: requestedReplyTo });
 				await this.triggerTurn();
-				return { chatId: active, contactName, outcome: "held", text, category };
+				return { ...contact, outcome: "held", text, category };
 			}
 		}
 		// The turn settled — this chat is served, whatever the model decided.
@@ -769,16 +791,14 @@ export class ManagerController {
 		await this.triggerTurn();
 		return text
 			? {
-					chatId: active,
-					contactName,
+					...contact,
 					outcome: "reply",
 					text,
 					category,
 					replyToMessageId: deliveredReplyTo,
 				}
 			: {
-					chatId: active,
-					contactName,
+					...contact,
 					outcome: "silent",
 					text: silentReason ?? guardReason,
 					category,

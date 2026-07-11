@@ -72,7 +72,29 @@ describe("buildManagerFeed", () => {
 
 	it("omits the thinking block when there is no reasoning", () => {
 		const html = feed({ chatId: "1", contactName: "X", outcome: "silent" });
-		expect(html).not.toContain("<details>");
+		expect(html).not.toContain("Model thinking");
+	});
+
+	it("shows name + @username/phone up top and folds ids into Contact", () => {
+		const html = feed({
+			chatId: "42",
+			contactName: "Alice Smith",
+			username: "alice",
+			phone: "+7 700 000",
+			userId: "5",
+			languageCode: "en",
+			isPremium: true,
+			isBot: false,
+			outcome: "reply",
+			text: "hi",
+		});
+		// Visible: full name (bolded) with @username and phone in parentheses.
+		expect(html).toContain("<b>Alice Smith</b> (@alice, +7 700 000)");
+		// Folded Contact block carries the ids and flags.
+		expect(html).toContain("<summary>ℹ️ Contact</summary>");
+		expect(html).toContain("#42");
+		expect(html).toContain("Premium: yes");
+		expect(html).toContain("Bot: no");
 	});
 
 	it("truncates very long thinking and marks the cut", () => {
