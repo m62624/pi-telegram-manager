@@ -629,9 +629,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				STATUS_KEY,
 				`Telegram: connected (chat ${allowedUserId})`,
 			);
-			await outbound
-				.notify(
-					{ chatId: allowedUserId },
+			// Route through the Markdown pipeline (sendToChat), not notify(): notify
+			// HTML-escapes its string, so any `*`/`_` markup would show up literally.
+			await connect
+				.sendToChat(
 					card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
 				)
 				.catch(() => {});
