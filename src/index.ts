@@ -55,6 +55,7 @@ import {
 	registerToolVisibility,
 } from "./pi/tool-visibility";
 import { loadSettings } from "./settings/manager";
+import type { TelegramSettings } from "./settings/schema";
 import { resolveSecret } from "./settings/secret";
 import {
 	type BusinessStore,
@@ -398,6 +399,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	});
 
+	// Both mode launchers load settings, surface any warnings, and need the bot
+	// token; this centralises that and bails (returning null) with a clear message
+	// when the token is unset.
+	const loadSettingsAndToken = async (
+		ctx: ExtensionCommandContext,
+	): Promise<{ settings: TelegramSettings; token: string } | null> => {
+		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
+		for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		const token = resolveSecret(settings.botToken);
+		if (!token) {
+			ctx.ui.notify(
+				'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN" to read it from the environment).',
+				"error",
+			);
+			return null;
+		}
+		return { settings, token };
+	};
+
 	pi.registerCommand(COMMANDS.connect, {
 		description: "Bind this terminal session to a Telegram chat (mode 1).",
 		handler: async (_args, ctx) => {
@@ -405,16 +425,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Telegram connect is already active.", "warning");
 				return;
 			}
-			const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
-			for (const warning of warnings) ctx.ui.notify(warning, "warning");
-			const token = resolveSecret(settings.botToken);
-			if (!token) {
-				ctx.ui.notify(
-					'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN" to read it from the environment).',
-					"error",
-				);
-				return;
-			}
+			const loaded = await loadSettingsAndToken(ctx);
+			if (!loaded) return;
+			const { settings, token } = loaded;
 			if (!settings.allowedUserId) {
 				ctx.ui.notify("Set allowedUserId in settings.json first.", "error");
 				return;
@@ -637,16 +650,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("A Telegram mode is already active.", "warning");
 			return;
 		}
-		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
-		for (const warning of warnings) ctx.ui.notify(warning, "warning");
-		const token = resolveSecret(settings.botToken);
-		if (!token) {
-			ctx.ui.notify(
-				'Set botToken in settings.json (or "env:TELEGRAM_BOT_TOKEN").',
-				"error",
-			);
-			return;
-		}
+		const loaded = await loadSettingsAndToken(ctx);
+		if (!loaded) return;
+		const { settings, token } = loaded;
 
 		const activation = await lifecycle.activate({
 			mode: "manager",
