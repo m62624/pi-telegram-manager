@@ -1,27 +1,23 @@
 /**
- * Tools that let the model send extra content to the bound Telegram chat,
- * beyond its normal reply text: `telegram_message` (an interstitial
- * text/markdown message) and `telegram_attach` (a file by local path or URL).
+ * Tool that lets the model send a file to the bound Telegram chat:
+ * `telegram_attach` (a file by local path or URL, with an optional caption).
  *
- * The tools are thin: they validate arguments and delegate to injected `deps`,
- * which the mode controller wires to an `OutboundSender` addressed at the
- * active chat. That keeps the send target and transport out of here, so the
- * tool logic (argument validation, result shape) is unit-testable with fakes.
+ * Mode 1 is a terminal *continuation* — the model's normal reply text is
+ * mirrored to Telegram automatically on turn end, so there is deliberately NO
+ * "send a text message" tool: the model just replies. Only files, which cannot
+ * be mirrored from plain text, need an explicit tool.
  *
- * Both tools are gated by `TELEGRAM_TOOL_NAMES` so they only appear to the
- * model while a mode is active (see `pi/tool-visibility.ts`).
+ * The tool is thin: it validates arguments and delegates to injected `deps`,
+ * which the mode controller wires to an `OutboundSender` addressed at the active
+ * chat. It is gated by `TELEGRAM_TOOL_NAMES` so it only appears while a mode is
+ * active (see `pi/tool-visibility.ts`).
  */
 import { defineTool, type ToolDefinition } from "../pi/sdk";
 
 /** Names of the tools defined here — fed to the visibility gate. */
-export const TELEGRAM_TOOL_NAMES = [
-	"telegram_message",
-	"telegram_attach",
-] as const;
+export const TELEGRAM_TOOL_NAMES = ["telegram_attach"] as const;
 
 export interface AttachmentToolDeps {
-	/** Send a text/markdown message to the active chat now. */
-	sendMessage(text: string): Promise<void>;
 	/** Send a file (exactly one of `path`/`url`) with an optional caption. */
 	sendAttachment(input: {
 		path?: string;
@@ -46,30 +42,6 @@ function fail(text: string) {
 export function createAttachmentTools(
 	deps: AttachmentToolDeps,
 ): ToolDefinition[] {
-	const telegramMessage = defineTool({
-		name: "telegram_message",
-		label: "Telegram Message",
-		description:
-			"Send an extra text/markdown message to the current Telegram chat immediately, separate from your normal reply.",
-		parameters: {
-			type: "object",
-			properties: {
-				text: {
-					type: "string",
-					description: "Message text (Telegram-flavored markdown).",
-				},
-			},
-			required: ["text"],
-			additionalProperties: false,
-		} as never,
-		async execute(_toolCallId, params: { text: string }) {
-			const text = params.text?.trim();
-			if (!text) return fail("telegram_message requires non-empty text.");
-			await deps.sendMessage(text);
-			return ok("Message sent to Telegram.");
-		},
-	});
-
 	const telegramAttach = defineTool({
 		name: "telegram_attach",
 		label: "Telegram Attachment",
@@ -114,5 +86,5 @@ export function createAttachmentTools(
 		},
 	});
 
-	return [telegramMessage, telegramAttach];
+	return [telegramAttach];
 }

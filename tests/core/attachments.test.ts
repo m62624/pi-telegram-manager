@@ -7,7 +7,6 @@ import {
 
 function tools(overrides: Partial<AttachmentToolDeps> = {}) {
 	const deps: AttachmentToolDeps = {
-		sendMessage: vi.fn(async () => {}),
 		sendAttachment: vi.fn(async () => {}),
 		...overrides,
 	};
@@ -25,29 +24,12 @@ function tools(overrides: Partial<AttachmentToolDeps> = {}) {
 }
 
 describe("createAttachmentTools", () => {
-	it("registers exactly the gated tool names", () => {
+	it("registers exactly the gated tool names (attach only, no text tool)", () => {
 		const names = createAttachmentTools({
-			sendMessage: async () => {},
 			sendAttachment: async () => {},
 		}).map((t) => t.name);
 		expect(names).toEqual([...TELEGRAM_TOOL_NAMES]);
-	});
-});
-
-describe("telegram_message", () => {
-	it("sends trimmed text and reports success", async () => {
-		const { deps, run } = tools();
-		const result = await run("telegram_message", { text: "  hi  " });
-		expect(deps.sendMessage).toHaveBeenCalledWith("hi");
-		expect(result.content[0].text).toContain("sent");
-		expect(result.isError).toBeUndefined();
-	});
-
-	it("rejects empty text without sending", async () => {
-		const { deps, run } = tools();
-		const result = await run("telegram_message", { text: "   " });
-		expect(result.isError).toBe(true);
-		expect(deps.sendMessage).not.toHaveBeenCalled();
+		expect(names).not.toContain("telegram_message");
 	});
 });
 

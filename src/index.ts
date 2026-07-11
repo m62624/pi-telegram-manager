@@ -230,12 +230,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, TYPING_REFRESH_MS);
 	};
 
-	// Registered once at load; the visibility gate hides them until a mode is
-	// active, and they route through whichever ConnectController is live.
+	// Registered once at load; the visibility gate hides it until a mode is
+	// active, and it routes through whichever ConnectController is live. Mode 1
+	// mirrors the model's reply text automatically, so only file-sending needs a
+	// tool — there is intentionally no "send a text message" tool.
 	for (const tool of createAttachmentTools({
-		async sendMessage(text) {
-			await connect?.sendToChat(text);
-		},
 		async sendAttachment(input) {
 			// Route to the live connect controller, which uploads the file to the
 			// bound chat (local path or URL). Throwing here surfaces the exact error
