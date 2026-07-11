@@ -41,7 +41,9 @@ describe("buildManagerFeed", () => {
 		expect(html).toContain("observer");
 		expect(html).toContain("Replied");
 		expect(html).toContain("question");
-		expect(html).toContain("#7");
+		// The reply target is named (the interlocutor), not a bare message id.
+		expect(html).toContain("to Alice");
+		expect(html).not.toContain("#7");
 		// Thinking is folded into a collapsed <details> disclosure.
 		expect(html).toContain("<details>");
 		expect(html).toContain("Model thinking");

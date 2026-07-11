@@ -65,25 +65,28 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	const { log, subMode, nowLine, thinking, tools } = entry;
 	const blocks: RichHtml[] = [];
 
-	// Header: who + which chat + which sub-mode.
+	// Header: the interlocutor this turn is about (the important thing — which
+	// conversation), the chat id as a small disambiguator, and the sub-mode.
 	const modeBadge = subMode === "takeover" ? "🎛️ takeover" : "👁️ observer";
 	blocks.push(
 		paragraph(
 			RichHtml.join([
-				bold(`🧑 ${log.contactName}`),
+				"💬 ",
+				bold(log.contactName),
 				"  ",
-				inlineCode(`#${log.chatId}`),
+				inlineCode(`chat #${log.chatId}`),
 				`  ·  ${modeBadge}`,
 			]),
 		),
 	);
 
-	// Outcome headline, with the category and reply target when present.
+	// Outcome headline. For a reply, name who it went to (always the interlocutor
+	// in a 1:1 business chat) rather than a bare message id.
 	const meta: string[] = [];
-	if (log.category) meta.push(log.category);
-	if (log.replyToMessageId !== undefined) {
-		meta.push(`↩︎ #${log.replyToMessageId}`);
+	if (log.outcome === "reply" && log.replyToMessageId !== undefined) {
+		meta.push(`↩︎ to ${log.contactName}`);
 	}
+	if (log.category) meta.push(log.category);
 	const metaSuffix = meta.length > 0 ? `  ·  ${meta.join("  ·  ")}` : "";
 	blocks.push(
 		paragraph(RichHtml.join([bold(OUTCOME_BADGE[log.outcome]), metaSuffix])),
