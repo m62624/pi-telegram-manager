@@ -22,7 +22,7 @@
  * Every Pi/grammY specific arrives as a port, so the coordination is unit-testable
  * with fakes; `index.ts` wires the ports to the live runtime.
  */
-import type { BusinessConnection, Message, User } from "@grammyjs/types";
+import type { BusinessConnection, Message } from "@grammyjs/types";
 import { formatNowLine } from "../../core/datetime";
 import { applyLabeler } from "../../core/render";
 import type { Clock } from "../../core/timers";
@@ -648,9 +648,4 @@ export class ManagerController {
 		await this.persistRecordedFacts(current.userId);
 		await this.deps.consolidationQueue.remove(current.chatId);
 	}
-}
-
-/** Extract a display name from a business-connection user (for stored metadata). */
-export function connectionUserName(user: User): string {
-	return extractProfileFromUser(user).displayName;
 }
