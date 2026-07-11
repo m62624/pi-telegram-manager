@@ -46,6 +46,11 @@ import {
 	type FactSink,
 	MANAGER_TOOL_NAMES,
 } from "./modes/manager/decision";
+import {
+	createInterrogationTools,
+	INTERROGATION_TOOL_NAMES,
+	type ProbeSink,
+} from "./modes/manager/interrogation";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -99,6 +104,10 @@ const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
+// Every tool the manager may use in the telegram-sandbox: the reply/memory tools
+// plus the consolidation interrogation probes.
+const MANAGER_TOOLS = [...MANAGER_TOOL_NAMES, ...INTERROGATION_TOOL_NAMES];
+
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
 	const paths = resolveTelegramPaths();
@@ -115,7 +124,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const contextReset = new ContextReset();
 	const visibility = createToolVisibility(pi, {
 		connect: TELEGRAM_TOOL_NAMES,
-		manager: MANAGER_TOOL_NAMES,
+		manager: MANAGER_TOOLS,
 	});
 	registerToolVisibility(pi, visibility);
 	// Runtime backstop for the telegram-sandbox: block any tool the manager's
@@ -245,11 +254,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const managerFactSink: FactSink = {
 		record: (facts) => manager?.factSink().record(facts),
 	};
-	for (const tool of createManagerTools(
-		managerDecisionSink,
-		managerFactSink,
-		() => manager?.noteSkip(),
-	)) {
+	const managerProbeSink: ProbeSink = {
+		record: (result) => manager?.probeSink().record(result),
+	};
+	for (const tool of [
+		...createManagerTools(managerDecisionSink, managerFactSink),
+		...createInterrogationTools(managerProbeSink),
+	]) {
 		pi.registerTool(tool);
 	}
 
@@ -701,7 +712,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// ask_user, foreign extensions) is hidden by visibility and blocked by the
 		// runtime guard.
 		managerMatcher = createToolMatcher(
-			MANAGER_TOOL_NAMES,
+			MANAGER_TOOLS,
 			settings.manager.allowedTools,
 			(warning) => ctx.ui.notify(warning, "warning"),
 		);
@@ -779,6 +790,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
 			factsLimit: settings.manager.factsLimit,
 			factConsolidationQuietMs: settings.manager.factConsolidationQuietMs,
+			verifyLimit: settings.manager.verifyLimit,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
 			media: settings.manager.media,

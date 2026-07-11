@@ -64,6 +64,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 		ownerReplyWindowMs: 300_000,
 		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
+		verifyLimit: 8,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
@@ -424,8 +425,69 @@ describe("ManagerController", () => {
 		expect(await deps.contactStore.getFacts(String(OWNER_ID))).toEqual([]);
 	});
 
-	it("runs an idle consolidation turn once a chat is settled and quiet", async () => {
-		const { controller, deps, triggerAgent, clock } = await setup();
+	it("drives the consolidation interrogation probe-by-probe and persists verified facts", async () => {
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i just ordered a laptop for work"),
+		});
+		clock.advance(300_001);
+		await controller.onTick(); // chat 42 active, reply turn
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd(); // bot replied → 1:30 continuation + queued
+		// Past the continuation window AND the 30-min quiet period.
+		clock.advance(1_800_001);
+		await controller.onTick(); // releases 42, then starts the interrogation
+
+		// Probe 1 — identify.
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 1 of 3");
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		await controller.onAgentEnd();
+
+		// Probe 2 — candidates. Owner-tagged / non-durable ones are dropped by code.
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 2 of 3");
+		controller.probeSink().record({
+			tool: "candidates",
+			items: [
+				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
+				{ text: "owner ships code", subject: "owner", durable: true },
+				{
+					text: "feeling tired today",
+					subject: "interlocutor",
+					durable: false,
+				},
+			],
+		});
+		await controller.onAgentEnd();
+
+		// Probe 3 — per-fact verify (only the one surviving candidate).
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 3 of 3");
+		controller.probeSink().record({
+			tool: "verify",
+			keep: true,
+			evidenceQuote: "ordered a laptop",
+		});
+		await controller.onAgentEnd();
+
+		const facts = await deps.contactStore.getFacts("5");
+		expect(facts.map((f) => f.text)).toEqual(["ordered a laptop"]);
+		expect(facts[0]).toMatchObject({ subject: "Alice" });
+	});
+
+	it("aborts the interrogation (saves nothing) when identify flags a self-chat", async () => {
+		const { controller, deps, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -433,26 +495,14 @@ describe("ManagerController", () => {
 			message: interlocutorMsg("hi"),
 		});
 		clock.advance(300_001);
-		await controller.onTick(); // chat 42 active, reply turn
+		await controller.onTick();
 		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
-		await controller.onAgentEnd(); // bot replied → 1:30 continuation + queued
-		expect(triggerAgent).toHaveBeenCalledTimes(1);
-		// Past the continuation window AND the 30-min quiet period.
-		clock.advance(1_800_001);
-		await controller.onTick(); // releases 42, then starts consolidation
-		expect(triggerAgent).toHaveBeenCalledTimes(2);
-		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("long-term memory");
-		expect(ctx?.at(-1)?.content).toContain("manager_remember");
-		// The consolidation turn saves a fact.
-		controller
-			.factSink()
-			.record([
-				{ text: "ordered a laptop", subject: "interlocutor", kind: "context" },
-			]);
 		await controller.onAgentEnd();
-		const facts = await deps.contactStore.getFacts("5");
-		expect(facts.map((f) => f.text)).toContain("ordered a laptop");
+		clock.advance(1_800_001);
+		await controller.onTick(); // starts the interrogation
+		controller.probeSink().record({ tool: "identify", sameAsOwner: true });
+		await controller.onAgentEnd();
+		expect(await deps.contactStore.getFacts("5")).toEqual([]);
 	});
 
 	it("turnDecided() gates the loop on the terminal decision, not a bare remember", async () => {
@@ -488,31 +538,6 @@ describe("ManagerController", () => {
 		const after = await controller.buildContextForActive();
 		expect(after?.at(-1)?.content).toContain("already decided");
 		expect(after?.at(-1)?.content).not.toContain("manager_reply");
-	});
-
-	it("treats manager_skip as the terminal action of a consolidation turn", async () => {
-		const { controller, clock } = await setup();
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("hi"),
-		});
-		clock.advance(300_001);
-		await controller.onTick();
-		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
-		await controller.onAgentEnd();
-		clock.advance(1_800_001);
-		await controller.onTick(); // starts a consolidation turn
-		// Before skipping: not terminal, trigger still asks to remember/skip.
-		expect(controller.turnDecided()).toBe(false);
-		const before = await controller.buildContextForActive();
-		expect(before?.at(-1)?.content).toContain("manager_remember");
-		// manager_skip records nothing durable but still ends the turn.
-		controller.noteSkip();
-		expect(controller.turnDecided()).toBe(true);
-		const after = await controller.buildContextForActive();
-		expect(after?.at(-1)?.content).toContain("already decided");
 	});
 
 	it("persists a business connection with the owner id", async () => {

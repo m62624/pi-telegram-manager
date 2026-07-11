@@ -58,6 +58,18 @@ export interface TelegramSettings {
 		 * an idle memory-consolidation pass on it. Default 1800000 (30 min).
 		 */
 		factConsolidationQuietMs: number;
+		/**
+		 * Max candidate facts individually verified in the consolidation
+		 * interrogation (caps its per-fact question loop). Default 8.
+		 */
+		verifyLimit: number;
+		/**
+		 * A newly-arrived interlocutor message older than this (by its true send
+		 * time) is treated as backlog: recorded for context but not engaged as a live
+		 * reply cycle, so a redelivered old conversation never "wakes". Default
+		 * 120000 (2 min).
+		 */
+		liveFreshnessMs: number;
 		responseMode: "smart" | "active" | "mention";
 		markRead: boolean;
 		throttleMs: number;
@@ -99,6 +111,8 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		rememberMessages: 20,
 		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
+		verifyLimit: 8,
+		liveFreshnessMs: 120_000,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -300,6 +314,16 @@ export function normalizeSettings(
 				manager.factConsolidationQuietMs,
 				"manager.factConsolidationQuietMs",
 				d.manager.factConsolidationQuietMs,
+			),
+			verifyLimit: asPositiveInt(
+				manager.verifyLimit,
+				"manager.verifyLimit",
+				d.manager.verifyLimit,
+			),
+			liveFreshnessMs: asPositiveInt(
+				manager.liveFreshnessMs,
+				"manager.liveFreshnessMs",
+				d.manager.liveFreshnessMs,
 			),
 			responseMode: asEnum(
 				manager.responseMode,

@@ -49,6 +49,15 @@ import {
 import { analyzeChat, type ConversationState } from "./conversation-state";
 import { DecisionState, FactState, resolveDecision } from "./decision";
 import { isBotMessage, stripBotMarker, tagBotText } from "./identity";
+import {
+	advance as advanceInterrogation,
+	currentProbe,
+	finalFacts,
+	type InterrogationState,
+	initInterrogation,
+	isDone,
+	ProbeState,
+} from "./interrogation";
 import { ChatScheduler } from "./scheduler";
 import { ReplyGate } from "./submode";
 
@@ -92,14 +101,13 @@ export const MANAGER_TURN_DONE =
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
 	"long-term memory about this specific person. Do NOT reply to anyone — nothing " +
-	"you write reaches Telegram. Extract only durable, useful facts (name, city, " +
-	"role, preferences, agreements, ongoing context), not passing chatter.";
+	"you write reaches Telegram. Work strictly about the interlocutor, never the " +
+	"owner or the bot. Answer only the numbered interrogation step shown below.";
 
-/** Final directive for a consolidation turn. */
-export const CONSOLIDATION_TRIGGER =
-	"[Save any durable facts about this person by calling manager_remember({ facts: " +
-	"[...] }), or call manager_skip if nothing is worth remembering. End the turn " +
-	"with exactly one of those two tools.]";
+/** Bare prompt that kicks off each interrogation probe (real directive is in context). */
+const CONSOLIDATION_PROMPT =
+	"Consolidate your long-term memory about this contact by answering the " +
+	"interrogation step shown, calling exactly the one tool it names.";
 
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
@@ -113,6 +121,8 @@ export interface ManagerControllerDeps {
 	factsLimit: number;
 	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
 	factConsolidationQuietMs: number;
+	/** Max candidates individually verified in the consolidation interrogation. */
+	verifyLimit: number;
 	/** IANA timezone for the `[Now: …]` line; undefined → system zone. */
 	timezone?: string;
 	/** Byte cap for describing/downloading inbound attachments. */
@@ -179,15 +189,21 @@ export class ManagerController {
 	private readonly gate: ReplyGate;
 	private readonly decision = new DecisionState();
 	private readonly facts = new FactState();
+	private readonly probes = new ProbeState();
 	private readonly chats = new Map<string, ChatMeta>();
 	/** Chats with an interlocutor message the model has not answered yet. */
 	private readonly unserved = new Set<string>();
 	/** Freshest downloaded images per chat (in-memory, newest turn only). */
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
-	/** The chat currently being memory-consolidated (idle pass), if any. */
-	private consolidating: { chatId: string; userId?: string } | null = null;
-	/** Set when manager_skip ran this turn (the terminal action of consolidation). */
-	private skipRecorded = false;
+	/**
+	 * The chat currently being memory-consolidated (idle pass), if any, together
+	 * with the interrogation state machine driving its per-probe questions.
+	 */
+	private consolidating: {
+		chatId: string;
+		userId?: string;
+		loop: InterrogationState;
+	} | null = null;
 
 	constructor(private readonly deps: ManagerControllerDeps) {
 		this.scheduler = new ChatScheduler({
@@ -211,9 +227,9 @@ export class ManagerController {
 		return this.facts;
 	}
 
-	/** Note that manager_skip ran (the terminal action of a consolidation turn). */
-	noteSkip(): void {
-		this.skipRecorded = true;
+	/** The per-probe sink the interrogation tools write into (consolidation). */
+	probeSink(): ProbeState {
+		return this.probes;
 	}
 
 	/**
@@ -221,11 +237,11 @@ export class ManagerController {
 	 * can stop re-sampling instead of spinning on identical context. Terminality is
 	 * turn-type specific: a normal turn ends on reply/silent (a bare
 	 * manager_remember does NOT end it — the model may still reply); a consolidation
-	 * turn ends on manager_remember (facts recorded) or manager_skip.
+	 * probe ends as soon as its interrogation tool has been called.
 	 */
 	turnDecided(): boolean {
 		if (this.consolidating) {
-			return this.skipRecorded || this.facts.current().length > 0;
+			return this.probes.current() !== null;
 		}
 		return this.decision.current().kind !== "none";
 	}
@@ -386,9 +402,9 @@ export class ManagerController {
 
 	/** Resolve the finished turn's decision and deliver a reply if the model chose to. */
 	async onAgentEnd(): Promise<void> {
-		// A consolidation turn produced no reply — just persist facts and move on.
+		// A consolidation probe finished — advance the interrogation (no reply sent).
 		if (this.consolidating) {
-			await this.finishConsolidation();
+			await this.advanceConsolidation();
 			return;
 		}
 		const active = this.scheduler.activeChat();
@@ -493,17 +509,25 @@ export class ManagerController {
 		];
 	}
 
-	/** Build the isolated context for an idle memory-consolidation turn. */
+	/**
+	 * Build the isolated context for the current consolidation probe: the shared
+	 * consolidation system block, the isolated transcript, then the directive for
+	 * the interrogation's current step (identify → candidates → per-fact verify).
+	 * Once the probe's tool has been called, the done directive ends the turn.
+	 */
 	private async buildConsolidationContext(): Promise<IsolatedMessage[]> {
-		const { chatId } = this.consolidating as { chatId: string };
+		const current = this.consolidating as {
+			chatId: string;
+			loop: InterrogationState;
+		};
 		const records = await this.deps.chatStore.getRecent(
-			chatId,
+			current.chatId,
 			this.deps.rememberMessages,
 		);
-		const meta = this.chats.get(chatId);
+		const meta = this.chats.get(current.chatId);
 		const isolated = buildIsolatedMessages({
 			records,
-			boundary: boundaryDirective(meta?.contactName ?? chatId),
+			boundary: boundaryDirective(meta?.contactName ?? current.chatId),
 		});
 		const known = await this.knownFactsBlock(meta);
 		const system =
@@ -515,7 +539,9 @@ export class ManagerController {
 			...isolated,
 			{
 				role: "user",
-				content: this.turnDecided() ? MANAGER_TURN_DONE : CONSOLIDATION_TRIGGER,
+				content: this.turnDecided()
+					? MANAGER_TURN_DONE
+					: currentProbe(current.loop).directive,
 			},
 		];
 	}
@@ -561,7 +587,6 @@ export class ManagerController {
 		if (active === null || !this.unserved.has(active)) return false;
 		this.decision.reset();
 		this.facts.reset();
-		this.skipRecorded = false;
 		const meta = this.chats.get(active);
 		if (meta) {
 			await this.deps
@@ -650,19 +675,54 @@ export class ManagerController {
 			this.deps.factConsolidationQuietMs,
 		);
 		if (!entry) return;
-		this.consolidating = { chatId: entry.chatId, userId: entry.userId };
+		const contactName =
+			this.chats.get(entry.chatId)?.contactName ?? entry.chatId;
+		this.consolidating = {
+			chatId: entry.chatId,
+			userId: entry.userId,
+			loop: initInterrogation(contactName),
+		};
 		this.facts.reset();
-		this.skipRecorded = false;
-		await this.deps.triggerAgent(
-			"Review the recent Telegram conversation and update your long-term memory with manager_remember or manager_skip.",
-		);
+		this.probes.reset();
+		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
 	}
 
-	/** Persist facts from a consolidation turn and drop the chat from the queue. */
-	private async finishConsolidation(): Promise<void> {
+	/**
+	 * Advance the interrogation by one probe. Reads the tool result recorded this
+	 * turn, steps the state machine, then either triggers the next probe or — when
+	 * the interrogation is done — persists the confirmed facts (through the same
+	 * who-is-who firewall) and drops the chat from the consolidation queue.
+	 */
+	private async advanceConsolidation(): Promise<void> {
 		const current = this.consolidating;
-		this.consolidating = null;
 		if (!current) return;
+		const records = await this.deps.chatStore.getRecent(
+			current.chatId,
+			this.deps.rememberMessages,
+		);
+		const interlocutorLines = records
+			.filter((record) => record.author === "interlocutor")
+			.map((record) => record.text);
+		const next = advanceInterrogation(
+			current.loop,
+			this.probes.current(),
+			interlocutorLines,
+			this.deps.verifyLimit,
+		);
+		this.probes.reset();
+		if (!isDone(next)) {
+			this.consolidating = { ...current, loop: next };
+			await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
+			return;
+		}
+		// Interrogation finished: persist the confirmed facts through the firewall.
+		this.consolidating = null;
+		this.facts.reset();
+		for (const fact of finalFacts(next)) {
+			this.facts.record([
+				{ text: fact.text, subject: "interlocutor", kind: fact.kind },
+			]);
+		}
 		const contactName = this.chats.get(current.chatId)?.contactName;
 		await this.persistRecordedFacts(current.userId, contactName);
 		await this.deps.consolidationQueue.remove(current.chatId);
