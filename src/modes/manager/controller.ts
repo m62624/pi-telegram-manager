@@ -101,6 +101,20 @@ export const MANAGER_TURN_DONE =
 	"[You have already decided this turn. Do not call any more tools. Reply with a " +
 	"single word to end the turn.]";
 
+/**
+ * Trailing directive when a drafted reply is held back because new messages
+ * arrived mid-turn: the model reconsiders it against the newer messages and
+ * either resends it, revises it, or drops it.
+ */
+export function reviseDirective(draft: string): string {
+	return (
+		`[You were about to send this reply: «${draft}». Since then the interlocutor ` +
+		"sent new message(s), shown above. Reconsider against them: call manager_reply " +
+		"to send — resend the same text as-is if it still fits, or revise it (set " +
+		"reply_to to the message you answer) — or manager_silent to drop it.]"
+	);
+}
+
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -270,6 +284,21 @@ export class ManagerController {
 	/** Freshest downloaded images per chat (in-memory, newest turn only). */
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
 	/**
+	 * Chats that received a new interlocutor message WHILE their turn was already
+	 * running (mid-inference). On turn end such a chat is not marked served and its
+	 * reply is not sent blind — instead the model reconsiders against the newer
+	 * messages, so nothing that arrived during generation is skipped.
+	 */
+	private readonly dirtyDuringTurn = new Set<string>();
+	/**
+	 * A reply the model drafted but that we held back because new messages landed
+	 * mid-turn. Surfaced to the model next turn so it can resend as-is or revise.
+	 */
+	private readonly pendingReply = new Map<
+		string,
+		{ text: string; replyTo?: number }
+	>();
+	/**
 	 * The chat currently being memory-consolidated (idle pass), if any, together
 	 * with the interrogation state machine driving its per-probe questions.
 	 */
@@ -425,6 +454,11 @@ export class ManagerController {
 		// stale chats are still worth answering.
 		if (now - messageTime > this.deps.liveFreshnessMs) return;
 		this.unserved.add(chatId);
+		// Landed while this chat's turn was mid-flight: flag it so turn end reconsiders
+		// against this newer message instead of sending a now-stale reply blind.
+		if (this.scheduler.activeChat() === chatId && !this.deps.isIdle()) {
+			this.dirtyDuringTurn.add(chatId);
+		}
 		if (this.scheduler.activeChat() === chatId) {
 			// A continuation of the active chat: cancel its continuation-release so it
 			// stays active; it will be served on the next tick. No 5-min wait.
@@ -501,10 +535,20 @@ export class ManagerController {
 		const meta = this.chats.get(active);
 		// Persist any durable facts the model recorded mid-conversation.
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
-		// This chat has been served this turn, whatever the model decided.
+		this.gate.clearServed(active);
+		// New interlocutor message(s) arrived while this turn was generating: don't
+		// send the now-stale draft blind. Hold it, keep the chat unserved, and let the
+		// model reconsider next turn against the newer messages (revise or resend).
+		const arrivedMidTurn = this.dirtyDuringTurn.delete(active);
+		if (text && arrivedMidTurn) {
+			this.pendingReply.set(active, { text, replyTo: requestedReplyTo });
+			await this.triggerTurn();
+			return;
+		}
+		// The turn settled — this chat is served, whatever the model decided.
 		this.unserved.delete(active);
 		this.latestImages.delete(active);
-		this.gate.clearServed(active);
+		this.pendingReply.delete(active);
 		if (text) {
 			if (meta) {
 				const records = await this.deps.chatStore.getRecent(
@@ -590,6 +634,7 @@ export class ManagerController {
 			`\n\n${this.nowLine()}` +
 			(known ? `\n\n${known}` : "") +
 			`\n\n${stateSummary(analyzeChat(records))}`;
+		const pending = this.pendingReply.get(active);
 		return [
 			{ role: "user", content: system },
 			...isolated,
@@ -597,7 +642,9 @@ export class ManagerController {
 				role: "user",
 				content: this.turnDecided()
 					? MANAGER_TURN_DONE
-					: MANAGER_ACTION_TRIGGER,
+					: pending
+						? reviseDirective(pending.text)
+						: MANAGER_ACTION_TRIGGER,
 			},
 		];
 	}
@@ -680,6 +727,9 @@ export class ManagerController {
 		if (active === null || !this.unserved.has(active)) return false;
 		this.decision.reset();
 		this.facts.reset();
+		// Fresh turn: only messages that arrive AFTER this point count as mid-turn
+		// arrivals that should trigger a reconsider.
+		this.dirtyDuringTurn.delete(active);
 		const meta = this.chats.get(active);
 		if (meta) {
 			await this.deps

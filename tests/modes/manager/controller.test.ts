@@ -175,6 +175,55 @@ describe("ManagerController", () => {
 		expect(sendReply.mock.calls[1][0].replyToMessageId).toBe(11);
 	});
 
+	it("does not skip a message that arrives mid-turn — holds the draft and reconsiders", async () => {
+		const { controller, sendReply, triggerAgent, setIdle, clock } =
+			await setup();
+		// Chat 42 becomes active and a turn starts.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("first question", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(controller.status().activeChat).toBe("42");
+		const triggersAfterStart = triggerAgent.mock.calls.length;
+
+		// A new message lands WHILE the agent is generating (busy).
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("wait, also this", 5, 2),
+		});
+
+		// The model drafts a reply to the first question; the turn ends.
+		setIdle(true);
+		controller
+			.decisionSink()
+			.record({ kind: "reply", text: "answer to first" });
+		await controller.onAgentEnd();
+
+		// Nothing sent yet — the draft is held and the turn is re-triggered.
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
+
+		// The reconsider turn surfaces the draft + the newer message.
+		const ctx = await controller.buildContextForActive();
+		const directive = ctx?.at(-1)?.content ?? "";
+		expect(directive).toContain("answer to first");
+		expect(directive).toContain("manager_reply");
+		expect(ctx?.some((m) => m.content.includes("wait, also this"))).toBe(true);
+
+		// The model resends (no new mid-turn message this time) → delivered.
+		controller.decisionSink().record({ kind: "reply", text: "answer to both" });
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain("answer to both");
+	});
+
 	it("stays silent when the model chooses manager_silent (no send)", async () => {
 		const { controller, sendReply } = await setup();
 		await controller.onBusinessMessage({
