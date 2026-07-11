@@ -95,8 +95,10 @@ describe("formatPiCommandList", () => {
 		]);
 	});
 
-	it("handles an empty registry", () => {
-		expect(formatPiCommandList([])).toBe("No Pi commands are registered.");
+	it("keeps an empty registry on the same formatted footing (header + note)", () => {
+		expect(formatPiCommandList([])).toBe(
+			"*Pi commands* (run these in the terminal):\n_No commands are registered yet._",
+		);
 	});
 });
 

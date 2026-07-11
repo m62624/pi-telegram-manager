@@ -88,7 +88,12 @@ export interface PiCommandInfo {
 export function formatPiCommandList(
 	commands: readonly PiCommandInfo[],
 ): string {
-	if (commands.length === 0) return "No Pi commands are registered.";
+	const header = "*Pi commands* (run these in the terminal):";
+	// Keep the empty case on the same formatted footing as the populated one — a
+	// bold header plus an italic note — rather than a bare single line.
+	if (commands.length === 0) {
+		return [header, "_No commands are registered yet._"].join("\n");
+	}
 	const lines = [...commands]
 		.sort((a, b) => a.name.localeCompare(b.name))
 		.map((command) => {
@@ -97,7 +102,7 @@ export function formatPiCommandList(
 				: "";
 			return `/${command.name}${description}`;
 		});
-	return ["*Pi commands* (run these in the terminal):", ...lines].join("\n");
+	return [header, ...lines].join("\n");
 }
 
 /** Map a Telegram message to the prompt-turn input (sender, reply, attachments). */
