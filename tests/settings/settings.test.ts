@@ -91,6 +91,13 @@ describe("normalizeSettings", () => {
 				.reviseThreshold,
 		).toBe(5);
 	});
+
+	it("defaults debugFeed off and accepts an explicit toggle", () => {
+		expect(normalizeSettings({}).manager.debugFeed).toBe(false);
+		expect(
+			normalizeSettings({ manager: { debugFeed: true } }).manager.debugFeed,
+		).toBe(true);
+	});
 });
 
 describe("loadSettings", () => {

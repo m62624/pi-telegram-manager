@@ -293,6 +293,50 @@ describe("ManagerController", () => {
 		);
 	});
 
+	it("returns a turn log describing the decision (for the owner debug feed)", async () => {
+		const { controller, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("need the invoice?", 5, 3),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		controller.decisionSink().record({
+			kind: "reply",
+			text: "Sure, sending it.",
+			category: "question",
+		});
+		const replyLog = await controller.onAgentEnd();
+		expect(replyLog).toMatchObject({
+			chatId: "42",
+			outcome: "reply",
+			text: "Sure, sending it.",
+			category: "question",
+			replyToMessageId: 3,
+		});
+
+		// A silent turn reports the reason; an idle slot reports nothing.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("cool", 5, 4),
+		});
+		controller.decisionSink().record({
+			kind: "silent",
+			reason: "just an acknowledgement",
+		});
+		const silentLog = await controller.onAgentEnd();
+		expect(silentLog).toMatchObject({
+			outcome: "silent",
+			text: "just an acknowledgement",
+		});
+		expect(await controller.onAgentEnd()).toBeNull();
+	});
+
 	it("greets a chat resuming after a long silence with the reopen template", async () => {
 		const { controller, clock } = await setup();
 		// Establish history: an interlocutor message and a bot reply.

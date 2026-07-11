@@ -146,6 +146,31 @@ export function extractText(content: AgentMessageLike["content"]): string {
 		.join("");
 }
 
+/**
+ * The model's private reasoning from the most recent assistant message that has
+ * any — scanning backward so we capture the turn's final thinking without
+ * dragging in earlier turns. Empty string when there is none. Never sent to
+ * Telegram as a reply; used only for the owner-side debug feed.
+ */
+export function lastAssistantThinking(messages: readonly unknown[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as AgentMessageLike;
+		if (message.role !== "assistant" || !Array.isArray(message.content)) {
+			continue;
+		}
+		const thinking = message.content
+			.filter(
+				(part) =>
+					THINKING_TYPES.has(part.type ?? "") && typeof part.text === "string",
+			)
+			.map((part) => part.text)
+			.join("\n\n")
+			.trim();
+		if (thinking) return thinking;
+	}
+	return "";
+}
+
 /** The assistant's reply text from a finished message, or null when it isn't an assistant reply. */
 export function assistantReplyText(message: AgentMessageLike): string | null {
 	if (message.role !== "assistant") return null;

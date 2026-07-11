@@ -98,6 +98,12 @@ export interface TelegramSettings {
 		 * the draft immediately without any re-read.
 		 */
 		reviseThreshold: number;
+		/**
+		 * Mirror every manager turn (thinking, tool calls, decision) to the owner's
+		 * private chat with the bot — the bot account is idle in mode 2, so it doubles
+		 * as an observability feed. Default false (opt-in; it is chatty in observer).
+		 */
+		debugFeed: boolean;
 		subMode: ManagerSubMode;
 		observer: {
 			interlocutorInstructionFile?: string;
@@ -135,6 +141,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
+		debugFeed: false,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -392,6 +399,11 @@ export function normalizeSettings(
 				manager.reviseThreshold,
 				"manager.reviseThreshold",
 				d.manager.reviseThreshold,
+			),
+			debugFeed: asBoolean(
+				manager.debugFeed,
+				"manager.debugFeed",
+				d.manager.debugFeed,
 			),
 			subMode: asEnum(
 				manager.subMode,

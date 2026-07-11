@@ -5,6 +5,7 @@ import {
 	extractText,
 	formatPiCommandList,
 	lastAssistantReply,
+	lastAssistantThinking,
 	messageText,
 	messageToTurnInput,
 	parseSlashCommand,
@@ -192,5 +193,35 @@ describe("lastAssistantReply", () => {
 	it("returns null when no assistant message has text", () => {
 		expect(lastAssistantReply([{ role: "user", content: "hi" }])).toBeNull();
 		expect(lastAssistantReply([])).toBeNull();
+	});
+});
+
+describe("lastAssistantThinking", () => {
+	it("returns the reasoning of the most recent assistant message that has any", () => {
+		expect(
+			lastAssistantThinking([
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", text: "old reasoning" },
+						{ type: "text", text: "old reply" },
+					],
+				},
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", text: "fresh reasoning" },
+						{ type: "text", text: "fresh reply" },
+					],
+				},
+			]),
+		).toBe("fresh reasoning");
+	});
+
+	it("returns empty string when there is no reasoning part", () => {
+		expect(
+			lastAssistantThinking([{ role: "assistant", content: "just text" }]),
+		).toBe("");
+		expect(lastAssistantThinking([])).toBe("");
 	});
 });

@@ -40,11 +40,19 @@ import { card, note } from "./modes/connect/format";
 import {
 	extractText,
 	lastAssistantReply,
+	lastAssistantThinking,
 	type PromptContent,
 } from "./modes/connect/messages";
 import { selectCatchUpChats } from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
-import { ManagerController } from "./modes/manager/controller";
+import {
+	ManagerController,
+	type ManagerTurnLog,
+} from "./modes/manager/controller";
+import {
+	buildManagerFeed,
+	type ManagerToolCall,
+} from "./modes/manager/debug-feed";
 import {
 	createManagerTools,
 	type DecisionSink,
@@ -200,6 +208,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let manager: ManagerController | null = null;
 	// The active telegram-sandbox allowlist; null while the manager is inactive.
 	let managerMatcher: ToolMatcher | null = null;
+	// Tool calls made during the current manager turn, gathered for the debug feed
+	// (reset each agent_start, drained on agent_end).
+	let managerTurnTools: ManagerToolCall[] = [];
+	// Set while the manager runs with debugFeed on: mirror one turn to the owner.
+	let deliverManagerFeed:
+		| ((
+				log: ManagerTurnLog,
+				thinking: string,
+				tools: readonly ManagerToolCall[],
+		  ) => Promise<void>)
+		| null = null;
 	let managerClient: TelegramClient | null = null;
 	let managerTick: ReturnType<typeof setInterval> | null = null;
 	let managerHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -306,6 +325,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await managerClient?.stop().catch(() => {});
 		managerClient = null;
 		manager = null;
+		deliverManagerFeed = null;
 		visibility.setActive("manager", false);
 		visibility.setExclusive("manager", null);
 		managerMatcher = null;
@@ -336,6 +356,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
+		managerTurnTools = [];
 		connect?.onAgentStart(() => ctx.abort());
 		startTyping();
 	});
@@ -357,11 +378,33 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (manager) {
 			// Pass the trailing assistant prose so the manager can recover a reply the
 			// model wrote as plain text instead of calling a tool (otherwise dropped).
-			await manager.onAgentEnd(lastAssistantReply(event.messages) ?? undefined);
+			const log = await manager.onAgentEnd(
+				lastAssistantReply(event.messages) ?? undefined,
+			);
 			updateManagerBanner();
+			// Mirror the turn (thinking, tools, decision) to the owner's bot DM when
+			// the debug feed is on. Best-effort — a feed failure never blocks a reply.
+			if (log && deliverManagerFeed) {
+				await deliverManagerFeed(
+					log,
+					lastAssistantThinking(event.messages),
+					managerTurnTools,
+				).catch(() => {});
+			}
 		}
 	});
 	pi.on("tool_execution_start", async (event) => {
+		// Record every manager tool call for the debug feed, before the connect guard
+		// (mode 2 has no ConnectController but still needs the feed).
+		if (manager) {
+			let args = "";
+			try {
+				args = JSON.stringify(event.args) ?? "";
+			} catch {
+				args = "";
+			}
+			managerTurnTools.push({ name: event.toolName, args });
+		}
 		if (!connect || !toolActivityEnabled) return;
 		await connect
 			.sendToolActivity({ toolName: event.toolName, args: event.args })
@@ -875,6 +918,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				});
 			},
 		});
+		// The bot account is idle in mode 2, so with debugFeed on it doubles as an
+		// observability channel: each turn is mirrored to the owner's private chat
+		// with the bot (no business connection → sent as the bot, not as the owner).
+		if (settings.manager.debugFeed) {
+			deliverManagerFeed = async (log, thinking, tools) => {
+				const connections = await businessStore.all();
+				const ownerId =
+					connections.find((connection) => connection.isEnabled)?.userId ??
+					connections[0]?.userId;
+				if (!ownerId) return;
+				await managerOutbound.notify(
+					{ chatId: Number(ownerId) },
+					buildManagerFeed({
+						log,
+						subMode,
+						nowLine: formatNowLine(Date.now(), settings.timezone),
+						thinking: thinking || undefined,
+						tools,
+					}),
+				);
+			};
+		}
 		void managerClient.start();
 		visibility.setExclusive("manager", managerMatcher);
 		visibility.setActive("manager", true);

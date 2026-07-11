@@ -184,6 +184,26 @@ const KIND_ORDER: readonly FactKind[] = [
 	"context",
 ];
 
+/** What a finished manager turn decided, for the owner-side debug feed. */
+export type ManagerTurnOutcome = "reply" | "silent" | "held" | "corrected";
+
+/**
+ * A compact record of a single manager turn's outcome, returned by
+ * {@link ManagerController.onAgentEnd} so the caller can mirror the model's
+ * decision (and, at the index layer, its thinking + tool calls) to the owner.
+ */
+export interface ManagerTurnLog {
+	chatId: string;
+	contactName: string;
+	outcome: ManagerTurnOutcome;
+	/** The message category the model assigned, when it called a tool. */
+	category?: string;
+	/** Reply text (reply/held/corrected outcomes) or the silent reason. */
+	text?: string;
+	/** The Telegram message id a delivered reply threaded to. */
+	replyToMessageId?: number;
+}
+
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
 	/** Assembled system-instruction blocks injected at the top of the context. */
@@ -599,24 +619,37 @@ export class ManagerController {
 	 * Resolve the finished turn's decision and deliver a reply if the model chose
 	 * to. `finalText` is the turn's trailing assistant prose (if any), used only to
 	 * recover a reply the model wrote as plain text instead of calling a tool.
+	 *
+	 * Returns a compact log of what the turn decided (for the owner-side debug
+	 * feed), or null when there is nothing to report (idle slot or a consolidation
+	 * probe, neither of which is a chat-facing decision).
 	 */
-	async onAgentEnd(finalText?: string): Promise<void> {
+	async onAgentEnd(finalText?: string): Promise<ManagerTurnLog | null> {
 		// A consolidation probe finished — advance the interrogation (no reply sent).
 		if (this.consolidating) {
 			await this.advanceConsolidation();
-			return;
+			return null;
 		}
 		const active = this.scheduler.activeChat();
 		if (active === null) {
 			this.facts.reset();
-			return;
+			return null;
 		}
 		const decision = this.decision.current();
 		let text = resolveDecision(decision);
 		let requestedReplyTo =
 			decision.kind === "reply" ? decision.replyTo : undefined;
+		// Capture the decision's descriptive fields before the reset clears them.
+		const decisionKind = decision.kind;
+		const category =
+			decision.kind === "reply" || decision.kind === "silent"
+				? decision.category
+				: undefined;
+		const silentReason =
+			decision.kind === "silent" ? decision.reason : undefined;
 		this.decision.reset();
 		const meta = this.chats.get(active);
+		const contactName = meta?.contactName ?? active;
 		// Persist any durable facts the model recorded mid-conversation.
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		this.gate.clearServed(active);
@@ -624,12 +657,17 @@ export class ManagerController {
 		// delivered, so the reply was lost. Re-prompt once to make it call a tool; if
 		// it writes prose again, deliver the text verbatim rather than dropping it.
 		const prose = finalText?.trim();
-		if (decision.kind === "none" && prose) {
+		if (decisionKind === "none" && prose) {
 			if (!this.proseRetried.has(active)) {
 				this.proseRetried.add(active);
 				this.correction.set(active, PROSE_CORRECTION);
 				await this.triggerTurn();
-				return;
+				return {
+					chatId: active,
+					contactName,
+					outcome: "corrected",
+					text: prose,
+				};
 			}
 			text = prose;
 			requestedReplyTo = undefined;
@@ -646,7 +684,7 @@ export class ManagerController {
 				this.reviseCount.set(active, cycles + 1);
 				this.pendingReply.set(active, { text, replyTo: requestedReplyTo });
 				await this.triggerTurn();
-				return;
+				return { chatId: active, contactName, outcome: "held", text, category };
 			}
 		}
 		// The turn settled — this chat is served, whatever the model decided.
@@ -656,18 +694,20 @@ export class ManagerController {
 		this.reviseCount.delete(active);
 		this.proseRetried.delete(active);
 		this.correction.delete(active);
+		let deliveredReplyTo: number | undefined;
 		if (text) {
 			if (meta) {
 				const records = await this.deps.chatStore.getRecent(
 					active,
 					this.deps.rememberMessages,
 				);
+				deliveredReplyTo = resolveReplyTarget(records, requestedReplyTo);
 				const outgoing = tagBotText(applyLabeler(text, this.deps.labeler));
 				const ids = await this.deps.sendReply({
 					connectionId: meta.connectionId,
 					chatId: active,
 					text: outgoing,
-					replyToMessageId: resolveReplyTarget(records, requestedReplyTo),
+					replyToMessageId: deliveredReplyTo,
 				});
 				// A long reply can split into several rich messages; record every id
 				// so the bot recognises each as its own echo, and keep the first for
@@ -690,6 +730,22 @@ export class ManagerController {
 			this.scheduler.next();
 		}
 		await this.triggerTurn();
+		return text
+			? {
+					chatId: active,
+					contactName,
+					outcome: "reply",
+					text,
+					category,
+					replyToMessageId: deliveredReplyTo,
+				}
+			: {
+					chatId: active,
+					contactName,
+					outcome: "silent",
+					text: silentReason,
+					category,
+				};
 	}
 
 	/**
