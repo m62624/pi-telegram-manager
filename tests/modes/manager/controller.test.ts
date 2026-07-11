@@ -366,6 +366,51 @@ describe("ManagerController", () => {
 		expect(ctx?.[0].content).toContain("[Now:");
 	});
 
+	it("groups known facts into per-kind sections with their directives", async () => {
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		await deps.contactStore.appendFacts(
+			"5",
+			[
+				{
+					text: "name is Alice",
+					timestamp: 0,
+					source: "manager",
+					kind: "identity",
+				},
+				{
+					text: "prefers Russian",
+					timestamp: 0,
+					source: "manager",
+					kind: "preference",
+				},
+				{
+					text: "promised a quote by Friday",
+					timestamp: 0,
+					source: "manager",
+					kind: "agreement",
+				},
+			],
+			20,
+		);
+		clock.advance(300_001);
+		await controller.onTick();
+		const system =
+			(await controller.buildContextForActive())?.[0].content ?? "";
+		// Each kind is its own section with the behaviour it steers.
+		expect(system).toContain("Who they are");
+		expect(system).toContain("address them correctly");
+		expect(system).toContain("Preferences");
+		expect(system).toContain("Adapt your tone");
+		expect(system).toContain("Agreements");
+		expect(system).toContain("proactively follow up");
+	});
+
 	it("persists facts recorded via manager_remember on turn end", async () => {
 		const { controller, deps, clock } = await setup();
 		await controller.onBusinessMessage({

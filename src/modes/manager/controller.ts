@@ -34,7 +34,11 @@ import {
 import type { BusinessStore } from "../../storage/business-store";
 import type { ChatStore } from "../../storage/chat-store";
 import type { ConsolidationQueue } from "../../storage/consolidation-queue";
-import type { ContactFact, ContactStore } from "../../storage/contact-store";
+import type {
+	ContactFact,
+	ContactStore,
+	FactKind,
+} from "../../storage/contact-store";
 import type { SentRegistry } from "../../storage/sent-registry";
 import type { ManagerSubMode } from "../../storage/singleton-store";
 import { describeAttachments, isImage } from "../../telegram/media";
@@ -108,6 +112,40 @@ export const CONSOLIDATION_INSTRUCTIONS =
 const CONSOLIDATION_PROMPT =
 	"Consolidate your long-term memory about this contact by answering the " +
 	"interrogation step shown, calling exactly the one tool it names.";
+
+/**
+ * How each fact kind is surfaced in the "Known facts" block — a section title
+ * plus the behaviour it should steer, so a fact does work rather than being a
+ * flat note. Rendered in this order; untagged facts fall under `context`.
+ */
+const KIND_SECTIONS: Record<FactKind, { title: string; directive: string }> = {
+	identity: {
+		title: "Who they are",
+		directive:
+			"Ground your replies in these; address them correctly and never re-ask what you already know.",
+	},
+	preference: {
+		title: "Preferences",
+		directive: "Adapt your tone, format, and language to these.",
+	},
+	agreement: {
+		title: "Agreements",
+		directive:
+			"These are commitments — honour them and proactively follow up on them.",
+	},
+	context: {
+		title: "Context",
+		directive:
+			"Background that may be out of date — do not assume it still holds.",
+	},
+};
+
+const KIND_ORDER: readonly FactKind[] = [
+	"identity",
+	"preference",
+	"agreement",
+	"context",
+];
 
 export interface ManagerControllerDeps {
 	subMode: ManagerSubMode;
@@ -604,14 +642,33 @@ export class ManagerController {
 		return formatNowLine(this.deps.clock.now(), this.deps.timezone);
 	}
 
-	/** A "Known facts about X" block for a chat's contact, or "" when none. */
+	/**
+	 * A "Known facts about X" block for a chat's contact, grouped into sections by
+	 * kind — each section leads with the behaviour that kind should steer, so the
+	 * model uses an identity fact differently from a preference or an agreement.
+	 * Returns "" when there is nothing to show.
+	 */
 	private async knownFactsBlock(meta: ChatMeta | undefined): Promise<string> {
 		if (!meta?.userId) return "";
 		const facts = await this.deps.contactStore.getFacts(meta.userId);
 		if (facts.length === 0) return "";
 		const recent = facts.slice(-this.deps.factsLimit);
-		const lines = recent.map((fact) => `- ${fact.text}`).join("\n");
-		return `Known facts about ${meta.contactName}:\n${lines}`;
+		const byKind = new Map<FactKind, string[]>();
+		for (const fact of recent) {
+			const kind = fact.kind ?? "context";
+			const bucket = byKind.get(kind) ?? [];
+			bucket.push(fact.text);
+			byKind.set(kind, bucket);
+		}
+		const sections: string[] = [];
+		for (const kind of KIND_ORDER) {
+			const items = byKind.get(kind);
+			if (!items?.length) continue;
+			const { title, directive } = KIND_SECTIONS[kind];
+			const lines = items.map((text) => `- ${text}`).join("\n");
+			sections.push(`${title} (${directive})\n${lines}`);
+		}
+		return `Known facts about ${meta.contactName}:\n\n${sections.join("\n\n")}`;
 	}
 
 	/**
