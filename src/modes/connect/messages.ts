@@ -57,7 +57,14 @@ export function senderDisplayName(from: User | undefined): string | undefined {
 
 /** The text a message carries — its body or a media caption. */
 export function messageText(message: Message): string {
-	return message.text ?? message.caption ?? "";
+	const base = message.text ?? message.caption ?? "";
+	if (base) return base;
+	if (message.sticker) {
+		return message.sticker.emoji
+			? `[sticker] ${message.sticker.emoji}`
+			: "[sticker]";
+	}
+	return "";
 }
 
 /**

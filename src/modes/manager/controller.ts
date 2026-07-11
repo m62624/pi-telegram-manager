@@ -297,9 +297,19 @@ interface ChatMeta {
 	userId?: string;
 }
 
-/** Text a message carries — body or media caption. */
+/**
+ * Text a message carries — body, media caption, or, for a sticker (otherwise an
+ * empty message), its base emoji so the model can read it like any other emoji.
+ */
 function messageText(message: Message): string {
-	return message.text ?? message.caption ?? "";
+	const base = message.text ?? message.caption ?? "";
+	if (base) return base;
+	if (message.sticker) {
+		return message.sticker.emoji
+			? `[sticker] ${message.sticker.emoji}`
+			: "[sticker]";
+	}
+	return "";
 }
 
 /**

@@ -52,6 +52,13 @@ describe("messageText", () => {
 		expect(messageText(message({ caption: "cap" }))).toBe("cap");
 		expect(messageText(message({}))).toBe("");
 	});
+
+	it("surfaces a sticker's emoji so it is not an empty message", () => {
+		expect(messageText(message({ sticker: { emoji: "😂" } }))).toBe(
+			"[sticker] 😂",
+		);
+		expect(messageText(message({ sticker: {} }))).toBe("[sticker]");
+	});
 });
 
 describe("parseSlashCommand", () => {
