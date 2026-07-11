@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ManagerTurnLog } from "../../../src/modes/manager/controller";
-import { buildManagerFeed } from "../../../src/modes/manager/debug-feed";
+import {
+	buildManagerFeed,
+	buildManagerNotice,
+} from "../../../src/modes/manager/debug-feed";
 
 const NOW = "[Now: 2026-07-11 20:00 +05]";
 
@@ -89,5 +92,18 @@ describe("buildManagerFeed", () => {
 		expect(html).toContain("&lt;");
 		expect(html).toContain("&amp;");
 		expect(html).not.toContain("1 < 2");
+	});
+});
+
+describe("buildManagerNotice", () => {
+	it("renders a warning/error notice with its badge and message", () => {
+		const warn = buildManagerNotice("warning", "rich fell back to plain", NOW);
+		expect(warn.toString()).toContain("Warning");
+		expect(warn.toString()).toContain("rich fell back to plain");
+		expect(warn.toString()).toContain(NOW);
+
+		const err = buildManagerNotice("error", "Telegram error: 429", NOW);
+		expect(err.toString()).toContain("Error");
+		expect(err.toString()).toContain("Telegram error: 429");
 	});
 });

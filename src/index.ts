@@ -51,6 +51,8 @@ import {
 } from "./modes/manager/controller";
 import {
 	buildManagerFeed,
+	buildManagerNotice,
+	type ManagerNoticeLevel,
 	type ManagerToolCall,
 } from "./modes/manager/debug-feed";
 import {
@@ -220,8 +222,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				tools: readonly ManagerToolCall[],
 		  ) => Promise<void>)
 		| null = null;
-	// One-shot guard so a broken debug feed logs once, not every turn.
+	// One-shot guard so a broken debug feed is surfaced once, not every turn.
 	let managerFeedWarned = false;
+	// Set while the manager runs with debugFeed on: relay a runtime warning/error/
+	// info notice to the owner's bot DM.
+	let mirrorManagerNotice:
+		| ((level: ManagerNoticeLevel, message: string) => void)
+		| null = null;
 	let managerClient: TelegramClient | null = null;
 	let managerTick: ReturnType<typeof setInterval> | null = null;
 	let managerHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -329,6 +336,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerClient = null;
 		manager = null;
 		deliverManagerFeed = null;
+		mirrorManagerNotice = null;
 		visibility.setActive("manager", false);
 		visibility.setExclusive("manager", null);
 		managerMatcher = null;
@@ -389,16 +397,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// the debug feed is on. Best-effort — a feed failure never blocks a reply,
 			// but the first failure is logged so a misconfigured feed is diagnosable.
 			if (log && deliverManagerFeed) {
+				// Errors are surfaced inside the sender (once), so swallow here.
 				await deliverManagerFeed(
 					log,
 					lastAssistantThinking(event.messages),
 					managerTurnTools,
-				).catch((error) => {
-					if (!managerFeedWarned) {
-						managerFeedWarned = true;
-						console.error("[telegram-manager] debug feed failed:", error);
-					}
-				});
+				).catch(() => {});
 			}
 		}
 	});
@@ -836,8 +840,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
-			onError: (error) =>
-				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+			onError: (error) => {
+				ctx.ui.notify(`Telegram error: ${String(error)}`, "error");
+				mirrorManagerNotice?.("error", `Telegram error: ${String(error)}`);
+			},
 			// Keep the backlog: messages that arrived while the manager was offline
 			// are redelivered on start, so the bot can catch up on what it missed
 			// (mode 1 keeps the default drop — stale terminal commands are unwanted).
@@ -932,17 +938,40 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		});
 		// The bot account is idle in mode 2, so with debugFeed on it doubles as an
-		// observability channel: each turn is mirrored to the owner's private chat
-		// with the bot (no business connection → sent as the bot, not as the owner).
+		// observability channel: each turn (and runtime warnings/errors) is mirrored
+		// to the owner's private chat with the bot — sent AS the bot (no business
+		// connection), so it never leaks into the managed conversation.
 		if (settings.manager.debugFeed) {
-			deliverManagerFeed = async (log, thinking, tools) => {
+			// Resolve the owner's private-chat id. For a business bot this is
+			// `user_chat_id` (the guaranteed DM with the account owner); fall back to
+			// the user id. The bot can only reach the owner if they have opened a chat
+			// with it — otherwise Telegram forbids the send, which we surface once.
+			const ownerChatId = async (): Promise<number | null> => {
 				const connections = await businessStore.all();
-				const ownerId =
-					connections.find((connection) => connection.isEnabled)?.userId ??
-					connections[0]?.userId;
-				if (!ownerId) return;
-				await managerOutbound.notify(
-					{ chatId: Number(ownerId) },
+				const connection =
+					connections.find((c) => c.isEnabled) ?? connections[0];
+				const target = connection?.userChatId ?? connection?.userId;
+				return target ? Number(target) : null;
+			};
+			const sendOwnerFeed = async (
+				html: ReturnType<typeof buildManagerFeed>,
+			): Promise<void> => {
+				const chatId = await ownerChatId();
+				if (chatId === null) return;
+				try {
+					await managerOutbound.notify({ chatId }, html);
+				} catch (error) {
+					if (!managerFeedWarned) {
+						managerFeedWarned = true;
+						ctx.ui.notify(
+							`Debug feed could not reach the owner — open a DM with the bot and press Start. (${String(error)})`,
+							"warning",
+						);
+					}
+				}
+			};
+			deliverManagerFeed = async (log, thinking, tools) => {
+				await sendOwnerFeed(
 					buildManagerFeed({
 						log,
 						subMode,
@@ -950,6 +979,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						thinking: thinking || undefined,
 						tools,
 					}),
+				);
+			};
+			mirrorManagerNotice = (level, message) => {
+				void sendOwnerFeed(
+					buildManagerNotice(
+						level,
+						message,
+						formatNowLine(Date.now(), settings.timezone),
+					),
 				);
 			};
 		}

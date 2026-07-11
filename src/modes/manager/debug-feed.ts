@@ -123,3 +123,29 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	blocks.push(paragraph(italic(nowLine)));
 	return RichHtml.join(blocks);
 }
+
+/** Severity of a relayed runtime notice. */
+export type ManagerNoticeLevel = "info" | "warning" | "error";
+
+const NOTICE_BADGE: Record<ManagerNoticeLevel, string> = {
+	info: "ℹ️ Info",
+	warning: "⚠️ Warning",
+	error: "⛔ Error",
+};
+
+/**
+ * A rich card relaying a runtime notice (warning/error/info) to the owner. Turn
+ * aborts are our built-in turn-end mechanism, not failures — callers relay those
+ * as `info` ("Turn complete"), never as an error.
+ */
+export function buildManagerNotice(
+	level: ManagerNoticeLevel,
+	message: string,
+	nowLine: string,
+): RichHtml {
+	return RichHtml.join([
+		paragraph(bold(NOTICE_BADGE[level])),
+		blockquote([message.trim()]),
+		paragraph(italic(nowLine)),
+	]);
+}
