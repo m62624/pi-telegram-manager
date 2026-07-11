@@ -64,6 +64,7 @@ import {
 	INTERROGATION_TOOL_NAMES,
 	type ProbeSink,
 } from "./modes/manager/interrogation";
+import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -219,6 +220,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				tools: readonly ManagerToolCall[],
 		  ) => Promise<void>)
 		| null = null;
+	// One-shot guard so a broken debug feed logs once, not every turn.
+	let managerFeedWarned = false;
 	let managerClient: TelegramClient | null = null;
 	let managerTick: ReturnType<typeof setInterval> | null = null;
 	let managerHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -383,13 +386,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			);
 			updateManagerBanner();
 			// Mirror the turn (thinking, tools, decision) to the owner's bot DM when
-			// the debug feed is on. Best-effort — a feed failure never blocks a reply.
+			// the debug feed is on. Best-effort — a feed failure never blocks a reply,
+			// but the first failure is logged so a misconfigured feed is diagnosable.
 			if (log && deliverManagerFeed) {
 				await deliverManagerFeed(
 					log,
 					lastAssistantThinking(event.messages),
 					managerTurnTools,
-				).catch(() => {});
+				).catch((error) => {
+					if (!managerFeedWarned) {
+						managerFeedWarned = true;
+						console.error("[telegram-manager] debug feed failed:", error);
+					}
+				});
 			}
 		}
 	});
@@ -886,6 +895,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			liveFreshnessMs: settings.manager.liveFreshnessMs,
 			reopenAfterMs: settings.manager.reopenAfterMs,
 			reviseThreshold: settings.manager.reviseThreshold,
+			ownerName: settings.manager.ownerName,
+			strictReplyGuard: settings.manager.strictReplyGuard,
 			mentionWords: settings.manager.mentionWords,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
@@ -901,14 +912,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			triggerAgent: async (prompt) => {
 				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 			},
+			// Business connections reject the rich-message API, so mode-2 replies go out
+			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
 			sendReply: async ({ connectionId, chatId, text, replyToMessageId }) =>
-				managerOutbound.sendMarkdown(
+				managerOutbound.sendClassicHtml(
 					{
 						chatId: Number(chatId),
 						businessConnectionId: connectionId,
 						replyToMessageId,
 					},
-					text,
+					formatManagerReplyHtmlChunks(text, settings.manager.labeler),
 				),
 			typing: async ({ connectionId, chatId }) => {
 				await api.sendChatAction({

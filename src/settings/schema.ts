@@ -104,6 +104,19 @@ export interface TelegramSettings {
 		 * as an observability feed. Default false (opt-in; it is chatty in observer).
 		 */
 		debugFeed: boolean;
+		/**
+		 * The Owner's display name, surfaced to the model so it can introduce itself
+		 * as "{name}'s assistant" on first contact. Optional; when unset the model
+		 * refers to "the owner" generically.
+		 */
+		ownerName?: string;
+		/**
+		 * Drop a reply the model itself marked as chatter/acknowledgement or as not
+		 * needing an answer, UNLESS the interlocutor addressed the bot directly (by
+		 * category or a wake-word). Curbs a weak local model that over-replies to
+		 * banter. Default true.
+		 */
+		strictReplyGuard: boolean;
 		subMode: ManagerSubMode;
 		observer: {
 			interlocutorInstructionFile?: string;
@@ -142,6 +155,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
 		debugFeed: false,
+		strictReplyGuard: true,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -404,6 +418,12 @@ export function normalizeSettings(
 				manager.debugFeed,
 				"manager.debugFeed",
 				d.manager.debugFeed,
+			),
+			ownerName: asOptionalString(manager.ownerName, "manager.ownerName"),
+			strictReplyGuard: asBoolean(
+				manager.strictReplyGuard,
+				"manager.strictReplyGuard",
+				d.manager.strictReplyGuard,
 			),
 			subMode: asEnum(
 				manager.subMode,

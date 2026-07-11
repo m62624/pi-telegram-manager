@@ -63,7 +63,11 @@ export interface OutboundApi {
 	): Promise<{ message_id: number }>;
 	/** Classic text message — the universally-supported fallback when rich send fails. */
 	sendMessage(
-		args: TargetArgs & { text: string; reply_parameters?: ReplyParameters },
+		args: TargetArgs & {
+			text: string;
+			parse_mode?: "HTML" | "MarkdownV2";
+			reply_parameters?: ReplyParameters;
+		},
 	): Promise<{ message_id: number }>;
 	sendRichMessageDraft(
 		args: TargetArgs & { draft_id: number; rich_message: InputRichMessage },
@@ -181,6 +185,50 @@ export class OutboundSender {
 			const sent = await this.api.sendMessage({ ...args, ...reply, text });
 			return sent.message_id;
 		}
+	}
+
+	/**
+	 * Send already-built classic HTML messages (`parse_mode: "HTML"`). Used for
+	 * business chats, which reject the rich-message API — so this is the mode-2
+	 * reply path. Threads only the first message; on a formatting error it retries
+	 * that chunk as plain text (tags stripped) so a reply is never lost. Returns
+	 * the sent message ids.
+	 */
+	async sendClassicHtml(
+		target: OutboundTarget,
+		htmlChunks: readonly string[],
+	): Promise<number[]> {
+		const args = targetArgs(target);
+		const ids: number[] = [];
+		let replyParameters: ReplyParameters | undefined =
+			target.replyToMessageId !== undefined
+				? { message_id: target.replyToMessageId }
+				: undefined;
+		for (const html of htmlChunks) {
+			if (!html.trim()) continue;
+			const reply = replyParameters
+				? { reply_parameters: replyParameters }
+				: {};
+			try {
+				const sent = await this.api.sendMessage({
+					...args,
+					...reply,
+					text: html,
+					parse_mode: "HTML",
+				});
+				ids.push(sent.message_id);
+			} catch (error) {
+				this.onRichFallback?.(error);
+				const sent = await this.api.sendMessage({
+					...args,
+					...reply,
+					text: richFallbackText({ html }),
+				});
+				ids.push(sent.message_id);
+			}
+			replyParameters = undefined;
+		}
+		return ids;
 	}
 
 	/** Send a short notice; plain strings are HTML-escaped, built `RichHtml` is passed through. */

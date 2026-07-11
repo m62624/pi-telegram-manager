@@ -24,7 +24,6 @@
  */
 import type { BusinessConnection, Message } from "@grammyjs/types";
 import { formatNowLine } from "../../core/datetime";
-import { applyLabeler } from "../../core/render";
 import type { Clock } from "../../core/timers";
 import { buildContextLines } from "../../core/turns";
 import {
@@ -52,7 +51,7 @@ import {
 } from "./context-isolation";
 import { analyzeChat, type ConversationState } from "./conversation-state";
 import { DecisionState, FactState, resolveDecision } from "./decision";
-import { isBotMessage, stripBotMarker, tagBotText } from "./identity";
+import { isBotMessage, stripBotMarker } from "./identity";
 import {
 	advance as advanceInterrogation,
 	currentProbe,
@@ -230,6 +229,14 @@ export interface ManagerControllerDeps {
 	 * no re-read.
 	 */
 	reviseThreshold: number;
+	/** The Owner's display name, for self-introduction on first contact (optional). */
+	ownerName?: string;
+	/**
+	 * Drop a reply the model marked as chatter/acknowledgement or not needing an
+	 * answer unless the interlocutor addressed the bot directly. Curbs a weak model
+	 * that over-replies to banter.
+	 */
+	strictReplyGuard: boolean;
 	/** Max candidates individually verified in the consolidation interrogation. */
 	verifyLimit: number;
 	/**
@@ -647,6 +654,10 @@ export class ManagerController {
 				: undefined;
 		const silentReason =
 			decision.kind === "silent" ? decision.reason : undefined;
+		const needsReply =
+			decision.kind === "reply" || decision.kind === "silent"
+				? decision.needsReply
+				: undefined;
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		const contactName = meta?.contactName ?? active;
@@ -695,23 +706,47 @@ export class ManagerController {
 		this.proseRetried.delete(active);
 		this.correction.delete(active);
 		let deliveredReplyTo: number | undefined;
+		let guardReason: string | undefined;
 		if (text) {
-			if (meta) {
-				const records = await this.deps.chatStore.getRecent(
-					active,
-					this.deps.rememberMessages,
-				);
+			const records = meta
+				? await this.deps.chatStore.getRecent(
+						active,
+						this.deps.rememberMessages,
+					)
+				: [];
+			// Strict guard against a weak model over-replying to banter: unless the
+			// interlocutor addressed the bot directly (by category or a wake-word),
+			// drop a reply the model itself tagged as chatter/acknowledgement or as
+			// not needing an answer.
+			if (this.deps.strictReplyGuard && decisionKind === "reply") {
+				const lastInterlocutor = [...records]
+					.reverse()
+					.find((record) => record.author === "interlocutor");
+				const addressed =
+					category === "addressed_to_bot" ||
+					(lastInterlocutor !== undefined &&
+						matchesMention(lastInterlocutor.text, this.deps.mentionWords));
+				const lowValue =
+					category === "chatter" ||
+					category === "acknowledgement" ||
+					needsReply === false;
+				if (!addressed && lowValue) {
+					guardReason = `guard: dropped a ${category ?? "reply"} not addressed to you`;
+					text = null;
+				}
+			}
+			if (text && meta) {
 				deliveredReplyTo = resolveReplyTarget(records, requestedReplyTo);
-				const outgoing = tagBotText(applyLabeler(text, this.deps.labeler));
+				// Pass the raw reply text; the send layer applies the labeler, the bot
+				// marker, and the business-safe classic-HTML formatting.
 				const ids = await this.deps.sendReply({
 					connectionId: meta.connectionId,
 					chatId: active,
-					text: outgoing,
+					text,
 					replyToMessageId: deliveredReplyTo,
 				});
-				// A long reply can split into several rich messages; record every id
-				// so the bot recognises each as its own echo, and keep the first for
-				// the transcript record.
+				// A long reply can split into several messages; record every id so the
+				// bot recognises each as its own echo, and keep the first for the record.
 				for (const id of ids)
 					await this.deps.sentRegistry.recordSent(active, id);
 				const now = this.deps.clock.now();
@@ -723,10 +758,12 @@ export class ManagerController {
 				});
 				await this.touchConsolidation(active, now);
 			}
+		}
+		if (text) {
 			// Replied: keep the chat active and arm the 1:30 continuation window.
 			this.scheduler.onReplied();
 		} else {
-			// Silent: this batch is done — release the chat and promote the next.
+			// Silent (or guard-dropped): release the chat and promote the next.
 			this.scheduler.next();
 		}
 		await this.triggerTurn();
@@ -743,7 +780,7 @@ export class ManagerController {
 					chatId: active,
 					contactName,
 					outcome: "silent",
-					text: silentReason,
+					text: silentReason ?? guardReason,
 					category,
 				};
 	}
@@ -797,11 +834,17 @@ export class ManagerController {
 				? this.deps.instructions.reopen
 				: "";
 		const known = await this.knownFactsBlock(meta);
+		const ownerName = this.deps.ownerName?.trim();
+		const ownerLine = ownerName
+			? `\n\nThe account Owner's name is ${ownerName}. When you introduce ` +
+				`yourself, say you are ${ownerName}'s assistant.`
+			: "";
 		// The instruction prefix stays stable across a chat's turns (so the provider
 		// caches it); the volatile bits — the clock, the per-message state line, and
 		// the action directive — live in a single trailing message.
 		const system =
 			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
+			ownerLine +
 			(opener ? `\n\n${opener}` : "") +
 			(known ? `\n\n${known}` : "");
 		const pending = this.pendingReply.get(active);

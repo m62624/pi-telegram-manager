@@ -5,7 +5,6 @@ import {
 	ManagerController,
 	type ManagerControllerDeps,
 } from "../../../src/modes/manager/controller";
-import { hasBotMarker } from "../../../src/modes/manager/identity";
 import { createBusinessStore } from "../../../src/storage/business-store";
 import { createChatStore } from "../../../src/storage/chat-store";
 import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
@@ -76,6 +75,7 @@ async function setup(
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
+		strictReplyGuard: true,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
@@ -141,9 +141,9 @@ describe("ManagerController", () => {
 
 		expect(sendReply).toHaveBeenCalledTimes(1);
 		const sent = sendReply.mock.calls[0][0];
-		expect(sent.text).toContain("LLM agent:");
-		expect(sent.text).toContain("Hello there!");
-		expect(hasBotMarker(sent.text)).toBe(true);
+		// The controller passes the RAW text; labeler/marker/HTML are applied by the
+		// send layer (see reply-format.test.ts).
+		expect(sent.text).toBe("Hello there!");
 		// recorded as bot-sent so it won't be mistaken for the owner later
 		expect(await deps.sentRegistry.wasSentByBot("42", 500)).toBe(true);
 		const stored = await deps.chatStore.all("42");
@@ -335,6 +335,47 @@ describe("ManagerController", () => {
 			text: "just an acknowledgement",
 		});
 		expect(await controller.onAgentEnd()).toBeNull();
+	});
+
+	it("strict guard drops a chatter reply the model was not addressed in", async () => {
+		const { controller, sendReply, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("haha nice one 😂", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		// The model tried to reply, but tagged it chatter and not addressed → dropped.
+		controller.decisionSink().record({
+			kind: "reply",
+			text: "Glad you liked it!",
+			category: "chatter",
+			needsReply: false,
+		});
+		const log = await controller.onAgentEnd();
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(log).toMatchObject({ outcome: "silent" });
+	});
+
+	it("strict guard lets an addressed reply through", async () => {
+		const { controller, sendReply } = await setup("observer", ["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hey llm, you around? 😂", 5, 1),
+		});
+		await controller.onTick();
+		// Even tagged chatter, a wake-word in the message means it is addressed.
+		controller.decisionSink().record({
+			kind: "reply",
+			text: "Yep, here!",
+			category: "chatter",
+		});
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
 	});
 
 	it("greets a chat resuming after a long silence with the reopen template", async () => {

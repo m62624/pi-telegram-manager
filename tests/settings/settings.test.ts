@@ -98,6 +98,16 @@ describe("normalizeSettings", () => {
 			normalizeSettings({ manager: { debugFeed: true } }).manager.debugFeed,
 		).toBe(true);
 	});
+
+	it("defaults strictReplyGuard on and reads an optional ownerName", () => {
+		expect(normalizeSettings({}).manager.strictReplyGuard).toBe(true);
+		expect(normalizeSettings({}).manager.ownerName).toBeUndefined();
+		const s = normalizeSettings({
+			manager: { strictReplyGuard: false, ownerName: "Mansur" },
+		});
+		expect(s.manager.strictReplyGuard).toBe(false);
+		expect(s.manager.ownerName).toBe("Mansur");
+	});
 });
 
 describe("loadSettings", () => {
