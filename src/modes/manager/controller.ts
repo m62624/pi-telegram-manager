@@ -185,12 +185,17 @@ export interface ManagerControllerDeps {
 	loadImages?: (message: Message) => Promise<IsolatedImage[]>;
 	/** Start an agent turn for the active chat (the prompt is a bare trigger). */
 	triggerAgent: (prompt: string) => Promise<void>;
-	/** Send a reply on behalf of the owner; returns the sent message id. */
+	/**
+	 * Send a reply on behalf of the owner through the rich pipeline; returns the
+	 * sent message id(s) (a long reply may split into several). `replyToMessageId`
+	 * threads the reply to a specific message so the chat shows what is answered.
+	 */
 	sendReply: (args: {
 		connectionId: string;
 		chatId: string;
 		text: string;
-	}) => Promise<number>;
+		replyToMessageId?: number;
+	}) => Promise<number[]>;
 	/** Show the typing indicator on a business chat. */
 	typing: (args: { connectionId: string; chatId: string }) => Promise<void>;
 }
@@ -475,18 +480,22 @@ export class ManagerController {
 		if (text) {
 			if (meta) {
 				const outgoing = tagBotText(applyLabeler(text, this.deps.labeler));
-				const messageId = await this.deps.sendReply({
+				const ids = await this.deps.sendReply({
 					connectionId: meta.connectionId,
 					chatId: active,
 					text: outgoing,
 				});
-				await this.deps.sentRegistry.recordSent(active, messageId);
+				// A long reply can split into several rich messages; record every id
+				// so the bot recognises each as its own echo, and keep the first for
+				// the transcript record.
+				for (const id of ids)
+					await this.deps.sentRegistry.recordSent(active, id);
 				const now = this.deps.clock.now();
 				await this.deps.chatStore.append(active, {
 					author: "bot",
 					text,
 					timestamp: now,
-					messageId,
+					messageId: ids[0],
 				});
 				await this.touchConsolidation(active, now);
 			}

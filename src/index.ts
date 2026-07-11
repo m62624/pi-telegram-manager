@@ -788,17 +788,29 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const loadManagerImages = (message: Message) =>
 			loadInlineImages(managerMedia, message, settings.files.maxBytes);
 		const api = managerClient.api as unknown as {
-			sendMessage(args: {
-				business_connection_id: string;
-				chat_id: number;
-				text: string;
-			}): Promise<{ message_id: number }>;
 			sendChatAction(args: {
 				business_connection_id: string;
 				chat_id: number;
 				action: "typing";
 			}): Promise<unknown>;
 		};
+		// Deliver manager replies through the SAME rich pipeline as mode 1, so the
+		// model's Markdown (**bold**, tables, …) renders natively instead of arriving
+		// as literal asterisks. Warn once if native rich rendering degrades to plain.
+		let managerRichFallbackWarned = false;
+		const managerOutbound = new OutboundSender(
+			managerClient.api as unknown as OutboundApi,
+			{
+				onRichFallback: (error) => {
+					if (managerRichFallbackWarned) return;
+					managerRichFallbackWarned = true;
+					ctx.ui.notify(
+						`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
+						"warning",
+					);
+				},
+			},
+		);
 		manager = new ManagerController({
 			subMode,
 			instructions,
@@ -824,14 +836,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			triggerAgent: async (prompt) => {
 				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 			},
-			sendReply: async ({ connectionId, chatId, text }) => {
-				const sent = await api.sendMessage({
-					business_connection_id: connectionId,
-					chat_id: Number(chatId),
+			sendReply: async ({ connectionId, chatId, text, replyToMessageId }) =>
+				managerOutbound.sendMarkdown(
+					{
+						chatId: Number(chatId),
+						businessConnectionId: connectionId,
+						replyToMessageId,
+					},
 					text,
-				});
-				return sent.message_id;
-			},
+				),
 			typing: async ({ connectionId, chatId }) => {
 				await api.sendChatAction({
 					business_connection_id: connectionId,

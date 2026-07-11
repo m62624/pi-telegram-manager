@@ -53,7 +53,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 	const triggerAgent = vi.fn(async () => {});
 	const typing = vi.fn(async () => {});
 	let nextId = 500;
-	const sendReply = vi.fn(async () => nextId++);
+	const sendReply = vi.fn(async () => [nextId++]);
 	let idle = true;
 	const deps: ManagerControllerDeps = {
 		subMode,

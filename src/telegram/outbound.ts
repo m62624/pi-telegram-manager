@@ -33,6 +33,12 @@ export interface OutboundTarget {
 	businessConnectionId?: string;
 	/** Forum topic thread. */
 	messageThreadId?: number;
+	/**
+	 * Thread the reply to this message (Telegram `reply_parameters.message_id`), so
+	 * the chat shows which message is being answered. Only the FIRST message of a
+	 * multi-part send is threaded, to avoid stacking duplicate reply headers.
+	 */
+	replyToMessageId?: number;
 }
 
 /** Routing arguments shared by every send call, with absent keys omitted. */
@@ -42,14 +48,22 @@ interface TargetArgs {
 	message_thread_id?: number;
 }
 
+/** Telegram reply threading parameters (same-chat reply by message id). */
+interface ReplyParameters {
+	message_id: number;
+}
+
 /** The subset of grammY's `bot.api` outbound uses; keeps the fake small. */
 export interface OutboundApi {
 	sendRichMessage(
-		args: TargetArgs & { rich_message: InputRichMessage },
+		args: TargetArgs & {
+			rich_message: InputRichMessage;
+			reply_parameters?: ReplyParameters;
+		},
 	): Promise<{ message_id: number }>;
 	/** Classic text message — the universally-supported fallback when rich send fails. */
 	sendMessage(
-		args: TargetArgs & { text: string },
+		args: TargetArgs & { text: string; reply_parameters?: ReplyParameters },
 	): Promise<{ message_id: number }>;
 	sendRichMessageDraft(
 		args: TargetArgs & { draft_id: number; rich_message: InputRichMessage },
@@ -129,9 +143,16 @@ export class OutboundSender {
 	): Promise<number[]> {
 		const args = targetArgs(target);
 		const ids: number[] = [];
+		// Thread only the first delivered message to the target, so a multi-part
+		// reply shows one reply header instead of stacking one per chunk.
+		let replyParameters: ReplyParameters | undefined =
+			target.replyToMessageId !== undefined
+				? { message_id: target.replyToMessageId }
+				: undefined;
 		for (const richMessage of messages) {
 			if (isEmptyRich(richMessage)) continue;
-			ids.push(await this.sendOneRich(args, richMessage));
+			ids.push(await this.sendOneRich(args, richMessage, replyParameters));
+			replyParameters = undefined;
 		}
 		return ids;
 	}
@@ -144,17 +165,20 @@ export class OutboundSender {
 	private async sendOneRich(
 		args: TargetArgs,
 		richMessage: InputRichMessage,
+		replyParameters?: ReplyParameters,
 	): Promise<number> {
+		const reply = replyParameters ? { reply_parameters: replyParameters } : {};
 		try {
 			const sent = await this.api.sendRichMessage({
 				...args,
+				...reply,
 				rich_message: richMessage,
 			});
 			return sent.message_id;
 		} catch (error) {
 			this.onRichFallback?.(error);
 			const text = richFallbackText(richMessage);
-			const sent = await this.api.sendMessage({ ...args, text });
+			const sent = await this.api.sendMessage({ ...args, ...reply, text });
 			return sent.message_id;
 		}
 	}
