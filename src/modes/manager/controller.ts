@@ -32,7 +32,7 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
-import type { ChatStore } from "../../storage/chat-store";
+import type { ChatMessageRecord, ChatStore } from "../../storage/chat-store";
 import type { ConsolidationQueue } from "../../storage/consolidation-queue";
 import type {
 	ContactFact,
@@ -220,6 +220,31 @@ function messageText(message: Message): string {
 function withMessageContext(message: Message, text: string): string {
 	const lines = buildContextLines(extractMessageContext(message));
 	return lines.length > 0 ? `${lines.join("\n")}\n${text}` : text;
+}
+
+/**
+ * Pick the message a reply threads to (Telegram `reply_parameters.message_id`):
+ * the model's requested `[#id]` when it is a real inbound message in this chat,
+ * otherwise the latest interlocutor message — so a reply is always visibly
+ * attached to what it answers. Undefined when there is nothing to thread to.
+ */
+function resolveReplyTarget(
+	records: readonly ChatMessageRecord[],
+	requested: number | undefined,
+): number | undefined {
+	if (
+		requested !== undefined &&
+		records.some((r) => r.messageId === requested && r.author !== "bot")
+	) {
+		return requested;
+	}
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		const record = records[i];
+		if (record.author === "interlocutor" && record.messageId !== undefined) {
+			return record.messageId;
+		}
+	}
+	return undefined;
 }
 
 /** A short human-readable state line injected so the model decides deliberately. */
@@ -468,7 +493,10 @@ export class ManagerController {
 			this.facts.reset();
 			return;
 		}
-		const text = resolveDecision(this.decision.current());
+		const decision = this.decision.current();
+		const text = resolveDecision(decision);
+		const requestedReplyTo =
+			decision.kind === "reply" ? decision.replyTo : undefined;
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		// Persist any durable facts the model recorded mid-conversation.
@@ -479,11 +507,16 @@ export class ManagerController {
 		this.gate.clearServed(active);
 		if (text) {
 			if (meta) {
+				const records = await this.deps.chatStore.getRecent(
+					active,
+					this.deps.rememberMessages,
+				);
 				const outgoing = tagBotText(applyLabeler(text, this.deps.labeler));
 				const ids = await this.deps.sendReply({
 					connectionId: meta.connectionId,
 					chatId: active,
 					text: outgoing,
+					replyToMessageId: resolveReplyTarget(records, requestedReplyTo),
 				});
 				// A long reply can split into several rich messages; record every id
 				// so the bot recognises each as its own echo, and keep the first for

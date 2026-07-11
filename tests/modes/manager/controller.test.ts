@@ -143,6 +143,38 @@ describe("ManagerController", () => {
 		});
 	});
 
+	it("threads the reply to the model's reply_to, else to the latest interlocutor message", async () => {
+		const { controller, sendReply, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("first", 5, 11),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("second", 5, 12),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		// No reply_to → threads to the latest interlocutor message (#12).
+		controller.decisionSink().record({ kind: "reply", text: "ok" });
+		await controller.onAgentEnd();
+		expect(sendReply.mock.calls[0][0].replyToMessageId).toBe(12);
+
+		// Explicit valid reply_to → threads to that message (#11).
+		controller.decisionSink().record({
+			kind: "reply",
+			text: "about the first",
+			replyTo: 11,
+		});
+		await controller.onAgentEnd();
+		expect(sendReply.mock.calls[1][0].replyToMessageId).toBe(11);
+	});
+
 	it("stays silent when the model chooses manager_silent (no send)", async () => {
 		const { controller, sendReply } = await setup();
 		await controller.onBusinessMessage({
@@ -262,7 +294,7 @@ describe("ManagerController", () => {
 			true,
 		);
 		expect(
-			ctx?.some((m) => m.content === "Interlocutor (Alice): hi there"),
+			ctx?.some((m) => m.content === "[#1] Interlocutor (Alice): hi there"),
 		).toBe(true);
 		// The turn ends with the action directive that forces a tool call.
 		expect(ctx?.at(-1)?.content).toContain("manager_reply");

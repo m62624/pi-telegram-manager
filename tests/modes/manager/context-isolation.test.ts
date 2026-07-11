@@ -59,6 +59,22 @@ describe("buildIsolatedMessages", () => {
 		]);
 	});
 
+	it("tags incoming lines with their message id so the model can thread replies", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({ author: "interlocutor", text: "hi", messageId: 7 }),
+				rec({ author: "owner", text: "one sec", messageId: 8 }),
+				rec({ author: "bot", text: "hello", messageId: 9 }),
+			],
+		});
+		expect(messages).toEqual([
+			{ role: "user", content: "[#7] Interlocutor: hi" },
+			{ role: "user", content: "[#8] Owner: one sec" },
+			// Bot (assistant) turns are never tagged — only inbound messages are targets.
+			{ role: "assistant", content: "hello" },
+		]);
+	});
+
 	it("prepends a boundary directive as the first user message", () => {
 		const messages = buildIsolatedMessages({
 			records: [rec({ text: "hey" })],

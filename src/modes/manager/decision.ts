@@ -45,6 +45,8 @@ export type ManagerDecision =
 			text: string;
 			category?: MessageCategory;
 			needsReply?: boolean;
+			/** Telegram message id the reply threads to (from the `[#id]` tags). */
+			replyTo?: number;
 	  }
 	| {
 			kind: "silent";
@@ -221,13 +223,23 @@ export function createManagerTools(
 					type: "string",
 					description: "The message to send to the interlocutor.",
 				},
+				reply_to: {
+					type: "number",
+					description:
+						"Optional: the message id (the number in the [#id] tag) this reply answers, so the chat shows which message you replied to. Omit to reply to their latest message.",
+				},
 			},
 			required: ["category", "needs_reply", "text"],
 			additionalProperties: false,
 		} as never,
 		async execute(
 			_toolCallId,
-			params: { text: string; category?: string; needs_reply?: boolean },
+			params: {
+				text: string;
+				category?: string;
+				needs_reply?: boolean;
+				reply_to?: number;
+			},
 		) {
 			const text = params.text?.trim();
 			if (!text) return fail("manager_reply requires non-empty text.");
@@ -236,6 +248,8 @@ export function createManagerTools(
 				text,
 				category: asCategory(params.category),
 				needsReply: params.needs_reply ?? true,
+				replyTo:
+					typeof params.reply_to === "number" ? params.reply_to : undefined,
 			});
 			return ok("Reply queued for delivery.");
 		},

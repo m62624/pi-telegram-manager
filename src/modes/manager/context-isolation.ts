@@ -81,7 +81,11 @@ export function buildIsolatedMessages(
 			const label =
 				record.author === "owner" ? labels.owner : labels.interlocutor;
 			const who = record.senderName ? `${label} (${record.senderName})` : label;
-			messages.push({ role: "user", content: `${who}: ${text}` });
+			// Tag each incoming line with its Telegram message id so the model can
+			// point `manager_reply.reply_to` at the exact message it answers.
+			const tag =
+				record.messageId !== undefined ? `[#${record.messageId}] ` : "";
+			messages.push({ role: "user", content: `${tag}${who}: ${text}` });
 			if (record.author === "interlocutor")
 				lastInterlocutorIndex = messages.length - 1;
 		}

@@ -49,6 +49,16 @@ describe("OutboundSender", () => {
 		]);
 	});
 
+	it("threads only the first chunk to the target message", async () => {
+		const api = new FakeOutboundApi(500);
+		const renderer = (text: string) =>
+			text.split("|").map((markdown) => ({ markdown }));
+		const sender = new OutboundSender(api, { renderer });
+		await sender.sendMarkdown({ chatId: 9, replyToMessageId: 77 }, "a|b");
+		expect(api.sent[0].reply_parameters).toEqual({ message_id: 77 });
+		expect(api.sent[1]).not.toHaveProperty("reply_parameters");
+	});
+
 	it("sends pre-built rich messages from a document", async () => {
 		const api = new FakeOutboundApi();
 		const message = new RichHtmlDocument().heading("Report").build();
