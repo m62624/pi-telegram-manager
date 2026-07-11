@@ -173,6 +173,11 @@ export interface ManagerControllerDeps {
 	factsLimit: number;
 	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
 	factConsolidationQuietMs: number;
+	/**
+	 * Silence (ms) after which a resuming chat is treated as a re-opening and gets
+	 * the re-greeting instructions. `0` disables re-greeting.
+	 */
+	reopenAfterMs: number;
 	/** Max candidates individually verified in the consolidation interrogation. */
 	verifyLimit: number;
 	/**
@@ -621,19 +626,25 @@ export class ManagerController {
 			boundary: boundaryDirective(meta?.contactName ?? active),
 			latestImages: this.latestImages.get(active),
 		});
+		const state = analyzeChat(records);
 		// First contact = no bot reply yet and at most this one interlocutor line.
 		const isFirstMessage =
 			!records.some((record) => record.author === "bot") &&
 			records.filter((record) => record.author === "interlocutor").length <= 1;
+		// A re-opening = not first contact, but the latest message follows a long gap
+		// (from anyone's previous message). reopenAfterMs === 0 disables this.
+		const opener = isFirstMessage
+			? this.deps.instructions.firstMessage
+			: this.isReopening(records)
+				? this.deps.instructions.reopen
+				: "";
 		const known = await this.knownFactsBlock(meta);
 		const system =
 			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
-			(isFirstMessage && this.deps.instructions.firstMessage
-				? `\n\n${this.deps.instructions.firstMessage}`
-				: "") +
+			(opener ? `\n\n${opener}` : "") +
 			`\n\n${this.nowLine()}` +
 			(known ? `\n\n${known}` : "") +
-			`\n\n${stateSummary(analyzeChat(records))}`;
+			`\n\n${stateSummary(state)}`;
 		const pending = this.pendingReply.get(active);
 		return [
 			{ role: "user", content: system },
@@ -740,6 +751,19 @@ export class ManagerController {
 			"Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
 		);
 		return true;
+	}
+
+	/**
+	 * Whether the active chat's latest message resumes the conversation after a
+	 * long silence — a gap larger than `reopenAfterMs` from the previous message
+	 * (of any author). Disabled when `reopenAfterMs` is 0 or there is no prior
+	 * message to measure the gap against.
+	 */
+	private isReopening(records: readonly ChatMessageRecord[]): boolean {
+		if (this.deps.reopenAfterMs <= 0 || records.length < 2) return false;
+		const last = records[records.length - 1];
+		const prev = records[records.length - 2];
+		return last.timestamp - prev.timestamp > this.deps.reopenAfterMs;
 	}
 
 	/** The `[Now: …]` line injected into every context. */

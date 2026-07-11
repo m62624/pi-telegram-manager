@@ -38,12 +38,14 @@ export interface ManagerInstructions {
 	base: string;
 	/** First-contact addendum, appended only when the active chat has no history. */
 	firstMessage: string;
+	/** Re-opening addendum, appended when a chat resumes after a long silence. */
+	reopen: string;
 }
 
 /**
  * Assemble the manager instruction blocks for a sub-mode. `overrideText` is the
  * already-read content of the user's `instructionFiles` (global + manager);
- * `firstMessageOverride` is the already-read `firstMessageTemplate`, if any.
+ * `firstMessageOverride`/`reopenOverride` are the already-read templates, if any.
  */
 export async function loadManagerInstructions(input: {
 	fs: TelegramFs;
@@ -52,6 +54,7 @@ export async function loadManagerInstructions(input: {
 	labeler?: string;
 	overrideText?: string;
 	firstMessageOverride?: string;
+	reopenOverride?: string;
 }): Promise<ManagerInstructions> {
 	const common = await readBuiltin(input.fs, "manager-common.md");
 	const submode = await readBuiltin(
@@ -61,6 +64,7 @@ export async function loadManagerInstructions(input: {
 			: "manager-observer.md",
 	);
 	const firstDefault = await readBuiltin(input.fs, "manager-first-message.md");
+	const reopenDefault = await readBuiltin(input.fs, "manager-reopen.md");
 
 	const parts = [common, submode];
 	const name = input.labeler?.trim().replace(/:\s*$/, "");
@@ -74,6 +78,7 @@ export async function loadManagerInstructions(input: {
 	return {
 		base: parts.filter(Boolean).join("\n\n"),
 		firstMessage: input.firstMessageOverride?.trim() || firstDefault,
+		reopen: input.reopenOverride?.trim() || reopenDefault,
 	};
 }
 

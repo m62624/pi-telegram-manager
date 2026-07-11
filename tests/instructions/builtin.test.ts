@@ -26,6 +26,7 @@ const BUNDLED = {
 	"manager-observer.md": "OBSERVER BODY",
 	"manager-takeover.md": "TAKEOVER BODY",
 	"manager-first-message.md": "DEFAULT FIRST",
+	"manager-reopen.md": "DEFAULT REOPEN",
 	"connect.md": "CONNECT BODY",
 };
 
@@ -39,6 +40,7 @@ describe("loadManagerInstructions", () => {
 		expect(result.base).toContain("OBSERVER BODY");
 		expect(result.base).not.toContain("TAKEOVER BODY");
 		expect(result.firstMessage).toBe("DEFAULT FIRST");
+		expect(result.reopen).toBe("DEFAULT REOPEN");
 	});
 
 	it("selects the takeover body for the takeover sub-mode", async () => {
@@ -56,10 +58,12 @@ describe("loadManagerInstructions", () => {
 			subMode: "observer",
 			overrideText: "MY CUSTOM POLICY",
 			firstMessageOverride: "MY FIRST TEMPLATE",
+			reopenOverride: "MY REOPEN TEMPLATE",
 		});
 		expect(result.base).toContain("COMMON RULES");
 		expect(result.base).toContain("MY CUSTOM POLICY");
 		expect(result.firstMessage).toBe("MY FIRST TEMPLATE");
+		expect(result.reopen).toBe("MY REOPEN TEMPLATE");
 	});
 
 	it("survives missing bundled files without throwing", async () => {

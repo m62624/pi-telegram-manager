@@ -57,7 +57,11 @@ async function setup(subMode: ManagerSubMode = "observer") {
 	let idle = true;
 	const deps: ManagerControllerDeps = {
 		subMode,
-		instructions: { base: "BASE MANAGER RULES", firstMessage: "FIRST CONTACT" },
+		instructions: {
+			base: "BASE MANAGER RULES",
+			firstMessage: "FIRST CONTACT",
+			reopen: "WELCOME BACK",
+		},
 		labeler: "LLM agent:",
 		rememberMessages: 20,
 		continueWindowMs: 90_000,
@@ -66,6 +70,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 		factConsolidationQuietMs: 1_800_000,
 		verifyLimit: 8,
 		liveFreshnessMs: 120_000,
+		reopenAfterMs: 86_400_000,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
@@ -222,6 +227,34 @@ describe("ManagerController", () => {
 		await controller.onAgentEnd();
 		expect(sendReply).toHaveBeenCalledTimes(1);
 		expect(sendReply.mock.calls[0][0].text).toContain("answer to both");
+	});
+
+	it("greets a chat resuming after a long silence with the reopen template", async () => {
+		const { controller, clock } = await setup();
+		// Establish history: an interlocutor message and a bot reply.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "hey!" });
+		await controller.onAgentEnd();
+
+		// ~25h later they write again (chat still active) → treated as a re-opening.
+		clock.advance(90_000_000);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("you around?", 5, 2),
+		});
+
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.[0].content).toContain("WELCOME BACK");
+		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
 	});
 
 	it("stays silent when the model chooses manager_silent (no send)", async () => {

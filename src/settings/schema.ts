@@ -78,6 +78,13 @@ export interface TelegramSettings {
 		instructionFiles: string[];
 		/** Required template for the first message from a new interlocutor. */
 		firstMessageTemplate?: string;
+		/**
+		 * Re-greet a chat that resumes after this much silence (ms) from anyone's
+		 * last message. Default 86400000 (24h); `0` disables re-greeting entirely.
+		 */
+		reopenAfterMs: number;
+		/** Optional override file for the re-opening greeting template. */
+		reopenTemplate?: string;
 		subMode: ManagerSubMode;
 		observer: {
 			interlocutorInstructionFile?: string;
@@ -113,6 +120,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		factConsolidationQuietMs: 1_800_000,
 		verifyLimit: 8,
 		liveFreshnessMs: 120_000,
+		reopenAfterMs: 86_400_000,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -349,6 +357,15 @@ export function normalizeSettings(
 			firstMessageTemplate: asOptionalString(
 				manager.firstMessageTemplate,
 				"manager.firstMessageTemplate",
+			),
+			reopenAfterMs: asNonNegativeInt(
+				manager.reopenAfterMs,
+				"manager.reopenAfterMs",
+				d.manager.reopenAfterMs,
+			),
+			reopenTemplate: asOptionalString(
+				manager.reopenTemplate,
+				"manager.reopenTemplate",
 			),
 			subMode: asEnum(
 				manager.subMode,

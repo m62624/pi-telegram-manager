@@ -717,12 +717,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					])
 				).text || undefined
 			: undefined;
+		const reopenOverride = settings.manager.reopenTemplate
+			? (await readInstructionFiles(fs, [settings.manager.reopenTemplate]))
+					.text || undefined
+			: undefined;
 		const instructions = await loadManagerInstructions({
 			fs,
 			subMode,
 			labeler: settings.manager.labeler,
 			overrideText: override.text,
 			firstMessageOverride,
+			reopenOverride,
 		});
 
 		// The telegram-sandbox allowlist: only the manager's messaging tools, plus
@@ -822,6 +827,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			factConsolidationQuietMs: settings.manager.factConsolidationQuietMs,
 			verifyLimit: settings.manager.verifyLimit,
 			liveFreshnessMs: settings.manager.liveFreshnessMs,
+			reopenAfterMs: settings.manager.reopenAfterMs,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
 			media: settings.manager.media,

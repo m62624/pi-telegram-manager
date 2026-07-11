@@ -58,6 +58,15 @@ describe("normalizeSettings", () => {
 		expect(s.manager.observer.interlocutorInstructionFile).toBe("~/i.md");
 		expect(s.manager.takeover.instructionFile).toBe("~/t.md");
 	});
+
+	it("defaults reopenAfterMs to 24h and accepts 0 to disable + an override file", () => {
+		expect(normalizeSettings({}).manager.reopenAfterMs).toBe(86_400_000);
+		const s = normalizeSettings({
+			manager: { reopenAfterMs: 0, reopenTemplate: "~/reopen.md" },
+		});
+		expect(s.manager.reopenAfterMs).toBe(0);
+		expect(s.manager.reopenTemplate).toBe("~/reopen.md");
+	});
 });
 
 describe("loadSettings", () => {
