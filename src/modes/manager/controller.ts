@@ -117,6 +117,18 @@ export function reviseDirective(draft: string): string {
 }
 
 /**
+ * Correction injected after a turn that ended with plain text and no tool call.
+ * Plain text is discarded and never reaches Telegram, so the reply was lost; this
+ * re-prompt forces the model to end via a tool. Only used once per batch — if the
+ * next turn is prose again, {@link ManagerController.onAgentEnd} delivers the text
+ * verbatim rather than dropping it a second time.
+ */
+export const PROSE_CORRECTION =
+	"[Your previous turn was plain text, which is NEVER delivered to Telegram — it " +
+	"was discarded. You MUST end this turn by calling exactly ONE tool: manager_reply " +
+	"(put the message in its `text` argument) or manager_silent. Do not write prose.]";
+
+/**
  * Nudge added when the latest interlocutor message contains a configured
  * wake-word: it fast-tracked the message here, but only a genuine question to the
  * bot warrants a reply — a word used in passing does not.
@@ -191,6 +203,13 @@ export interface ManagerControllerDeps {
 	 * the re-greeting instructions. `0` disables re-greeting.
 	 */
 	reopenAfterMs: number;
+	/**
+	 * How many times a drafted reply is re-considered when new interlocutor
+	 * messages keep landing mid-turn before it is sent as-is. Caps the revise loop
+	 * so a rapid sender cannot defer the reply forever; `0` sends immediately with
+	 * no re-read.
+	 */
+	reviseThreshold: number;
 	/** Max candidates individually verified in the consolidation interrogation. */
 	verifyLimit: number;
 	/**
@@ -316,6 +335,24 @@ export class ManagerController {
 		string,
 		{ text: string; replyTo?: number }
 	>();
+	/**
+	 * How many times the active draft for a chat has already been re-considered
+	 * because new messages kept arriving. Once it reaches `reviseThreshold` the
+	 * draft is sent as-is, so a rapid sender cannot defer the reply indefinitely.
+	 */
+	private readonly reviseCount = new Map<string, number>();
+	/**
+	 * Chats whose current turn ended in plain text and were already re-prompted
+	 * once to call a tool. A second prose turn is delivered verbatim instead of
+	 * being dropped, so a reply is never silently lost.
+	 */
+	private readonly proseRetried = new Set<string>();
+	/**
+	 * A one-shot trailing directive for the active chat's next turn (e.g. the
+	 * plain-text correction). Consumed by {@link buildContextForActive} and cleared
+	 * when the chat is served.
+	 */
+	private readonly correction = new Map<string, string>();
 	/**
 	 * The chat currently being memory-consolidated (idle pass), if any, together
 	 * with the interrogation state machine driving its per-probe questions.
@@ -558,8 +595,12 @@ export class ManagerController {
 		this.scheduler.onMessage(chatId);
 	}
 
-	/** Resolve the finished turn's decision and deliver a reply if the model chose to. */
-	async onAgentEnd(): Promise<void> {
+	/**
+	 * Resolve the finished turn's decision and deliver a reply if the model chose
+	 * to. `finalText` is the turn's trailing assistant prose (if any), used only to
+	 * recover a reply the model wrote as plain text instead of calling a tool.
+	 */
+	async onAgentEnd(finalText?: string): Promise<void> {
 		// A consolidation probe finished — advance the interrogation (no reply sent).
 		if (this.consolidating) {
 			await this.advanceConsolidation();
@@ -571,27 +612,50 @@ export class ManagerController {
 			return;
 		}
 		const decision = this.decision.current();
-		const text = resolveDecision(decision);
-		const requestedReplyTo =
+		let text = resolveDecision(decision);
+		let requestedReplyTo =
 			decision.kind === "reply" ? decision.replyTo : undefined;
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		// Persist any durable facts the model recorded mid-conversation.
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		this.gate.clearServed(active);
+		// The model ended in plain text without calling a tool. Plain text is never
+		// delivered, so the reply was lost. Re-prompt once to make it call a tool; if
+		// it writes prose again, deliver the text verbatim rather than dropping it.
+		const prose = finalText?.trim();
+		if (decision.kind === "none" && prose) {
+			if (!this.proseRetried.has(active)) {
+				this.proseRetried.add(active);
+				this.correction.set(active, PROSE_CORRECTION);
+				await this.triggerTurn();
+				return;
+			}
+			text = prose;
+			requestedReplyTo = undefined;
+		}
 		// New interlocutor message(s) arrived while this turn was generating: don't
 		// send the now-stale draft blind. Hold it, keep the chat unserved, and let the
-		// model reconsider next turn against the newer messages (revise or resend).
+		// model reconsider next turn against the newer messages (revise or resend) —
+		// but only up to reviseThreshold times, so a rapid sender cannot defer the
+		// reply forever; past the cap the draft is sent as-is.
 		const arrivedMidTurn = this.dirtyDuringTurn.delete(active);
 		if (text && arrivedMidTurn) {
-			this.pendingReply.set(active, { text, replyTo: requestedReplyTo });
-			await this.triggerTurn();
-			return;
+			const cycles = this.reviseCount.get(active) ?? 0;
+			if (cycles < this.deps.reviseThreshold) {
+				this.reviseCount.set(active, cycles + 1);
+				this.pendingReply.set(active, { text, replyTo: requestedReplyTo });
+				await this.triggerTurn();
+				return;
+			}
 		}
 		// The turn settled — this chat is served, whatever the model decided.
 		this.unserved.delete(active);
 		this.latestImages.delete(active);
 		this.pendingReply.delete(active);
+		this.reviseCount.delete(active);
+		this.proseRetried.delete(active);
+		this.correction.delete(active);
 		if (text) {
 			if (meta) {
 				const records = await this.deps.chatStore.getRecent(
@@ -685,11 +749,14 @@ export class ManagerController {
 			(opener ? `\n\n${opener}` : "") +
 			(known ? `\n\n${known}` : "");
 		const pending = this.pendingReply.get(active);
+		const correction = this.correction.get(active);
 		const directive = this.turnDecided()
 			? MANAGER_TURN_DONE
-			: pending
-				? reviseDirective(pending.text)
-				: MANAGER_ACTION_TRIGGER;
+			: correction
+				? correction
+				: pending
+					? reviseDirective(pending.text)
+					: MANAGER_ACTION_TRIGGER;
 		// Flag a wake-word in the latest interlocutor line so the model weighs whether
 		// it is really addressed vs. the word just being mentioned.
 		const lastInterlocutor = [...records]

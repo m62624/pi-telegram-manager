@@ -79,6 +79,18 @@ describe("normalizeSettings", () => {
 		expect(s.manager.reopenAfterMs).toBe(0);
 		expect(s.manager.reopenTemplate).toBe("~/reopen.md");
 	});
+
+	it("defaults reviseThreshold to 2 and accepts an override (0 disables re-reads)", () => {
+		expect(normalizeSettings({}).manager.reviseThreshold).toBe(2);
+		expect(
+			normalizeSettings({ manager: { reviseThreshold: 0 } }).manager
+				.reviseThreshold,
+		).toBe(0);
+		expect(
+			normalizeSettings({ manager: { reviseThreshold: 5 } }).manager
+				.reviseThreshold,
+		).toBe(5);
+	});
 });
 
 describe("loadSettings", () => {

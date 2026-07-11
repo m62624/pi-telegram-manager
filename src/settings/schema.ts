@@ -91,6 +91,13 @@ export interface TelegramSettings {
 		reopenAfterMs: number;
 		/** Optional override file for the re-opening greeting template. */
 		reopenTemplate?: string;
+		/**
+		 * How many times a drafted reply may be re-considered when new interlocutor
+		 * messages keep arriving mid-turn before it is sent as-is. Caps the revise
+		 * loop so a rapid sender cannot defer a reply forever. Default 2; `0` sends
+		 * the draft immediately without any re-read.
+		 */
+		reviseThreshold: number;
 		subMode: ManagerSubMode;
 		observer: {
 			interlocutorInstructionFile?: string;
@@ -127,6 +134,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		verifyLimit: 8,
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
+		reviseThreshold: 2,
 		responseMode: "smart",
 		markRead: true,
 		throttleMs: 0,
@@ -379,6 +387,11 @@ export function normalizeSettings(
 			reopenTemplate: asOptionalString(
 				manager.reopenTemplate,
 				"manager.reopenTemplate",
+			),
+			reviseThreshold: asNonNegativeInt(
+				manager.reviseThreshold,
+				"manager.reviseThreshold",
+				d.manager.reviseThreshold,
 			),
 			subMode: asEnum(
 				manager.subMode,

@@ -37,7 +37,11 @@ import {
 } from "./instructions/builtin";
 import { ConnectController } from "./modes/connect/controller";
 import { card, note } from "./modes/connect/format";
-import { extractText, type PromptContent } from "./modes/connect/messages";
+import {
+	extractText,
+	lastAssistantReply,
+	type PromptContent,
+} from "./modes/connect/messages";
 import { selectCatchUpChats } from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import { ManagerController } from "./modes/manager/controller";
@@ -351,7 +355,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connect?.endDraft();
 		await connect?.onAgentEnd(event.messages);
 		if (manager) {
-			await manager.onAgentEnd();
+			// Pass the trailing assistant prose so the manager can recover a reply the
+			// model wrote as plain text instead of calling a tool (otherwise dropped).
+			await manager.onAgentEnd(lastAssistantReply(event.messages) ?? undefined);
 			updateManagerBanner();
 		}
 	});
@@ -836,6 +842,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			verifyLimit: settings.manager.verifyLimit,
 			liveFreshnessMs: settings.manager.liveFreshnessMs,
 			reopenAfterMs: settings.manager.reopenAfterMs,
+			reviseThreshold: settings.manager.reviseThreshold,
 			mentionWords: settings.manager.mentionWords,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,

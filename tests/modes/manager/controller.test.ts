@@ -75,6 +75,7 @@ async function setup(
 		verifyLimit: 8,
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
+		reviseThreshold: 2,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
@@ -231,6 +232,65 @@ describe("ManagerController", () => {
 		await controller.onAgentEnd();
 		expect(sendReply).toHaveBeenCalledTimes(1);
 		expect(sendReply.mock.calls[0][0].text).toContain("answer to both");
+	});
+
+	it("caps the revise loop: after reviseThreshold reconsiders the draft is sent as-is", async () => {
+		// reviseThreshold defaults to 2 in setup: the draft may be held twice, then
+		// the third mid-turn arrival still sends it rather than deferring forever.
+		const { controller, sendReply, setIdle, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("q1", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		// Three consecutive turns, each interrupted by a fresh mid-turn message.
+		for (let i = 2; i <= 4; i += 1) {
+			setIdle(false);
+			await controller.onBusinessMessage({
+				connectionId: CONN,
+				chatId: "42",
+				fromId: 5,
+				message: interlocutorMsg(`more ${i}`, 5, i),
+			});
+			setIdle(true);
+			controller.decisionSink().record({ kind: "reply", text: `draft ${i}` });
+			await controller.onAgentEnd();
+		}
+
+		// First two reconsiders held the draft; the third hit the cap and delivered.
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain("draft 4");
+	});
+
+	it("recovers a reply the model wrote as plain text: re-prompts once, then delivers it", async () => {
+		const { controller, sendReply, triggerAgent, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you there?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		const triggersAfterStart = triggerAgent.mock.calls.length;
+
+		// The model ends in plain text with no tool call → held, re-prompted once.
+		await controller.onAgentEnd("Yes, I am here.");
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.at(-1)?.content).toContain("plain text");
+
+		// It writes prose again → the text is delivered verbatim instead of dropped.
+		await controller.onAgentEnd("Still here, what do you need?");
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain(
+			"Still here, what do you need?",
+		);
 	});
 
 	it("greets a chat resuming after a long silence with the reopen template", async () => {
