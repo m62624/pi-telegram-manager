@@ -65,6 +65,7 @@ async function setup(subMode: ManagerSubMode = "observer") {
 		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
 		verifyLimit: 8,
+		liveFreshnessMs: 120_000,
 		maxBytes: 52_428_800,
 		media: { images: true, documents: false },
 		clock,
@@ -205,6 +206,40 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it("records a backlog message for context but does not open a live cycle", async () => {
+		const { controller, triggerAgent, deps, clock } = await setup();
+		clock.advance(1_000_000); // now = 1,000,000 ms
+		// True send time 1000 ms — far older than liveFreshnessMs (120 s).
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				...interlocutorMsg("yesterday's backlog"),
+				date: 1,
+			} as Message,
+		});
+		// Stored in the transcript, but never queued/held and never triggers a turn.
+		expect((await deps.chatStore.all("42")).length).toBe(1);
+		expect(controller.status().holding).toBe(0);
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+		expect(controller.status().activeChat).toBeUndefined();
+
+		// A fresh message (true send time ≈ now) does open the owner-reply window.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				...interlocutorMsg("live now", 5, 2),
+				date: Math.floor(clock.now() / 1000),
+			} as Message,
+		});
+		expect(controller.status().holding).toBe(1);
 	});
 
 	it("builds an isolated context for the active chat only", async () => {

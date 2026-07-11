@@ -161,6 +161,12 @@ export interface ManagerControllerDeps {
 	factConsolidationQuietMs: number;
 	/** Max candidates individually verified in the consolidation interrogation. */
 	verifyLimit: number;
+	/**
+	 * Max true age (ms) for an interlocutor message to open a live reply cycle. An
+	 * older (redelivered/backlog) message is recorded for context only, so a
+	 * conversation that ended long ago does not "wake" the manager on restart.
+	 */
+	liveFreshnessMs: number;
 	/** IANA timezone for the `[Now: …]` line; undefined → system zone. */
 	timezone?: string;
 	/** Byte cap for describing/downloading inbound attachments. */
@@ -381,6 +387,13 @@ export class ManagerController {
 			kind: media.kind,
 		});
 		await this.touchConsolidation(chatId, messageTime);
+		// A backlog message — one whose true send time is well in the past, e.g.
+		// redelivered after downtime — is kept for context and consolidation but does
+		// NOT open a live reply cycle; otherwise a conversation that ended long ago
+		// would "wake" the manager on restart. Catch-up on activation
+		// (selectCatchUpChats), which reasons off true timestamps, decides which
+		// stale chats are still worth answering.
+		if (now - messageTime > this.deps.liveFreshnessMs) return;
 		this.unserved.add(chatId);
 		if (this.scheduler.activeChat() === chatId) {
 			// A continuation of the active chat: cancel its continuation-release so it

@@ -791,6 +791,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			factsLimit: settings.manager.factsLimit,
 			factConsolidationQuietMs: settings.manager.factConsolidationQuietMs,
 			verifyLimit: settings.manager.verifyLimit,
+			liveFreshnessMs: settings.manager.liveFreshnessMs,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
 			media: settings.manager.media,
