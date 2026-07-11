@@ -83,13 +83,30 @@ describe("manager tools", () => {
 		]);
 	});
 
-	it("manager_remember records de-duplicated non-empty facts", async () => {
+	it("manager_remember records de-duplicated facts tagged with subject/kind", async () => {
 		const facts = new FactState();
 		const tools = toolMap(new DecisionState(), facts);
-		await tools
-			.get("manager_remember")
-			?.execute("t1", { facts: ["lives in Almaty", "  ", "lives in Almaty"] });
-		expect(facts.current()).toEqual(["lives in Almaty"]);
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
+				{ text: "  ", subject: "interlocutor" },
+				{ text: "lives in Almaty", subject: "interlocutor" },
+			],
+		});
+		expect(facts.current()).toEqual([
+			{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
+		]);
+	});
+
+	it("manager_remember defaults an unknown subject to 'other' (so it is dropped)", async () => {
+		const facts = new FactState();
+		const tools = toolMap(new DecisionState(), facts);
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [{ text: "the owner ships code", subject: "bogus" }],
+		});
+		expect(facts.current()).toEqual([
+			{ text: "the owner ships code", subject: "other", kind: undefined },
+		]);
 	});
 
 	it("manager_skip fires the onSkip signal so the runtime can end the turn", async () => {

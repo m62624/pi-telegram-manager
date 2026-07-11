@@ -400,7 +400,7 @@ export class ManagerController {
 		this.decision.reset();
 		const meta = this.chats.get(active);
 		// Persist any durable facts the model recorded mid-conversation.
-		await this.persistRecordedFacts(meta?.userId);
+		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		// This chat has been served this turn, whatever the model decided.
 		this.unserved.delete(active);
 		this.latestImages.delete(active);
@@ -589,24 +589,42 @@ export class ManagerController {
 		return `Known facts about ${meta.contactName}:\n${lines}`;
 	}
 
-	/** Persist the facts the model recorded this turn (capped to factsLimit). */
+	/**
+	 * Persist the facts the model recorded this turn (capped to factsLimit), behind
+	 * the who-is-who firewall: only facts the model tagged `subject: interlocutor`
+	 * are kept, and nothing is written if the target card is actually the business
+	 * owner (a self-test where the owner messaged their own bot). Each stored fact
+	 * carries the confirmed contact name + kind for auditability.
+	 */
 	private async persistRecordedFacts(
 		userId: string | undefined,
+		contactName?: string,
 	): Promise<void> {
 		const recorded = this.facts.current();
 		this.facts.reset();
 		if (!userId || recorded.length === 0) return;
+		if (await this.isOwnerUserId(userId)) return;
+		const kept = recorded.filter((fact) => fact.subject === "interlocutor");
+		if (kept.length === 0) return;
 		const now = this.deps.clock.now();
-		const facts: ContactFact[] = recorded.map((text) => ({
-			text,
+		const facts: ContactFact[] = kept.map((fact) => ({
+			text: fact.text,
 			timestamp: now,
 			source: "manager",
+			subject: contactName,
+			kind: fact.kind,
 		}));
 		await this.deps.contactStore.appendFacts(
 			userId,
 			facts,
 			this.deps.factsLimit,
 		);
+	}
+
+	/** Whether a userId is the business owner (never store contact facts for them). */
+	private async isOwnerUserId(userId: string): Promise<boolean> {
+		const connections = await this.deps.businessStore.all();
+		return connections.some((connection) => connection.userId === userId);
 	}
 
 	/** Mark a chat as a consolidation candidate, refreshing its quiet timer. */
@@ -645,7 +663,8 @@ export class ManagerController {
 		const current = this.consolidating;
 		this.consolidating = null;
 		if (!current) return;
-		await this.persistRecordedFacts(current.userId);
+		const contactName = this.chats.get(current.chatId)?.contactName;
+		await this.persistRecordedFacts(current.userId, contactName);
 		await this.deps.consolidationQueue.remove(current.chatId);
 	}
 }

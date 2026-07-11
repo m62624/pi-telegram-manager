@@ -12,7 +12,9 @@
  * text; `manager_silent` or no call at all → stay silent (the safe default). No
  * response-text parsing, so it is deterministic and unit-testable.
  */
+
 import { defineTool, type ToolDefinition } from "../../pi/sdk";
+import { FACT_KINDS, type FactKind } from "../../storage/contact-store";
 
 /**
  * How the model classified the latest interlocutor message before acting. It is
@@ -72,27 +74,63 @@ export interface DecisionSink {
 	record(decision: ManagerDecision): void;
 }
 
+/**
+ * Who a remembered fact is about — the code-checkable who-is-who classification.
+ * Only `interlocutor` facts are ever persisted; `owner`/`other` are dropped so
+ * the model can never file the operator's own details under a contact.
+ */
+export type FactRelation = "interlocutor" | "owner" | "other";
+
+export const FACT_RELATIONS: readonly FactRelation[] = [
+	"interlocutor",
+	"owner",
+	"other",
+];
+
+/** A durable fact captured this turn, tagged with its subject relation and kind. */
+export interface RememberedFact {
+	text: string;
+	subject: FactRelation;
+	kind?: FactKind;
+}
+
 /** A per-turn holder the memory tools write recorded facts into. */
 export interface FactSink {
-	record(facts: string[]): void;
+	record(facts: RememberedFact[]): void;
+}
+
+/** Coerce an untrusted string into a known relation, defaulting to "other". */
+function asRelation(value: unknown): FactRelation {
+	return FACT_RELATIONS.includes(value as FactRelation)
+		? (value as FactRelation)
+		: "other";
+}
+
+/** Coerce an untrusted string into a known fact kind, or undefined. */
+function asKind(value: unknown): FactKind | undefined {
+	return FACT_KINDS.includes(value as FactKind)
+		? (value as FactKind)
+		: undefined;
 }
 
 /** Collects durable facts recorded this turn via `manager_remember`. */
 export class FactState implements FactSink {
-	private facts: string[] = [];
+	private facts: RememberedFact[] = [];
 
 	reset(): void {
 		this.facts = [];
 	}
 
-	record(facts: string[]): void {
+	record(facts: RememberedFact[]): void {
 		for (const fact of facts) {
-			const trimmed = fact.trim();
-			if (trimmed && !this.facts.includes(trimmed)) this.facts.push(trimmed);
+			const text = fact.text.trim();
+			if (!text) continue;
+			if (this.facts.some((existing) => existing.text === text)) continue;
+			this.facts.push({ ...fact, text });
 		}
 	}
 
-	current(): string[] {
+	current(): RememberedFact[] {
 		return [...this.facts];
 	}
 }
@@ -239,21 +277,55 @@ export function createManagerTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save durable, useful facts about the CURRENT interlocutor (their name, city, preferences, agreements, context) to private long-term memory. Facts persist and are shown to you next time they write. Not shared with anyone. Only save stable facts, not passing chatter. On a normal turn you may call this in addition to your manager_reply/manager_silent.",
+			"Save durable, useful facts to private long-term memory. For EACH fact set subject — 'interlocutor' (about the person you are chatting with), 'owner' (about your operator), or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored; never file the owner's own details under a contact. Save stable facts (name, city, role, preferences, agreements), not passing chatter/mood/location. On a normal turn you may call this in addition to manager_reply/manager_silent.",
 		parameters: {
 			type: "object",
 			properties: {
 				facts: {
 					type: "array",
-					items: { type: "string" },
-					description: "One short durable fact per item.",
+					items: {
+						type: "object",
+						properties: {
+							text: {
+								type: "string",
+								description: "One short durable fact.",
+							},
+							subject: {
+								type: "string",
+								enum: FACT_RELATIONS,
+								description:
+									"Who the fact is about: 'interlocutor' (stored), 'owner' or 'other' (dropped).",
+							},
+							kind: {
+								type: "string",
+								enum: FACT_KINDS,
+								description:
+									"identity (who they are) | preference (tastes/style) | agreement (commitments) | context (ongoing situation).",
+							},
+						},
+						required: ["text", "subject"],
+						additionalProperties: false,
+					},
+					description: "Durable facts, each tagged with subject and kind.",
 				},
 			},
 			required: ["facts"],
 			additionalProperties: false,
 		} as never,
-		async execute(_toolCallId, params: { facts?: string[] }) {
-			const facts = Array.isArray(params.facts) ? params.facts : [];
+		async execute(
+			_toolCallId,
+			params: {
+				facts?: Array<{ text?: string; subject?: string; kind?: string }>;
+			},
+		) {
+			const raw = Array.isArray(params.facts) ? params.facts : [];
+			const facts: RememberedFact[] = raw
+				.filter((item) => item?.text?.trim())
+				.map((item) => ({
+					text: (item.text as string).trim(),
+					subject: asRelation(item.subject),
+					kind: asKind(item.kind),
+				}));
 			factSink.record(facts);
 			return ok(`Remembered ${facts.length} fact(s).`);
 		},

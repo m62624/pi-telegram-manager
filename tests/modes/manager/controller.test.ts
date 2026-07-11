@@ -375,11 +375,53 @@ describe("ManagerController", () => {
 		});
 		clock.advance(300_001);
 		await controller.onTick();
-		controller.factSink().record(["name is Bob"]);
+		controller
+			.factSink()
+			.record([
+				{ text: "name is Bob", subject: "interlocutor", kind: "identity" },
+			]);
 		controller.decisionSink().record({ kind: "reply", text: "Hello Bob" });
 		await controller.onAgentEnd();
 		const facts = await deps.contactStore.getFacts("5");
 		expect(facts.map((f) => f.text)).toContain("name is Bob");
+	});
+
+	it("firewall: keeps only interlocutor-tagged facts, stamped with contact + kind", async () => {
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hi"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.factSink().record([
+			{ text: "keeps this", subject: "interlocutor", kind: "preference" },
+			{ text: "owner detail", subject: "owner" },
+			{ text: "third party", subject: "other" },
+		]);
+		controller.decisionSink().record({ kind: "silent" });
+		await controller.onAgentEnd();
+		const facts = await deps.contactStore.getFacts("5");
+		expect(facts.map((f) => f.text)).toEqual(["keeps this"]);
+		expect(facts[0]).toMatchObject({ subject: "Alice", kind: "preference" });
+	});
+
+	it("firewall: never writes facts into the owner's own card (self-test)", async () => {
+		const { controller, deps } = await setup();
+		// A chat keyed by the owner's own id — the owner messaged their own bot.
+		controller.markReady("owner-chat", {
+			connectionId: CONN,
+			contactName: "Owner",
+			userId: String(OWNER_ID),
+		});
+		controller
+			.factSink()
+			.record([{ text: "should not persist", subject: "interlocutor" }]);
+		controller.decisionSink().record({ kind: "silent" });
+		await controller.onAgentEnd();
+		expect(await deps.contactStore.getFacts(String(OWNER_ID))).toEqual([]);
 	});
 
 	it("runs an idle consolidation turn once a chat is settled and quiet", async () => {
@@ -403,7 +445,11 @@ describe("ManagerController", () => {
 		expect(ctx?.[0].content).toContain("long-term memory");
 		expect(ctx?.at(-1)?.content).toContain("manager_remember");
 		// The consolidation turn saves a fact.
-		controller.factSink().record(["ordered a laptop"]);
+		controller
+			.factSink()
+			.record([
+				{ text: "ordered a laptop", subject: "interlocutor", kind: "context" },
+			]);
 		await controller.onAgentEnd();
 		const facts = await deps.contactStore.getFacts("5");
 		expect(facts.map((f) => f.text)).toContain("ordered a laptop");
@@ -414,7 +460,9 @@ describe("ManagerController", () => {
 		// Fresh normal turn: nothing decided yet.
 		expect(controller.turnDecided()).toBe(false);
 		// A durable-fact record alone is NOT terminal — the model may still reply.
-		controller.factSink().record(["name is Bob"]);
+		controller
+			.factSink()
+			.record([{ text: "name is Bob", subject: "interlocutor" }]);
 		expect(controller.turnDecided()).toBe(false);
 		// reply/silent ends the turn.
 		controller.decisionSink().record({ kind: "silent" });
