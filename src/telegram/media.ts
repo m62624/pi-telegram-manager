@@ -186,3 +186,36 @@ export class MediaDownloader {
 		return { ref, bytes, filePath: file.file_path };
 	}
 }
+
+/** A base64 image ready to feed the model inline (Telegram photos are JPEG). */
+export interface InlineImage {
+	data: string;
+	mimeType: string;
+}
+
+/**
+ * Download a message's inline images (photos and `image/*` documents) as base64
+ * so the model can actually see them, not just the text header. Per-image
+ * failures (too large / unavailable) are swallowed so one bad attachment never
+ * sinks a turn — the header still records that a picture arrived.
+ */
+export async function loadInlineImages(
+	downloader: MediaDownloader,
+	message: Message,
+	maxBytes?: number,
+): Promise<InlineImage[]> {
+	const refs = describeAttachments(message, maxBytes).filter(isImage);
+	const images: InlineImage[] = [];
+	for (const ref of refs) {
+		try {
+			const file = await downloader.download(ref);
+			images.push({
+				data: toBase64(file.bytes),
+				mimeType: ref.mimeType ?? "image/jpeg",
+			});
+		} catch {
+			// too large / unavailable — the text header still notes it.
+		}
+	}
+	return images;
+}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	describeAttachments,
 	isImage,
+	loadInlineImages,
 	MediaDownloader,
 	MediaTooLargeError,
 	MediaUnavailableError,
@@ -213,5 +214,48 @@ describe("MediaDownloader", () => {
 		await expect(
 			md.download({ kind: "photo", fileId: "abc" }),
 		).rejects.toBeInstanceOf(MediaTooLargeError);
+	});
+});
+
+describe("loadInlineImages", () => {
+	function fakeDownloader(fail = false): MediaDownloader {
+		return {
+			download: async (ref: { fileId: string }) => {
+				if (fail) throw new MediaUnavailableError(ref.fileId);
+				return { ref, bytes: new Uint8Array([1, 2, 3]), filePath: "p.jpg" };
+			},
+		} as unknown as MediaDownloader;
+	}
+
+	it("returns a base64 image per inline image (default JPEG mime)", async () => {
+		const images = await loadInlineImages(
+			fakeDownloader(),
+			message({ photo: photos }),
+		);
+		expect(images).toEqual([
+			{ data: toBase64([1, 2, 3]), mimeType: "image/jpeg" },
+		]);
+	});
+
+	it("skips non-image attachments", async () => {
+		const images = await loadInlineImages(
+			fakeDownloader(),
+			message({
+				document: {
+					file_id: "d",
+					file_unique_id: "d",
+					mime_type: "application/pdf",
+				},
+			} as Partial<Message>),
+		);
+		expect(images).toEqual([]);
+	});
+
+	it("swallows a failed download so one bad image never sinks the turn", async () => {
+		const images = await loadInlineImages(
+			fakeDownloader(true),
+			message({ photo: photos }),
+		);
+		expect(images).toEqual([]);
 	});
 });

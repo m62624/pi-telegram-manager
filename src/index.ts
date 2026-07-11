@@ -17,6 +17,7 @@
  * reason.
  */
 import { join } from "node:path";
+import type { Message } from "@grammyjs/types";
 import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
@@ -80,8 +81,8 @@ import {
 	describeAttachments,
 	type FileApi,
 	isImage,
+	loadInlineImages,
 	MediaDownloader,
-	toBase64,
 } from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
@@ -474,31 +475,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				fileBaseUrl: fileBaseUrl(token),
 				maxBytes: settings.files.maxBytes,
 			});
-			// Download a message's image attachments so the model actually sees the
-			// picture, not just the "[attachments: photo]" text header. Telegram
-			// photos have no mime type (always JPEG); over-cap/unavailable files are
-			// skipped per-file so a bad attachment never sinks the whole turn.
-			const loadImages = async (
-				message: Parameters<typeof describeAttachments>[0],
-			) => {
-				const refs = describeAttachments(
-					message,
-					settings.files.maxBytes,
-				).filter(isImage);
-				const images: { data: string; mimeType: string }[] = [];
-				for (const ref of refs) {
-					try {
-						const file = await media.download(ref);
-						images.push({
-							data: toBase64(file.bytes),
-							mimeType: ref.mimeType ?? "image/jpeg",
-						});
-					} catch {
-						// too large / unavailable — the text header still mentions it.
-					}
-				}
-				return images;
-			};
+			const loadImages = (message: Message) =>
+				loadInlineImages(media, message, settings.files.maxBytes);
 			// Where inbound non-image files land: the configured dir, else the
 			// directory Pi runs in.
 			const downloadDir = settings.files.downloadDir
@@ -754,26 +732,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fileBaseUrl: fileBaseUrl(token),
 			maxBytes: settings.files.maxBytes,
 		});
-		const loadManagerImages = async (
-			message: Parameters<typeof describeAttachments>[0],
-		) => {
-			const refs = describeAttachments(message, settings.files.maxBytes).filter(
-				isImage,
-			);
-			const images: { data: string; mimeType: string }[] = [];
-			for (const ref of refs) {
-				try {
-					const file = await managerMedia.download(ref);
-					images.push({
-						data: toBase64(file.bytes),
-						mimeType: ref.mimeType ?? "image/jpeg",
-					});
-				} catch {
-					// too large / unavailable — the "[image]" marker still notes it.
-				}
-			}
-			return images;
-		};
+		// Download an interlocutor message's inline images so the model can scan
+		// them (mode-2 vision); documents are refused by the controller's media
+		// policy and never reach here.
+		const loadManagerImages = (message: Message) =>
+			loadInlineImages(managerMedia, message, settings.files.maxBytes);
 		const api = managerClient.api as unknown as {
 			sendMessage(args: {
 				business_connection_id: string;
