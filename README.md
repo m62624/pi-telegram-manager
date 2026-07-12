@@ -20,6 +20,8 @@ Bridges your **current Pi terminal session** to your **private chat with the bot
 
 ### 🕵️ Business manager — mode 2 (the centrepiece)
 
+> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf. All you do is flip one BotFather toggle and connect the bot — see [Getting started](#getting-started).
+
 Through a Telegram **Business** connection, the bot reads your business conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent instance multiplexes every chat, with:
 
 - **strict per-chat context isolation** — each turn the model sees only that one conversation, rebuilt from disk;
@@ -84,7 +86,7 @@ Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/setti
 
 Open Telegram **Settings → Telegram Business → Chatbots**, enter your bot's username, and choose which chats it may access.
 
-> ⚠️ **Telegram Premium is required here** — the Telegram **Business** section (and connecting a chatbot to your account) is a Premium feature of Telegram itself, not of this extension. This applies only to **you**, the account that runs the bot: the people who message you need nothing special — they write from ordinary accounts. **Personal mode needs neither Premium nor Business** — it is just a normal bot DM with yourself.
+> ✅ **No Telegram Premium or paid subscription is required.** Telegram opened **connected business bots to all users** in [Bot API 10.0](https://core.telegram.org/bots/api-changelog) (**8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."*) — a bot can reply on your behalf from an ordinary, free account. There is nothing to buy: on the bot's side you only need Business Mode enabled (step 2), and on your side just connect it here. The people who message you need nothing either.
 
 Then open Pi and run one of the commands below. The extension loads `./src/index.ts` directly — no build step is needed to run it, only a Pi session restart after changes.
 
