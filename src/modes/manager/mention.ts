@@ -36,3 +36,21 @@ export function matchesMention(
 		return needle.length > 0 && haystack.includes(` ${needle} `);
 	});
 }
+
+/**
+ * The effective wake-word list: the configured `mentionWords` PLUS the bot's own
+ * label (from `manager.labeler`) as one phrase, so a message that addresses the
+ * bot by the name it signs replies with also wakes it. The label is normalized
+ * (emoji/punctuation dropped, lower-cased) and only added when non-empty and not
+ * already present. `mentionWords` itself is never mutated — the configured list
+ * is authoritative and the labeler is a purely additive convenience.
+ */
+export function withLabelerMention(
+	words: readonly string[],
+	labeler: string | undefined,
+): string[] {
+	const label = normalize(labeler ?? "");
+	if (!label) return [...words];
+	const already = words.some((word) => normalize(word) === label);
+	return already ? [...words] : [...words, label];
+}

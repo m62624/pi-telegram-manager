@@ -96,8 +96,16 @@ export interface TelegramSettings {
 		 * 120000 (2 min).
 		 */
 		liveFreshnessMs: number;
-		/** Prefix prepended to each outgoing business message ("" = none). */
+		/** Prefix prepended to each outgoing business message ("" = none, and no banner). */
 		labeler: string;
+		/**
+		 * A second line rendered under the labeler inside the same blockquote — a
+		 * horizontal rule that makes the bot-message banner taller and easier to spot.
+		 * You control its look/length by the string itself; "" removes just the rule
+		 * line (the labeler stays). Ignored entirely when `labeler` is "". Default a
+		 * short box-drawing rule.
+		 */
+		labelerRule: string;
 		/**
 		 * Wake-words (case-insensitive). A message containing one jumps the owner-reply
 		 * window straight into processing (the model still decides whether it is a
@@ -182,6 +190,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		debugFeed: false,
 		strictReplyGuard: true,
 		labeler: "LLM agent 🤖:",
+		labelerRule: "────────────",
 		mentionWords: ["llm", "manager"],
 		instructionFiles: [],
 		observer: {},
@@ -419,6 +428,11 @@ export function normalizeSettings(
 				d.manager.liveFreshnessMs,
 			),
 			labeler: asString(manager.labeler, "manager.labeler", d.manager.labeler),
+			labelerRule: asString(
+				manager.labelerRule,
+				"manager.labelerRule",
+				d.manager.labelerRule,
+			),
 			// Absent → the default wake-word; an explicit array (incl. []) is honoured,
 			// so `[]` disables the feature.
 			mentionWords:

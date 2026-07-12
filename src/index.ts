@@ -67,10 +67,16 @@ import {
 	INTERROGATION_TOOL_NAMES,
 	type ProbeSink,
 } from "./modes/manager/interrogation";
+import { withLabelerMention } from "./modes/manager/mention";
 import {
 	stripTelegramTurns,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
+import {
+	managerGuardActive,
+	managerHoldsSession,
+	mixedContextSource,
+} from "./modes/manager/polarity";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { selectManagerSubMode } from "./modes/manager/submode-picker";
 import { resolveTelegramPaths } from "./pi/agent-dir";
@@ -196,10 +202,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Runtime backstop for the telegram-sandbox: block any tool the manager's
 	// allowlist does not permit, even if it slipped past the visibility gate.
 	registerToolGuard(pi, {
-		// The sandbox is enforced whenever the manager is running — except in mixed
-		// mode's coding polarity, where the owner is coding and needs full tools.
-		isActive: () =>
-			manager !== null && (!mixedActive || polarity === "telegram"),
+		// The sandbox is enforced whenever the manager holds the session — except in
+		// mixed mode's coding polarity, where the owner is coding and needs full tools.
+		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
 	});
 
@@ -207,19 +212,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
 	// mode / no boundary → leave the context untouched.
 	pi.on("context", async (event) => {
-		if (mixedActive) {
-			// Telegram polarity: replace context with the active chat's isolated
-			// history, exactly like the standalone manager.
-			if (polarity === "telegram" && manager) {
-				const isolated = await manager.buildContextForActive();
-				if (!isolated) return {};
-				return { messages: toRebuiltMessages(isolated, Date.now()) } as never;
-			}
-			// Coding polarity: the owner's real session messages, with the manager's
-			// Telegram turns filtered out so they never pollute the coding thread.
+		const source = mixedContextSource(manager !== null, mixedActive, polarity);
+		// Coding polarity (mixed): the owner's real session messages, with the
+		// manager's Telegram turns filtered out so they never pollute the thread.
+		if (source === "coding-filtered") {
 			return { messages: stripTelegramTurns(event.messages) } as never;
 		}
-		if (manager) {
+		// Manager / mixed-telegram: replace context with the active chat's isolated
+		// history so the model sees only that one conversation.
+		if (source === "manager-chat" && manager) {
 			const isolated = await manager.buildContextForActive();
 			if (!isolated) return {};
 			return {
@@ -388,7 +389,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// full tools) and the footer indicator.
 	const setPolarity = (next: "coding" | "telegram"): void => {
 		polarity = next;
-		if (mixedActive) visibility.setActive("manager", next === "telegram");
+		if (mixedActive)
+			visibility.setActive("manager", managerHoldsSession(mixedActive, next));
 		updateMixedFooter();
 	};
 
@@ -541,7 +543,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (_event, ctx) => {
 		// Only cap a manager turn. In mixed mode's coding polarity the owner is
 		// running the turn — never abort it on the manager's stale decision flag.
-		if (mixedActive && polarity !== "telegram") return;
+		if (!managerHoldsSession(mixedActive, polarity)) return;
 		if (manager?.turnDecided()) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
@@ -555,7 +557,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
 		// don't feed it to the manager, and arm the idle timer that will hand the
 		// shared brain back to Telegram once the owner stays quiet.
-		if (mixedActive && polarity !== "telegram") {
+		if (!managerHoldsSession(mixedActive, polarity)) {
 			armMixedReturnTimer();
 			return;
 		}
@@ -583,7 +585,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// Record every manager tool call for the debug feed, before the connect guard
 		// (mode 2 has no ConnectController but still needs the feed). In mixed mode's
 		// coding polarity these are the owner's own tool calls — not manager turns.
-		if (manager && !(mixedActive && polarity !== "telegram")) {
+		if (manager && managerHoldsSession(mixedActive, polarity)) {
 			let args = "";
 			try {
 				args = JSON.stringify(event.args) ?? "";
@@ -965,11 +967,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			? (await readInstructionFiles(fs, [settings.manager.reopenTemplate]))
 					.text || undefined
 			: undefined;
+		// The effective wake-word list = configured mentionWords + the bot's own
+		// label as a phrase, so addressing the bot by the name it signs with also
+		// wakes it. Computed once and used for both the instructions and the runtime.
+		const effectiveMentionWords = withLabelerMention(
+			settings.manager.mentionWords,
+			settings.manager.labeler,
+		);
 		const instructions = await loadManagerInstructions({
 			fs,
 			subMode,
 			labeler: settings.manager.labeler,
-			mentionWords: settings.manager.mentionWords,
+			mentionWords: effectiveMentionWords,
 			overrideText: override.text,
 			firstMessageOverride,
 			reopenOverride,
@@ -1084,7 +1093,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			reviseThreshold: settings.manager.reviseThreshold,
 			ownerName: settings.manager.ownerName,
 			strictReplyGuard: settings.manager.strictReplyGuard,
-			mentionWords: settings.manager.mentionWords,
+			mentionWords: effectiveMentionWords,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
 			media: settings.manager.media,
@@ -1099,7 +1108,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// in the Telegram polarity; during coding the owner owns the session, so
 			// the manager stays "not idle" — it keeps ingesting/deferring but never
 			// triggers a turn until the return timer flips polarity.
-			isIdle: () => !busy && (!mixedActive || polarity === "telegram"),
+			isIdle: () => !busy && managerHoldsSession(mixedActive, polarity),
 			triggerAgent: async (prompt) => {
 				// Tag every injected Telegram turn in mixed mode so the coding-polarity
 				// context filter can strip it from the owner's thread.
@@ -1115,7 +1124,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						businessConnectionId: connectionId,
 						replyToMessageId,
 					},
-					formatManagerReplyHtmlChunks(text, settings.manager.labeler),
+					formatManagerReplyHtmlChunks(
+						text,
+						settings.manager.labeler,
+						settings.manager.labelerRule,
+					),
 				),
 			typing: async ({ connectionId, chatId }) => {
 				await api.sendChatAction({
@@ -1189,7 +1202,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		visibility.setExclusive("manager", managerMatcher);
 		// Mixed starts in coding polarity, so the manager sandbox is inactive until
 		// the return timer flips to Telegram; the standalone manager is always active.
-		visibility.setActive("manager", mixed ? polarity === "telegram" : true);
+		visibility.setActive("manager", managerHoldsSession(mixed, polarity));
 		managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
 		updateManagerBanner();
 		// Smart catch-up: answer for the owner in chats left waiting (last message

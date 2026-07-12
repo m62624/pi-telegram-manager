@@ -423,6 +423,28 @@ describe("ManagerController", () => {
 		expect(ctx?.at(-1)?.content).toContain("wake-word");
 	});
 
+	it("mixed/coding priority: a wake-word is held while the brain is busy, served once idle", async () => {
+		// In mixed mode's coding polarity the manager's isIdle is false, so a
+		// wake-word may make the chat ready but must NOT preempt the owner's coding —
+		// unlike the standalone manager, it waits for the return-timer to free the brain.
+		const { controller, triggerAgent, setIdle } = await setup("observer", [
+			"llm",
+		]);
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("llm, urgent please"),
+		});
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+		// The brain frees up (polarity flips back to Telegram) → the ready chat runs.
+		setIdle(true);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
 	it("without a wake-word the interlocutor still waits out the owner window", async () => {
 		const { controller } = await setup("observer", ["llm"]);
 		await controller.onBusinessMessage({

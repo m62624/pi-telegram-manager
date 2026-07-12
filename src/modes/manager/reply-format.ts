@@ -15,21 +15,30 @@ import { BOT_MARKER } from "./identity";
 const CLASSIC_MAX_CHARS = 3500;
 
 /**
- * Build the HTML chunks for a manager reply: `[<blockquote>labeler</blockquote>]
+ * Build the HTML chunks for a manager reply: `[<blockquote>labeler[\nrule]</blockquote>]
  * body + marker` for the first, `body + marker` for any continuations.
+ *
+ * The optional `rule` is a second line inside the same blockquote (a horizontal
+ * rule) that makes the bot banner taller and easier to tell apart from a message
+ * the owner typed. An empty `labeler` drops the banner entirely (rule included);
+ * an empty `rule` keeps just the label line.
  */
 export function formatManagerReplyHtmlChunks(
 	text: string,
 	labeler?: string,
+	rule?: string,
 ): string[] {
 	const label = labeler?.trim();
+	const ruleLine = rule?.trim();
+	const banner = label
+		? `<blockquote>${escapeHtml(label)}${
+				ruleLine ? `\n${escapeHtml(ruleLine)}` : ""
+			}</blockquote>`
+		: "";
 	const pieces = splitRichMarkdown(text.trim(), CLASSIC_MAX_CHARS);
 	const chunks = pieces.length > 0 ? pieces : [text.trim()];
 	return chunks.map((piece, index) => {
-		const head =
-			index === 0 && label
-				? `<blockquote>${escapeHtml(label)}</blockquote>`
-				: "";
+		const head = index === 0 ? banner : "";
 		return `${head}${escapeHtml(piece)}${BOT_MARKER}`;
 	});
 }

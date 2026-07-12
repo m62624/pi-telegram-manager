@@ -25,6 +25,22 @@ describe("formatManagerReplyHtmlChunks", () => {
 		expect(chunk).toBe(`hi${BOT_MARKER}`);
 	});
 
+	it("adds the rule line as a second blockquote line when given", () => {
+		const [chunk] = formatManagerReplyHtmlChunks("hi", "LLM:", "────────");
+		expect(chunk).toContain("<blockquote>LLM:\n────────</blockquote>");
+	});
+
+	it("keeps just the label line when the rule is empty", () => {
+		const [chunk] = formatManagerReplyHtmlChunks("hi", "LLM:", "");
+		expect(chunk).toContain("<blockquote>LLM:</blockquote>");
+	});
+
+	it("drops the whole banner (rule included) when the labeler is empty", () => {
+		const [chunk] = formatManagerReplyHtmlChunks("hi", "", "────────");
+		expect(chunk).not.toContain("<blockquote>");
+		expect(chunk).toBe(`hi${BOT_MARKER}`);
+	});
+
 	it("puts the labeler only on the first chunk of a long reply", () => {
 		const long = Array.from({ length: 400 }, (_, i) => `line number ${i}`).join(
 			"\n",
