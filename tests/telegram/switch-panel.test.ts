@@ -1,0 +1,83 @@
+import { describe, expect, it } from "vitest";
+import {
+	buildSwitchKeyboard,
+	isSwitchCommand,
+	parseSwitchData,
+	type SwitchTarget,
+	switchLabel,
+	switchPanelText,
+} from "../../src/telegram/switch-panel";
+
+const TARGETS: SwitchTarget[] = ["observer", "takeover", "personal", "stop"];
+
+describe("buildSwitchKeyboard", () => {
+	it("renders all four modes with their switch:<target> callback data", () => {
+		const keyboard = buildSwitchKeyboard("observer");
+		const buttons = keyboard.inline_keyboard.flat();
+		expect(buttons).toHaveLength(4);
+		expect(buttons.map((b) => b.callback_data)).toEqual([
+			"switch:observer",
+			"switch:takeover",
+			"switch:personal",
+			"switch:stop",
+		]);
+	});
+
+	it("lays the buttons out as a 2×2 grid", () => {
+		const keyboard = buildSwitchKeyboard("stop");
+		expect(keyboard.inline_keyboard).toHaveLength(2);
+		expect(keyboard.inline_keyboard[0]).toHaveLength(2);
+		expect(keyboard.inline_keyboard[1]).toHaveLength(2);
+	});
+
+	it("marks only the active mode with a check", () => {
+		for (const active of TARGETS) {
+			const buttons = buildSwitchKeyboard(active).inline_keyboard.flat();
+			const checked = buttons.filter((b) => b.text.startsWith("✅"));
+			expect(checked).toHaveLength(1);
+			expect(checked[0].callback_data).toBe(`switch:${active}`);
+		}
+	});
+});
+
+describe("switchPanelText / switchLabel", () => {
+	it("names the active mode in the caption", () => {
+		expect(switchPanelText("takeover")).toContain("🎛️ Takeover");
+		expect(switchPanelText("personal")).toContain("🤖 Personal");
+	});
+
+	it("labels every target with an emoji", () => {
+		expect(switchLabel("observer")).toBe("👁️ Observer");
+		expect(switchLabel("stop")).toBe("⏹️ Stop");
+	});
+});
+
+describe("isSwitchCommand", () => {
+	it("matches a bare /switch and a /switch@bot suffix, case-insensitively", () => {
+		expect(isSwitchCommand("/switch")).toBe(true);
+		expect(isSwitchCommand("  /Switch  ")).toBe(true);
+		expect(isSwitchCommand("/switch@MyBot")).toBe(true);
+	});
+
+	it("rejects prose and commands that merely start with switch", () => {
+		expect(isSwitchCommand("/switcher")).toBe(false);
+		expect(isSwitchCommand("switch")).toBe(false);
+		expect(isSwitchCommand("/switch now")).toBe(false);
+		expect(isSwitchCommand("please /switch")).toBe(false);
+	});
+});
+
+describe("parseSwitchData", () => {
+	it("parses a valid switch:<target> payload", () => {
+		expect(parseSwitchData("switch:observer")).toBe("observer");
+		expect(parseSwitchData("switch:stop")).toBe("stop");
+	});
+
+	it("returns null for missing, foreign, or unknown-target data", () => {
+		expect(parseSwitchData(undefined)).toBeNull();
+		expect(parseSwitchData("")).toBeNull();
+		expect(parseSwitchData("other:observer")).toBeNull();
+		expect(parseSwitchData("switch:bogus")).toBeNull();
+		expect(parseSwitchData("switch:")).toBeNull();
+	});
+});
