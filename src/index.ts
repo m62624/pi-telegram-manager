@@ -200,9 +200,9 @@ const MANAGER_TOOLS = [
 const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
-	"/switch — change mode (observer / takeover / personal / stop)",
+	"/switch — change mode (observer / takeover / mixed / personal / stop)",
 	"",
-	"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
+	"Terminal commands (/telegram-personal, -manager, -mixed) also run in Pi.",
 	`This bot runs pi-telegram-manager: ${REPO_URL}`,
 	`Mirror: ${MIRROR_URL}`,
 ].join("\n");
@@ -1285,7 +1285,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			updateMixedFooter();
 			armMixedReturnTimer();
 			ctx.ui.notify(`Telegram mixed: active (${subMode}).`);
-			await updateModePin("mixed");
+			await updateModePin(`mixed-${subMode}` as PanelMode);
 		} else {
 			ctx.ui.notify(`Telegram manager: active (${subMode}).`);
 			await updateModePin(subMode);
@@ -1353,10 +1353,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
 
 	// The mode currently running, for the panel caption / pin ("stop" when idle).
-	// Mixed reports as "mixed" (not its sub-mode) so it never collides with the
-	// observer/takeover buttons — a tap while in mixed then always switches away.
+	// Mixed reports as its own target (mixed-observer / mixed-takeover) so the right
+	// button is checked and a tap on a different one switches as expected.
 	const activeTarget = (): PanelMode => {
-		if (manager) return mixedActive ? "mixed" : (activeSubMode ?? "observer");
+		if (manager) {
+			const sub = activeSubMode ?? "observer";
+			return mixedActive ? (`mixed-${sub}` as PanelMode) : sub;
+		}
 		if (connect) return "personal";
 		return "stop";
 	};
@@ -1374,6 +1377,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		if (target === "observer" || target === "takeover") {
 			await startManager(ctx, target);
+		} else if (target === "mixed-observer") {
+			await startManager(ctx, "observer", { mixed: true });
+		} else if (target === "mixed-takeover") {
+			await startManager(ctx, "takeover", { mixed: true });
 		} else if (target === "personal") {
 			await startConnect(ctx);
 		}
@@ -1433,8 +1440,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const modePinText = (target: PanelMode): string => {
 		if (target === "stop")
 			return "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode.";
-		if (target === "mixed")
-			return `📌 Bot mode: ${switchLabel("mixed")} (${activeSubMode ?? "observer"})\nMixed runs from the terminal; /switch to switch away.`;
 		return `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
 	};
 

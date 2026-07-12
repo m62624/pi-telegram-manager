@@ -10,19 +10,25 @@
 import type { InlineKeyboardMarkup } from "@grammyjs/types";
 
 /**
- * A mode the owner can switch to. `observer`/`takeover` are the two mode-2
- * (business manager) sub-modes; `personal` is mode 1 (terminal continuation,
- * formerly "OnlyBotForOwner"); `stop` tears everything down.
+ * A mode the owner can switch to with a tap. `observer`/`takeover` are the two
+ * mode-2 (business manager) sub-modes; `mixed-observer`/`mixed-takeover` run mixed
+ * mode (coding + Telegram moderation in one session) in the chosen sub-mode;
+ * `personal` is mode 1 (terminal continuation); `stop` tears everything down.
  */
-export type SwitchTarget = "observer" | "takeover" | "personal" | "stop";
+export type SwitchTarget =
+	| "observer"
+	| "takeover"
+	| "mixed-observer"
+	| "mixed-takeover"
+	| "personal"
+	| "stop";
 
 /**
- * The runtime's current mode for display/pin purposes. It is a {@link SwitchTarget}
- * plus `mixed`: mixed runs from the terminal and is NOT a switch button (you can't
- * meaningfully start it from the phone), but it is still shown as the active mode
- * in the pin and panel caption so the bot chat never misreports the state.
+ * The runtime's current mode for display/pin purposes. Every mode — including
+ * mixed, now a first-class switch target — is a {@link SwitchTarget}, so the pin
+ * and panel caption always mirror exactly what a button can select.
  */
-export type PanelMode = SwitchTarget | "mixed";
+export type PanelMode = SwitchTarget;
 
 interface SwitchOption {
 	target: SwitchTarget;
@@ -30,10 +36,12 @@ interface SwitchOption {
 	label: string;
 }
 
-/** The four buttons, in display order (2×2 grid). */
+/** The buttons, in display order (2 columns). */
 const SWITCH_OPTIONS: readonly SwitchOption[] = [
 	{ target: "observer", emoji: "👁️", label: "Observer" },
 	{ target: "takeover", emoji: "🎛️", label: "Takeover" },
+	{ target: "mixed-observer", emoji: "🔀", label: "Mixed · Observer" },
+	{ target: "mixed-takeover", emoji: "🔀", label: "Mixed · Takeover" },
 	{ target: "personal", emoji: "🤖", label: "Personal" },
 	{ target: "stop", emoji: "⏹️", label: "Stop" },
 ];
@@ -44,17 +52,16 @@ const CALLBACK_PREFIX = "switch:";
 /** The set of valid targets, for fast membership checks. */
 const TARGETS = new Set<string>(SWITCH_OPTIONS.map((option) => option.target));
 
-/** Human label for a mode, e.g. `👁️ Observer` / `🔀 Mixed` — for acks and status lines. */
+/** Human label for a mode, e.g. `👁️ Observer` / `🔀 Mixed · Observer` — for acks/status. */
 export function switchLabel(target: PanelMode): string {
-	if (target === "mixed") return "🔀 Mixed";
 	const option = SWITCH_OPTIONS.find((o) => o.target === target);
 	return option ? `${option.emoji} ${option.label}` : target;
 }
 
 /**
- * Build the 2×2 inline keyboard. The button matching `active` is marked with a
- * check so the current mode is obvious; each button carries `switch:<target>`
- * as its `callback_data`.
+ * Build the inline keyboard (2 columns). The button matching `active` is marked
+ * with a check so the current mode is obvious; each button carries
+ * `switch:<target>` as its `callback_data`.
  */
 export function buildSwitchKeyboard(active: PanelMode): InlineKeyboardMarkup {
 	const buttons = SWITCH_OPTIONS.map((option) => ({
@@ -64,16 +71,15 @@ export function buildSwitchKeyboard(active: PanelMode): InlineKeyboardMarkup {
 				: `${option.emoji} ${option.label}`,
 		callback_data: `${CALLBACK_PREFIX}${option.target}`,
 	}));
-	return { inline_keyboard: [buttons.slice(0, 2), buttons.slice(2, 4)] };
+	const rows: (typeof buttons)[] = [];
+	for (let i = 0; i < buttons.length; i += 2)
+		rows.push(buttons.slice(i, i + 2));
+	return { inline_keyboard: rows };
 }
 
 /** The panel's caption, naming the currently active mode above the buttons. */
 export function switchPanelText(active: PanelMode): string {
-	const note =
-		active === "mixed"
-			? "\n(Mixed runs from the terminal; a button below switches away from it.)"
-			: "";
-	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}${note}`;
+	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}`;
 }
 
 /** Whether a plain message is the `/switch` command (bare or `/switch@bot`). */

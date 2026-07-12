@@ -85,7 +85,10 @@ export const MIRROR_URL =
 
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
 const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
-	bullet("/switch", "change mode — observer / takeover / personal / stop"),
+	bullet(
+		"/switch",
+		"change mode — observer / takeover / mixed / personal / stop",
+	),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
 	bullet("/help", "show this help"),

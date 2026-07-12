@@ -8,29 +8,37 @@ import {
 	switchPanelText,
 } from "../../src/telegram/switch-panel";
 
-const TARGETS: SwitchTarget[] = ["observer", "takeover", "personal", "stop"];
+const TARGETS: SwitchTarget[] = [
+	"observer",
+	"takeover",
+	"mixed-observer",
+	"mixed-takeover",
+	"personal",
+	"stop",
+];
 
 describe("buildSwitchKeyboard", () => {
-	it("renders all four modes with their switch:<target> callback data", () => {
+	it("renders all six modes with their switch:<target> callback data", () => {
 		const keyboard = buildSwitchKeyboard("observer");
 		const buttons = keyboard.inline_keyboard.flat();
-		expect(buttons).toHaveLength(4);
+		expect(buttons).toHaveLength(6);
 		expect(buttons.map((b) => b.callback_data)).toEqual([
 			"switch:observer",
 			"switch:takeover",
+			"switch:mixed-observer",
+			"switch:mixed-takeover",
 			"switch:personal",
 			"switch:stop",
 		]);
 	});
 
-	it("lays the buttons out as a 2×2 grid", () => {
+	it("lays the buttons out two per row", () => {
 		const keyboard = buildSwitchKeyboard("stop");
-		expect(keyboard.inline_keyboard).toHaveLength(2);
-		expect(keyboard.inline_keyboard[0]).toHaveLength(2);
-		expect(keyboard.inline_keyboard[1]).toHaveLength(2);
+		expect(keyboard.inline_keyboard).toHaveLength(3);
+		for (const row of keyboard.inline_keyboard) expect(row).toHaveLength(2);
 	});
 
-	it("marks only the active mode with a check", () => {
+	it("marks only the active mode with a check (incl. mixed sub-modes)", () => {
 		for (const active of TARGETS) {
 			const buttons = buildSwitchKeyboard(active).inline_keyboard.flat();
 			const checked = buttons.filter((b) => b.text.startsWith("✅"));
@@ -51,13 +59,15 @@ describe("switchPanelText / switchLabel", () => {
 		expect(switchLabel("stop")).toBe("⏹️ Stop");
 	});
 
-	it("labels mixed and shows it as current without checking any button", () => {
-		expect(switchLabel("mixed")).toBe("🔀 Mixed");
-		expect(switchPanelText("mixed")).toContain("🔀 Mixed");
-		// Mixed is not a button, so no button is checked when it is the active mode —
-		// tapping any button then always switches away from mixed.
-		const buttons = buildSwitchKeyboard("mixed").inline_keyboard.flat();
-		expect(buttons.filter((b) => b.text.startsWith("✅"))).toHaveLength(0);
+	it("labels and checks the mixed sub-mode targets", () => {
+		expect(switchLabel("mixed-observer")).toBe("🔀 Mixed · Observer");
+		expect(switchLabel("mixed-takeover")).toBe("🔀 Mixed · Takeover");
+		expect(switchPanelText("mixed-observer")).toContain("🔀 Mixed · Observer");
+		const buttons =
+			buildSwitchKeyboard("mixed-takeover").inline_keyboard.flat();
+		const checked = buttons.filter((b) => b.text.startsWith("✅"));
+		expect(checked).toHaveLength(1);
+		expect(checked[0].callback_data).toBe("switch:mixed-takeover");
 	});
 });
 
