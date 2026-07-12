@@ -3,6 +3,7 @@ import type { ManagerTurnLog } from "../../../src/modes/manager/controller";
 import {
 	buildManagerFeed,
 	buildManagerNotice,
+	telegramChatDeepLink,
 } from "../../../src/modes/manager/debug-feed";
 
 const NOW = "[Now: 2026-07-11 20:00 +05]";
@@ -116,6 +117,47 @@ describe("buildManagerFeed", () => {
 		expect(html).toContain("&lt;");
 		expect(html).toContain("&amp;");
 		expect(html).not.toContain("1 < 2");
+	});
+});
+
+describe("telegramChatDeepLink", () => {
+	it("builds a tg:// link, optionally jumping to a message", () => {
+		expect(telegramChatDeepLink("5")).toBe("tg://openmessage?user_id=5");
+		expect(telegramChatDeepLink("5", 7)).toBe(
+			"tg://openmessage?user_id=5&message_id=7",
+		);
+	});
+
+	it("returns undefined without a numeric user id", () => {
+		expect(telegramChatDeepLink(undefined)).toBeUndefined();
+		expect(telegramChatDeepLink("")).toBeUndefined();
+		expect(telegramChatDeepLink("abc")).toBeUndefined();
+	});
+
+	it("makes the chat id a tappable deep link in the feed when the user id is known", () => {
+		const html = feed({
+			chatId: "42",
+			contactName: "Alice",
+			outcome: "reply",
+			text: "hi",
+			userId: "5",
+			replyToMessageId: 7,
+		});
+		// The ampersand is HTML-escaped inside the attribute (decodes back to & in
+		// the client), which is correct HTML.
+		expect(html).toContain(
+			'href="tg://openmessage?user_id=5&amp;message_id=7"',
+		);
+	});
+
+	it("keeps the raw chat id (no link) when the user id is unknown", () => {
+		const html = feed({
+			chatId: "42",
+			contactName: "Alice",
+			outcome: "silent",
+		});
+		expect(html).toContain("#42");
+		expect(html).not.toContain("tg://openmessage");
 	});
 });
 

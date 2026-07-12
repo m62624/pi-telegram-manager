@@ -15,6 +15,7 @@ import {
 	details,
 	inlineCode,
 	italic,
+	link,
 	paragraph,
 	preformatted,
 	RichHtml,
@@ -48,6 +49,22 @@ export interface ManagerFeedEntry {
 	/** The model's raw reasoning for the turn, if any (folded, collapsed). */
 	thinking?: string;
 	tools: readonly ManagerToolCall[];
+}
+
+/**
+ * A best-effort `tg://` deep link that opens the owner's private chat with an
+ * interlocutor — jumping to a specific message when one is known — so a log card
+ * is tappable straight to the conversation. Experimental: some Telegram clients
+ * ignore `message_id` (or the scheme) for a private chat, so callers keep the raw
+ * id visible as a fallback. Returns undefined without a numeric user id.
+ */
+export function telegramChatDeepLink(
+	userId?: string,
+	messageId?: number,
+): string | undefined {
+	if (!userId || !/^\d+$/.test(userId)) return undefined;
+	const base = `tg://openmessage?user_id=${userId}`;
+	return messageId !== undefined ? `${base}&message_id=${messageId}` : base;
 }
 
 /** Trim overlong text, marking how much was cut so nothing looks silently lost. */
@@ -128,8 +145,17 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	}
 
 	// Everything else about the contact, folded: the ids and flags you rarely need.
+	// The chat id is a tappable deep link (best-effort) to open the conversation at
+	// the answered message, with the raw id kept as the visible fallback.
+	const chatIdCode = inlineCode(`#${log.chatId}`);
+	const deepLink = telegramChatDeepLink(log.userId, log.replyToMessageId);
 	const detailRows: RichHtml[] = [
-		paragraph(RichHtml.join(["Chat: ", inlineCode(`#${log.chatId}`)])),
+		paragraph(
+			RichHtml.join([
+				"Chat: ",
+				deepLink ? link(chatIdCode, deepLink) : chatIdCode,
+			]),
+		),
 	];
 	if (log.userId) {
 		detailRows.push(
