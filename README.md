@@ -1,10 +1,12 @@
-> ⚠️ Experimental. pi-telegram-manager is built **for local models** and, at runtime, is driven by one — a small local model (tested with Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
+> ⚠️ Experimental. pi-telegram-manager is built **for local models** and, at runtime, is driven by one — a small local model (tested with [`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF)) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
 
 # pi-telegram-manager
 
-An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram. It runs in one of a few **modes**, and the bot behaves very differently in each: in one it is *your* private assistant in your own chat with the bot; in another it quietly answers *other people* in your Telegram **business** chats on your behalf. The centrepiece is that **business manager** mode.
+An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram.
 
-It was built **first for local models with a small context window** (the experiment ran a single local model at **131k** context through Pi). Almost every design choice here — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge context. It works with cloud models too, but that is not what it was tuned for.
+The point of the experiment is simple: **can a small local model be genuinely useful in your everyday life if its context is managed carefully?** So the whole design starts from the local model, not the cloud one. Unlike extensions that assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context and tested with [`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF). Almost every choice here — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt. It works with cloud models too, but that is not what it is for.
+
+The model runs **on your machine, in your own Telegram account**. It can be your private coding agent, it can answer other people in your business chats on your behalf, or — with **mixed** mode — it can do both at once out of one brain, coding when you are at the keyboard and moderating Telegram when you step away.
 
 This is a personal experiment. Expect rough edges, bugs, and behavior that changes.
 
@@ -14,33 +16,45 @@ This is a personal experiment. Expect rough edges, bugs, and behavior that chang
 
 The **same bot account** runs one mode at a time. What the bot *is* depends entirely on the mode.
 
-### 🤖 Personal — mode 1 (`/telegram-connect`)
+### 🔀 Mixed — coding + Telegram in one brain
+
+Mixed runs the manager alongside your **coding session in one Pi session**, with **coding always the priority**. While you are working, Telegram is deferred — the model stays on your terminal, and nothing from Telegram leaks into your coding thread. When your inference has been idle for a while (`mixed.returnToTelegramMs`, default **8 min**), the model hands itself back to Telegram and moderates in the sub-mode you picked (observer or takeover). The moment you type again it drops Telegram, aborts any in-flight moderation, and is yours.
+
+The two threads are kept apart on purpose. Your coding TUI stays clean — only a small footer shows the mode and which side the brain is on right now (`mixed · observer · coding`). The Telegram side never enters your coding context, so it costs you no tokens and never confuses the model. If you want a log of what the bot did while you were away, turn on `manager.debugFeed` — it mirrors each moderation turn into your DM with the bot.
+
+Start it with `/telegram-mixed`; it asks whether to moderate in **observer** or **takeover** (see below).
+
+### 🤖 Personal
 
 Bridges your **current Pi terminal session** to your **private chat with the bot**. You talk to your own coding agent from your phone: send text, files, and images; get its replies (native rich Markdown), a live "typing…" indicator and streamed drafts; queue messages while it works; `/clear` the history or `/esc` a running turn. The bot only ever talks to **you** (`allowedUserId`); it does not touch any business chats.
 
-### 🕵️ Business manager — mode 2 (the centrepiece)
+Start it with `/telegram-personal`.
 
-> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf. All you do is flip one BotFather toggle and connect the bot — see [Getting started](#getting-started).
+> **The same DM with the bot serves two purposes.** In Personal mode it is the continuation of your Pi terminal. It can *also* act as a running log of the model's work — enable `manager.debugFeed` (mode 2 / mixed) to mirror each turn's thinking, tool calls, and decision into that chat, or `assistant.toolActivity` (Personal) to mirror tool calls there.
+
+### 🕵️ Business manager
 
 Through a Telegram **Business** connection, the bot reads your business conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent instance multiplexes every chat, with:
 
 - **strict per-chat context isolation** — each turn the model sees only that one conversation, rebuilt from disk;
 - a **priority queue / scheduler** — one chat active at a time, never-replied chats first, a continuation window that keeps a live conversation going;
 - an **owner-reply window** — a first message from someone is held for a few minutes so *you* can answer first; only if you stay silent does the bot step in;
-- **persistent per-contact memory** — durable facts about each person, saved and resurfaced across sessions, updated by an **idle consolidation** pass that pauses for live replies and resumes where it left off;
+- **persistent per-contact memory** — durable facts about each person (keyed by their account, not their name), saved and resurfaced across sessions, updated by an **idle consolidation** pass that pauses for live replies and resumes where it left off;
 - **catch-up on activation** — when you switch it on, it looks at chats left waiting and answers the ones still worth answering;
 - an optional **debug feed** — since the bot account is idle here, it can DM *you* each turn's thinking, tool calls, and decision.
 
-Two sub-modes decide how forward it is:
+Start it with `/telegram-manager`; it asks for a sub-mode:
 
-| Sub-mode | Command | Behavior |
-| --- | --- | --- |
-| 👁️ **Observer** | `/telegram-manager-observer` | Co-pilot. Only steps in when you stay silent past the owner-reply window — you always get first crack. |
-| 🎛️ **Takeover** | `/telegram-manager-takeover` | The bot fully runs the business chats and replies on its own. |
+| Sub-mode | Behavior |
+| --- | --- |
+| 👁️ **Observer** | Co-pilot. Only steps in when you stay silent past the owner-reply window — you always get first crack. |
+| 🎛️ **Takeover** | The bot fully runs the business chats and replies on its own. |
+
+> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf. All you do is flip one BotFather toggle and connect the bot — see [Getting started](#getting-started).
 
 ### ⏹️ Switching modes from the chat (`/switch`)
 
-Send **`/switch`** in your private chat with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Personal / Stop** from an inline keyboard — no terminal needed. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches immediately. A **pinned message** at the top of that chat always shows the currently active mode, updated in place on every switch.
+Send **`/switch`** in your private chat with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Personal / Stop** from an inline keyboard — no terminal needed. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches immediately. A **pinned message** at the top of that chat always shows the currently active mode, updated in place on every switch. (Mixed is launched from the terminal, not this panel.)
 
 ---
 
@@ -50,9 +64,9 @@ Send **`/switch`** in your private chat with the bot (or tap it in the command m
 
 In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts to name your bot. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
 
-### 2. Enable Business Mode — required for the manager mode
+### 2. Enable Business Mode — required for manager and mixed modes
 
-The **business manager** mode receives messages through a Telegram **Business connection**, and a bot can only be connected to a business account if **Business Mode** is turned on for it. This is a one-time BotFather toggle:
+The **business manager** (and the Telegram side of **mixed**) receives messages through a Telegram **Business connection**, and a bot can only be connected to a business account if **Business Mode** is turned on for it. This is a one-time BotFather toggle:
 
 > `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Business Mode** → **Turn on**
 
@@ -82,7 +96,7 @@ Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/setti
 
 `botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment.
 
-### 6. (Manager mode only) Connect the bot to your account
+### 6. (Manager / mixed only) Connect the bot to your account
 
 Open Telegram **Settings → Telegram Business → Chatbots**, enter your bot's username, and choose which chats it may access.
 
@@ -98,11 +112,10 @@ Then open Pi and run one of the commands below. The extension loads `./src/index
 
 | Command | Purpose |
 | --- | --- |
-| `/telegram-connect` | Start **Personal** mode (bind this session to your DM) |
-| `/telegram-disconnect` | Stop Personal mode |
-| `/telegram-manager-observer` | Start the **business manager** in Observer sub-mode |
-| `/telegram-manager-takeover` | Start the **business manager** in Takeover sub-mode |
-| `/telegram-manager-stop` | Stop the business manager |
+| `/telegram-personal` | Start **Personal** mode (bind this session to your DM) |
+| `/telegram-manager` | Start the **business manager** (asks for observer / takeover) |
+| `/telegram-mixed` | Start **mixed** mode — coding + Telegram (asks for observer / takeover) |
+| `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-switch` | Open the mode-switcher panel in your bot DM |
 | `/telegram-status` | Show the active mode |
 
@@ -123,7 +136,7 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | `botToken` | — | replaces | Telegram bot token, or `"env:VAR"` to read it from the environment. Required. |
 | `allowedUserId` | — | replaces | Your Telegram numeric user id — the **only** user the bot obeys and the DM it uses for Personal mode, `/switch`, and the debug feed. Required for mode 1 and for `/switch`. |
 | `timezone` | system zone | replaces | IANA timezone (e.g. `"Asia/Almaty"`) for the `[Now: …]` line shown to the model. |
-| `instructionFiles` | `[]` | **appended** | Markdown files added to the system instructions in **both** modes. |
+| `instructionFiles` | `[]` | **appended** | Markdown files added to the system instructions in **all** modes. |
 
 ### `assistant` (Personal mode)
 
@@ -134,7 +147,13 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block. |
 | `connect.instructionFiles` | `[]` | **appended** | Extra instruction files for Personal mode only. |
 
-### `connectionCheck` (connection watchdog, both modes)
+### `mixed` (mixed mode)
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `mixed.returnToTelegramMs` | `480000` (8 min) | replaces | After your coding inference finishes (or an abort settles), how long the brain stays idle before it returns to Telegram moderation. The countdown starts when the turn **ends**, not while it runs. |
+
+### `connectionCheck` (connection watchdog, all modes)
 
 A silent timer probes the bot connection while a mode is active; after too many consecutive failures the mode auto-disconnects. Probes never post to chat or the debug feed — only the final auto-disconnect is surfaced.
 
@@ -144,7 +163,7 @@ A silent timer probes the bot connection while a mode is active; after too many 
 | `connectionCheck.intervalMs` | `600000` (10 min) | replaces | Probe interval. `0` also disables it. |
 | `connectionCheck.maxRetries` | `3` | replaces | Consecutive failed probes tolerated before auto-disconnect. |
 
-### `manager` (business manager, mode 2)
+### `manager` (business manager, and the Telegram side of mixed)
 
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
@@ -162,7 +181,7 @@ A silent timer probes the bot connection while a mode is active; after too many 
 | `manager.strictReplyGuard` | `true` | replaces | Drop a reply the model itself tagged as chatter/acknowledgement (or "no reply needed") unless it was directly addressed. Curbs a weak model over-replying to banter. |
 | `manager.mentionWords` | `["llm", "manager"]` | **replaces list** | Wake-words (case-insensitive). A message containing one skips the owner-reply window; the model still decides whether it is really addressed. `[]` disables. |
 | `manager.labeler` | `"LLM agent 🤖:"` | replaces | Prefix rendered before each outgoing business reply (`""` = none). |
-| `manager.debugFeed` | `false` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM. Chatty in Observer — opt-in. |
+| `manager.debugFeed` | `false` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. Chatty in Observer — opt-in. |
 | `manager.media.images` | `true` | replaces | Let the model see interlocutor images (vision). |
 | `manager.media.documents` | `false` | replaces | Accept non-image documents (otherwise refused). |
 | `manager.allowedTools` | `[]` | **adds to base** | Regex names of extra tools the model may call, on top of the built-in messaging tools. Empty = telegram-sandbox (messaging tools only, no computer access). |
@@ -192,6 +211,7 @@ Tuned for a **local model** answering over minutes, not milliseconds. Slower har
 | Continuation | 1 min 30 s | how long a chat stays "live" after a reply |
 | Live freshness | 2 min | older messages are backlog, not a live trigger |
 | Consolidation quiet | 30 min | idle wait before updating memory about a chat |
+| Mixed return | 8 min | idle after a coding turn before the brain returns to Telegram |
 | Re-greet after | 24 h | silence before a resuming chat is welcomed back |
 | Catch-up window | 10 h | oldest waiting message still worth answering on start |
 | Connection check | 10 min | silent liveness probe interval |
