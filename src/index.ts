@@ -1635,6 +1635,18 @@ function lastInterlocutorName(
 	return undefined;
 }
 
+/** The userId (stored `senderId`) of the most recent interlocutor message, if any. */
+function lastInterlocutorUserId(
+	records: readonly ChatMessageRecord[],
+): string | undefined {
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		if (records[i].author === "interlocutor" && records[i].senderId) {
+			return records[i].senderId;
+		}
+	}
+	return undefined;
+}
+
 /**
  * On manager activation, scan stored chats and queue the ones the bot should
  * catch up on (see {@link selectCatchUpChats}), replying for the owner. The
@@ -1669,7 +1681,15 @@ async function catchUpOnActivation(
 	});
 	const byId = new Map(chats.map((chat) => [chat.chatId, chat.records]));
 	for (const chatId of selected) {
-		const contactName = lastInterlocutorName(byId.get(chatId) ?? []) ?? chatId;
-		manager.markReady(chatId, { connectionId: connection.id, contactName });
+		const records = byId.get(chatId) ?? [];
+		const contactName = lastInterlocutorName(records) ?? chatId;
+		// Carry the interlocutor's userId (from the stored transcript) so facts are
+		// stored/shown for the right contact even before a fresh live message arrives.
+		const userId = lastInterlocutorUserId(records);
+		manager.markReady(chatId, {
+			connectionId: connection.id,
+			contactName,
+			userId,
+		});
 	}
 }

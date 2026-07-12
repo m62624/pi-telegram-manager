@@ -1142,6 +1142,40 @@ describe("ManagerController", () => {
 		expect(await deps.contactStore.getFacts("5")).toEqual([]);
 	});
 
+	it("rehydrates a contact's userId from the transcript so facts persist after a restart", async () => {
+		const { controller, deps } = await setup();
+		// A transcript already exists on disk from a prior session (senderId recorded),
+		// and the contact record exists — but the in-memory chats map is empty (as it
+		// is right after a restart, before any fresh live message).
+		await deps.contactStore.upsertProfile(
+			{ userId: "5", displayName: "Alice" },
+			0,
+		);
+		await deps.chatStore.append("42", {
+			author: "interlocutor",
+			text: "I live in Almaty",
+			timestamp: 0,
+			senderId: "5",
+			senderName: "Alice",
+			messageId: 1,
+		});
+		// Catch-up marks the chat ready WITHOUT a userId (the gap this fixes).
+		controller.markReady("42", { connectionId: CONN, contactName: "Alice" });
+		// Building the turn context rehydrates the userId from the transcript.
+		await controller.buildContextForActive();
+		// A durable fact recorded this turn must land under userId "5".
+		controller
+			.factSink()
+			.record([
+				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
+			]);
+		controller.decisionSink().record({ kind: "reply", text: "noted" });
+		await controller.onAgentEnd();
+		expect(
+			(await deps.contactStore.getFacts("5")).map((f) => f.text),
+		).toContain("lives in Almaty");
+	});
+
 	it("turnDecided() gates the loop on the terminal decision, not a bare remember", async () => {
 		const { controller } = await setup();
 		// Fresh normal turn: nothing decided yet.

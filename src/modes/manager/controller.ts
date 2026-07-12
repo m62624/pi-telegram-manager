@@ -991,8 +991,16 @@ export class ManagerController {
 		if (this.consolidating) return this.buildConsolidationContext();
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
+		const raw = await this.deps.chatStore.getRecent(
+			active,
+			this.deps.rememberMessages,
+		);
+		// Rehydrate the contact's userId from the transcript if the in-memory meta
+		// lacks it (e.g. after a restart, before a fresh live message repopulates it),
+		// so known facts are shown and new facts are stored by the right contact.
+		this.rememberUserId(active, raw);
 		const records = budgetRecords(
-			await this.deps.chatStore.getRecent(active, this.deps.rememberMessages),
+			raw,
 			this.deps.maxCharsPerMessage,
 			this.deps.maxContextChars,
 		);
@@ -1068,11 +1076,13 @@ export class ManagerController {
 			chatId: string;
 			loop: InterrogationState;
 		};
+		const raw = await this.deps.chatStore.getRecent(
+			current.chatId,
+			this.deps.rememberMessages,
+		);
+		this.rememberUserId(current.chatId, raw);
 		const records = budgetRecords(
-			await this.deps.chatStore.getRecent(
-				current.chatId,
-				this.deps.rememberMessages,
-			),
+			raw,
 			this.deps.maxCharsPerMessage,
 			this.deps.maxContextChars,
 		);
@@ -1297,6 +1307,29 @@ export class ManagerController {
 		this.facts.reset();
 		this.probes.reset();
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
+	}
+
+	/**
+	 * Patch a chat's in-memory meta with the interlocutor's userId taken from the
+	 * transcript, when the meta exists but has no userId yet. The userId is the key
+	 * for a contact's durable facts, but the in-memory chats map is empty after a
+	 * restart until a fresh live message repopulates it — so without this, facts for
+	 * a chat recovered by catch-up would be neither shown nor stored. The stored
+	 * `senderId` on an interlocutor record is exactly that id.
+	 */
+	private rememberUserId(
+		chatId: string,
+		records: readonly ChatMessageRecord[],
+	): void {
+		const meta = this.chats.get(chatId);
+		if (!meta || meta.userId) return;
+		for (let i = records.length - 1; i >= 0; i -= 1) {
+			const record = records[i];
+			if (record.author === "interlocutor" && record.senderId) {
+				this.chats.set(chatId, { ...meta, userId: record.senderId });
+				return;
+			}
+		}
 	}
 
 	/** The interlocutor's own transcript lines for a chat (for the evidence check). */
