@@ -79,8 +79,11 @@ describe("normalizeSettings", () => {
 		expect(s.manager.takeover.instructionFile).toBe("~/t.md");
 	});
 
-	it("defaults mentionWords to [llm]; an explicit array (incl. []) is honoured", () => {
-		expect(normalizeSettings({}).manager.mentionWords).toEqual(["llm"]);
+	it("defaults mentionWords to [llm, manager]; an explicit array (incl. []) is honoured", () => {
+		expect(normalizeSettings({}).manager.mentionWords).toEqual([
+			"llm",
+			"manager",
+		]);
 		expect(
 			normalizeSettings({ manager: { mentionWords: ["qwen", "bot"] } }).manager
 				.mentionWords,

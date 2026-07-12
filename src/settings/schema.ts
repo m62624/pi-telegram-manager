@@ -91,7 +91,8 @@ export interface TelegramSettings {
 		/**
 		 * Wake-words (case-insensitive). A message containing one jumps the owner-reply
 		 * window straight into processing (the model still decides whether it is a
-		 * direct question worth answering). Empty = disabled. Default `["llm"]`.
+		 * direct question worth answering). Empty = disabled. Default
+		 * `["llm", "manager"]`.
 		 */
 		mentionWords: string[];
 		instructionFiles: string[];
@@ -174,7 +175,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		markRead: true,
 		throttleMs: 0,
 		labeler: "LLM agent 🤖:",
-		mentionWords: ["llm"],
+		mentionWords: ["llm", "manager"],
 		instructionFiles: [],
 		subMode: "observer",
 		observer: {},
