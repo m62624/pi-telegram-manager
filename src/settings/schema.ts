@@ -20,6 +20,19 @@ export interface TelegramSettings {
 		/** Mirror each agent tool call to Telegram as a collapsible block (mode 1). */
 		toolActivity: boolean;
 	};
+	/**
+	 * Background connection watchdog (both modes). While a mode is active the bot
+	 * connection is probed on a timer; after `maxRetries` consecutive failures the
+	 * mode auto-disconnects. Silent — probes never post to chat or the debug feed.
+	 */
+	connectionCheck: {
+		/** Run the watchdog while a mode is active. Default true. */
+		enabled: boolean;
+		/** Probe interval in ms. Default 600000 (10 min); `0` also disables it. */
+		intervalMs: number;
+		/** Consecutive failed probes tolerated before auto-disconnect. Default 3. */
+		maxRetries: number;
+	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
 	connect: {
@@ -139,6 +152,7 @@ export interface TelegramSettings {
 
 export const DEFAULT_SETTINGS: TelegramSettings = {
 	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
+	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -246,6 +260,7 @@ const KNOWN_TOP_LEVEL = new Set([
 	"allowedUserId",
 	"timezone",
 	"assistant",
+	"connectionCheck",
 	"instructionFiles",
 	"connect",
 	"manager",
@@ -270,6 +285,7 @@ export function normalizeSettings(
 
 	const d = DEFAULT_SETTINGS;
 	const assistant = asRecord(root.assistant, "assistant");
+	const connectionCheck = asRecord(root.connectionCheck, "connectionCheck");
 	const connect = asRecord(root.connect, "connect");
 	const manager = asRecord(root.manager, "manager");
 	const observer = asRecord(manager.observer, "manager.observer");
@@ -306,6 +322,23 @@ export function normalizeSettings(
 				assistant.toolActivity,
 				"assistant.toolActivity",
 				d.assistant.toolActivity,
+			),
+		},
+		connectionCheck: {
+			enabled: asBoolean(
+				connectionCheck.enabled,
+				"connectionCheck.enabled",
+				d.connectionCheck.enabled,
+			),
+			intervalMs: asNonNegativeInt(
+				connectionCheck.intervalMs,
+				"connectionCheck.intervalMs",
+				d.connectionCheck.intervalMs,
+			),
+			maxRetries: asPositiveInt(
+				connectionCheck.maxRetries,
+				"connectionCheck.maxRetries",
+				d.connectionCheck.maxRetries,
 			),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),

@@ -46,6 +46,26 @@ describe("normalizeSettings", () => {
 		);
 	});
 
+	it("defaults connectionCheck to enabled/10min/3 and honours overrides", () => {
+		expect(normalizeSettings({}).connectionCheck).toEqual({
+			enabled: true,
+			intervalMs: 600_000,
+			maxRetries: 3,
+		});
+		const s = normalizeSettings({
+			connectionCheck: { enabled: false, intervalMs: 0, maxRetries: 5 },
+		});
+		expect(s.connectionCheck).toEqual({
+			enabled: false,
+			intervalMs: 0,
+			maxRetries: 5,
+		});
+		// maxRetries must be a positive integer.
+		expect(() =>
+			normalizeSettings({ connectionCheck: { maxRetries: 0 } }),
+		).toThrow(/connectionCheck.maxRetries/);
+	});
+
 	it("parses manager sub-mode instruction files", () => {
 		const s = normalizeSettings({
 			manager: {

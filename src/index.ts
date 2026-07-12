@@ -21,6 +21,7 @@ import type { InlineKeyboardMarkup, Message } from "@grammyjs/types";
 import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
 import { formatNowLine } from "./core/datetime";
 import { expandHome, readInstructionFiles } from "./core/instructions";
@@ -145,6 +146,8 @@ interface ControlApi {
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+/** How long a single connection-watchdog probe (getMe) may take before it counts as failed. */
+const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
 const MANAGER_TICK_MS = 5_000;
@@ -276,6 +279,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let ownerUserId: number | null = null;
 	let activeSubMode: ManagerSubMode | null = null;
 
+	// Connection watchdog: a silent timer that probes the active bot connection and
+	// auto-disconnects after too many consecutive failures. `connectionFailures` is
+	// the running streak (reset only by a healthy probe, so it survives across
+	// probes); `watchdogBusy` guards against overlapping slow probes.
+	let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+	let watchdogBusy = false;
+	let connectionFailures = 0;
+
 	const updateManagerBanner = (): void => {
 		if (!manager || !managerUi) return;
 		try {
@@ -346,6 +357,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		stopTyping();
+		disarmWatchdog();
 		if (heartbeat) {
 			clearInterval(heartbeat);
 			heartbeat = null;
@@ -364,6 +376,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	const stopManager = async (): Promise<void> => {
+		disarmWatchdog();
 		if (managerTick) {
 			clearInterval(managerTick);
 			managerTick = null;
@@ -733,6 +746,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		heartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
+		armWatchdog(settings);
 		visibility.setActive("connect", true);
 		ctx.ui.setStatus(STATUS_KEY, `Telegram: connected (chat ${allowedUserId})`);
 		// Route through the Markdown pipeline (sendToChat), not notify(): notify
@@ -1069,6 +1083,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerHeartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
+		armWatchdog(settings);
 		ctx.ui.notify(`Telegram manager: active (${subMode}).`);
 	};
 
@@ -1239,6 +1254,69 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("Telegram switcher: sent to your bot DM.");
 		},
 	});
+
+	// ─── Connection watchdog ─────────────────────────────────────────────────
+	// A silent liveness probe on whichever client is polling; after too many
+	// consecutive failures the active mode auto-disconnects. grammY reconnects on
+	// its own between probes, so the watchdog just bounds the grace window.
+	const probeConnection = async (): Promise<boolean> => {
+		const api = (managerClient ?? client)?.api as unknown as
+			| { getMe(signal?: AbortSignal): Promise<unknown> }
+			| undefined;
+		if (!api) return false;
+		try {
+			await api.getMe(AbortSignal.timeout(CONNECTION_PROBE_TIMEOUT_MS));
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	const disarmWatchdog = (): void => {
+		if (watchdogTimer) {
+			clearInterval(watchdogTimer);
+			watchdogTimer = null;
+		}
+	};
+
+	// One probe cycle: a healthy result clears the streak; a failed one escalates it
+	// and, once the streak hits maxRetries, auto-disconnects the active mode. Fully
+	// silent except the final auto-disconnect notice (never a per-probe log).
+	const runWatchdog = async (maxRetries: number): Promise<void> => {
+		if (watchdogBusy || (!manager && !connect)) return;
+		watchdogBusy = true;
+		try {
+			if (await probeConnection()) {
+				connectionFailures = 0;
+				return;
+			}
+			connectionFailures += 1;
+			if (watchdogVerdict(connectionFailures, maxRetries) === "disconnect") {
+				const ctx = activeCtx;
+				disarmWatchdog();
+				connectionFailures = 0;
+				await stopAll();
+				ctx?.ui.notify(
+					"Telegram auto-disconnected: the bot connection was unreachable across health checks.",
+					"warning",
+				);
+			}
+		} finally {
+			watchdogBusy = false;
+		}
+	};
+
+	// Arm the watchdog for a freshly-started mode (resetting the streak). Disabled or
+	// a non-positive interval leaves it unarmed.
+	const armWatchdog = (settings: TelegramSettings): void => {
+		disarmWatchdog();
+		connectionFailures = 0;
+		const { enabled, intervalMs, maxRetries } = settings.connectionCheck;
+		if (!enabled || intervalMs <= 0) return;
+		watchdogTimer = setInterval(() => {
+			void runWatchdog(maxRetries);
+		}, intervalMs);
+	};
 }
 
 /** The display name of the most recent interlocutor message, if any. */
