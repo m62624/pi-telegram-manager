@@ -149,6 +149,8 @@ interface ControlApi {
 		chat_id: number;
 		text: string;
 		reply_markup?: InlineKeyboardMarkup;
+		/** Control the URL preview card (e.g. disable it for a help message). */
+		link_preview_options?: { is_disabled?: boolean; url?: string };
 	}): Promise<{ message_id: number }>;
 	answerCallbackQuery(payload: {
 		callback_query_id: string;
@@ -1453,7 +1455,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// (manager / mixed) — a plain message whose raw URLs Telegram auto-links.
 			if (!connect && /^\/help(@\w+)?$/i.test(text)) {
 				await api
-					.sendMessage({ chat_id: ownerUserId, text: MANAGER_HELP_TEXT })
+					.sendMessage({
+						chat_id: ownerUserId,
+						text: MANAGER_HELP_TEXT,
+						// No preview card — a help message should stay compact, and Telegram
+						// would otherwise card the last URL (the mirror) over the main repo.
+						link_preview_options: { is_disabled: true },
+					})
 					.catch(() => {});
 				return true;
 			}
