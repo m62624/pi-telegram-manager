@@ -315,6 +315,42 @@ describe("ManagerController", () => {
 		);
 	});
 
+	it("a plain-text answer is held as a draft and the strict guard cannot drop it", async () => {
+		// Regression: the model wrote a real answer as plain text; re-deciding from
+		// scratch, a weak model relabelled the question as chatter and strictReplyGuard
+		// dropped the answer. Now the prose is held and routed through the resolve gate:
+		// it is a REVISE turn (resolve_draft only), and a sent draft reads as a considered
+		// reply (category question), so the chatter guard never fires on it.
+		const { controller, sendReply, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("do you understand how you fit in 20GB?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		// The model answers as plain text → held as a draft, not delivered yet.
+		await controller.onAgentEnd(
+			"20GB is compression, not storage — like a brain.",
+		);
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(controller.isReviseTurn()).toBe(true);
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.at(-1)?.content).toContain("plain text");
+		expect(ctx?.at(-1)?.content).toContain("manager_resolve_draft");
+
+		// The model resolves the held draft with 'send' → delivered despite the strict
+		// guard (it is treated as a considered reply, never as chatter).
+		controller.resolveSink().record({ action: "send" });
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain(
+			"compression, not storage",
+		);
+	});
+
 	it("returns a turn log describing the decision (for the owner debug feed)", async () => {
 		const { controller, clock } = await setup();
 		await controller.onBusinessMessage({

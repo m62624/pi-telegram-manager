@@ -125,16 +125,23 @@ export function reviseDirective(draft: string): string {
 }
 
 /**
- * Correction injected after a turn that ended with plain text and no tool call.
- * Plain text is discarded and never reaches Telegram, so the reply was lost; this
- * re-prompt forces the model to end via a tool. Only used once per batch — if the
- * next turn is prose again, {@link ManagerController.onAgentEnd} delivers the text
- * verbatim rather than dropping it a second time.
+ * Trailing directive when the previous turn ended in plain text: that prose was
+ * almost certainly the reply, written the wrong way (plain text is never delivered
+ * to Telegram). Rather than re-decide from scratch — where a weak model may relabel
+ * a real question as chatter and the guard then drops the answer — the prose is held
+ * as a draft and resolved through the same gate, so a composed answer is never
+ * silently lost.
  */
-export const PROSE_CORRECTION =
-	"[Your previous turn was plain text, which is NEVER delivered to Telegram — it " +
-	"was discarded. You MUST end this turn by calling exactly ONE tool: manager_reply " +
-	"(put the message in its `text` argument) or manager_silent. Do not write prose.]";
+export function proseResolveDirective(draft: string): string {
+	return (
+		"[Your previous turn was plain text, which is NEVER delivered to Telegram: " +
+		`«${draft}». That was almost certainly your reply, written the wrong way. End ` +
+		"this turn by calling manager_resolve_draft: 'send' to deliver it as-is, " +
+		"'refine' with a corrected text, or 'drop' ONLY if it was not meant as a message " +
+		"to the interlocutor (e.g. it was just your own reasoning). A real question " +
+		"deserves an answer — do not drop it as chatter.]"
+	);
+}
 
 /**
  * Nudge added when the latest interlocutor message contains a configured
@@ -400,7 +407,7 @@ export class ManagerController {
 	 */
 	private readonly pendingReply = new Map<
 		string,
-		{ text: string; replyTo?: number }
+		{ text: string; replyTo?: number; fromProse?: boolean }
 	>();
 	/**
 	 * How many times the active draft for a chat has already been re-considered
@@ -408,18 +415,6 @@ export class ManagerController {
 	 * draft is sent as-is, so a rapid sender cannot defer the reply indefinitely.
 	 */
 	private readonly reviseCount = new Map<string, number>();
-	/**
-	 * Chats whose current turn ended in plain text and were already re-prompted
-	 * once to call a tool. A second prose turn is delivered verbatim instead of
-	 * being dropped, so a reply is never silently lost.
-	 */
-	private readonly proseRetried = new Set<string>();
-	/**
-	 * A one-shot trailing directive for the active chat's next turn (e.g. the
-	 * plain-text correction). Consumed by {@link buildContextForActive} and cleared
-	 * when the chat is served.
-	 */
-	private readonly correction = new Map<string, string>();
 	/**
 	 * The chat currently being memory-consolidated (idle pass), if any, together
 	 * with the interrogation state machine driving its per-probe questions.
@@ -484,19 +479,16 @@ export class ManagerController {
 	}
 
 	/**
-	 * Whether the active chat is on a REVISE turn: a reply was drafted last turn but
-	 * held because new interlocutor messages landed, and the model must now resolve
-	 * it (send/refine/drop). Public so the tool matcher can reveal manager_resolve_draft
-	 * only on these turns (and hide it everywhere else). A pending prose-correction
-	 * takes precedence over the revise directive, so it is not a revise turn then.
+	 * Whether the active chat is on a REVISE turn: a reply is held (either drafted
+	 * last turn and held because new interlocutor messages landed, or recovered from a
+	 * plain-text turn) and the model must now resolve it (send/refine/drop). Public so
+	 * the tool matcher can reveal manager_resolve_draft only on these turns (and hide it
+	 * everywhere else).
 	 */
 	isReviseTurn(): boolean {
 		const active = this.scheduler.activeChat();
 		return (
-			active !== null &&
-			this.pendingReply.has(active) &&
-			this.correction.get(active) === undefined &&
-			!this.consolidating
+			active !== null && this.pendingReply.has(active) && !this.consolidating
 		);
 	}
 
@@ -803,11 +795,16 @@ export class ManagerController {
 			} else {
 				// send | refine | none (gate fallback): never lose a ready answer. A
 				// resolved draft is an explicit, considered reply, so it reads as a
-				// direct question and bypasses the chatter guard below.
+				// direct question and bypasses the chatter guard below. On an unresolved
+				// prose-recovery turn the model may have re-written its answer as plain
+				// text again — prefer that fresh prose over the held draft.
+				const freshProse = finalText?.trim();
 				text =
 					resolution.action === "refine" && resolution.text
 						? resolution.text
-						: pending.text;
+						: resolution.action === "none" && pending.fromProse && freshProse
+							? freshProse
+							: pending.text;
 				requestedReplyTo = pending.replyTo;
 				decisionKind = "reply";
 				category = "question";
@@ -852,18 +849,17 @@ export class ManagerController {
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		this.gate.clearServed(active);
 		// The model ended in plain text without calling a tool. Plain text is never
-		// delivered, so the reply was lost. Re-prompt once to make it call a tool; if
-		// it writes prose again, deliver the text verbatim rather than dropping it.
+		// delivered, so the reply was lost. Instead of re-deciding from scratch (a weak
+		// model may relabel a real question as chatter, and the guard then drops the
+		// answer), hold the prose as a draft and route it through the resolve-draft gate:
+		// the model must explicitly send/refine/drop it, and an unresolved run sends it —
+		// so a composed answer is never silently lost. A sent draft reads as a considered
+		// reply (category question) and bypasses the chatter guard below.
 		const prose = finalText?.trim();
-		if (decisionKind === "none" && prose) {
-			if (!this.proseRetried.has(active)) {
-				this.proseRetried.add(active);
-				this.correction.set(active, PROSE_CORRECTION);
-				await this.triggerTurn();
-				return { ...contact, outcome: "corrected", text: prose };
-			}
-			text = prose;
-			requestedReplyTo = undefined;
+		if (decisionKind === "none" && prose && !this.pendingReply.has(active)) {
+			this.pendingReply.set(active, { text: prose, fromProse: true });
+			await this.triggerTurn();
+			return { ...contact, outcome: "corrected", text: prose };
 		}
 		// New interlocutor message(s) arrived while this turn was generating: don't
 		// send the now-stale draft blind. Hold it, keep the chat unserved, and let the
@@ -885,8 +881,6 @@ export class ManagerController {
 		this.latestImages.delete(active);
 		this.pendingReply.delete(active);
 		this.reviseCount.delete(active);
-		this.proseRetried.delete(active);
-		this.correction.delete(active);
 		let deliveredReplyTo: number | undefined;
 		let guardReason: string | undefined;
 		if (text) {
@@ -1037,14 +1031,13 @@ export class ManagerController {
 			(opener ? `\n\n${opener}` : "") +
 			(known ? `\n\n${known}` : "");
 		const pending = this.pendingReply.get(active);
-		const correction = this.correction.get(active);
 		const directive = this.turnDecided()
 			? MANAGER_TURN_DONE
-			: correction
-				? correction
-				: pending
-					? reviseDirective(pending.text)
-					: MANAGER_ACTION_TRIGGER;
+			: pending
+				? pending.fromProse
+					? proseResolveDirective(pending.text)
+					: reviseDirective(pending.text)
+				: MANAGER_ACTION_TRIGGER;
 		// Flag a wake-word in the latest interlocutor line so the model weighs whether
 		// it is really addressed vs. the word just being mentioned.
 		const lastInterlocutor = [...records]
