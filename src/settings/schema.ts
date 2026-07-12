@@ -31,6 +31,21 @@ export interface TelegramSettings {
 		/** Consecutive failed probes tolerated before auto-disconnect. Default 3. */
 		maxRetries: number;
 	};
+	/**
+	 * Mixed mode: one Pi session runs both the owner's coding thread and Telegram
+	 * moderation, with coding always taking priority. While the owner is active
+	 * Telegram replies are deferred; once the owner's inference finishes (or an
+	 * abort settles) an idle timer runs, and after it elapses the model returns to
+	 * Telegram moderation on its own.
+	 */
+	mixed: {
+		/**
+		 * Idle window (ms) after the owner's inference finishes before the model
+		 * resumes Telegram moderation. The countdown starts when the coding turn
+		 * ends (idleness signal), not while it runs. Default 480000 (8 min).
+		 */
+		returnToTelegramMs: number;
+	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
 	connect: {
@@ -148,6 +163,7 @@ export interface TelegramSettings {
 export const DEFAULT_SETTINGS: TelegramSettings = {
 	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
 	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
+	mixed: { returnToTelegramMs: 480_000 },
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -252,6 +268,7 @@ const KNOWN_TOP_LEVEL = new Set([
 	"timezone",
 	"assistant",
 	"connectionCheck",
+	"mixed",
 	"instructionFiles",
 	"connect",
 	"manager",
@@ -277,6 +294,7 @@ export function normalizeSettings(
 	const d = DEFAULT_SETTINGS;
 	const assistant = asRecord(root.assistant, "assistant");
 	const connectionCheck = asRecord(root.connectionCheck, "connectionCheck");
+	const mixed = asRecord(root.mixed, "mixed");
 	const connect = asRecord(root.connect, "connect");
 	const manager = asRecord(root.manager, "manager");
 	const observer = asRecord(manager.observer, "manager.observer");
@@ -330,6 +348,13 @@ export function normalizeSettings(
 				connectionCheck.maxRetries,
 				"connectionCheck.maxRetries",
 				d.connectionCheck.maxRetries,
+			),
+		},
+		mixed: {
+			returnToTelegramMs: asPositiveInt(
+				mixed.returnToTelegramMs,
+				"mixed.returnToTelegramMs",
+				d.mixed.returnToTelegramMs,
 			),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),

@@ -66,6 +66,18 @@ describe("normalizeSettings", () => {
 		).toThrow(/connectionCheck.maxRetries/);
 	});
 
+	it("defaults mixed.returnToTelegramMs to 8 minutes and honours overrides", () => {
+		expect(normalizeSettings({}).mixed.returnToTelegramMs).toBe(480_000);
+		expect(
+			normalizeSettings({ mixed: { returnToTelegramMs: 90_000 } }).mixed
+				.returnToTelegramMs,
+		).toBe(90_000);
+		// Must be a positive integer (0 disables nothing here — it would fire instantly).
+		expect(() =>
+			normalizeSettings({ mixed: { returnToTelegramMs: 0 } }),
+		).toThrow(/mixed.returnToTelegramMs/);
+	});
+
 	it("parses manager sub-mode instruction files", () => {
 		const s = normalizeSettings({
 			manager: {

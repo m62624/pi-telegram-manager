@@ -27,12 +27,12 @@ describe("piTelegramManagerExtension (composition root)", () => {
 		expect(() => piTelegramManagerExtension(api as any)).not.toThrow();
 
 		for (const command of [
-			"telegram-connect",
-			"telegram-disconnect",
+			"telegram-personal",
+			"telegram-manager",
+			"telegram-mixed",
+			"telegram-stop",
 			"telegram-status",
-			"telegram-manager-observer",
-			"telegram-manager-takeover",
-			"telegram-manager-stop",
+			"telegram-switch",
 		]) {
 			expect(commands.has(command)).toBe(true);
 		}

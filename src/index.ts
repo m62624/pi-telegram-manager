@@ -67,7 +67,12 @@ import {
 	INTERROGATION_TOOL_NAMES,
 	type ProbeSink,
 } from "./modes/manager/interrogation";
+import {
+	stripTelegramTurns,
+	tagTelegramPrompt,
+} from "./modes/manager/mixed-context";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
+import { selectManagerSubMode } from "./modes/manager/submode-picker";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -191,7 +196,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Runtime backstop for the telegram-sandbox: block any tool the manager's
 	// allowlist does not permit, even if it slipped past the visibility gate.
 	registerToolGuard(pi, {
-		isActive: () => manager !== null,
+		// The sandbox is enforced whenever the manager is running — except in mixed
+		// mode's coding polarity, where the owner is coding and needs full tools.
+		isActive: () =>
+			manager !== null && (!mixedActive || polarity === "telegram"),
 		matcher: () => managerMatcher,
 	});
 
@@ -199,6 +207,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
 	// mode / no boundary → leave the context untouched.
 	pi.on("context", async (event) => {
+		if (mixedActive) {
+			// Telegram polarity: replace context with the active chat's isolated
+			// history, exactly like the standalone manager.
+			if (polarity === "telegram" && manager) {
+				const isolated = await manager.buildContextForActive();
+				if (!isolated) return {};
+				return { messages: toRebuiltMessages(isolated, Date.now()) } as never;
+			}
+			// Coding polarity: the owner's real session messages, with the manager's
+			// Telegram turns filtered out so they never pollute the coding thread.
+			return { messages: stripTelegramTurns(event.messages) } as never;
+		}
 		if (manager) {
 			const isolated = await manager.buildContextForActive();
 			if (!isolated) return {};
@@ -289,6 +309,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
 	let activeSubMode: ManagerSubMode | null = null;
+
+	// Mixed mode: the manager runtime coexists with the owner's coding thread in
+	// ONE session. `polarity` says whose turn the shared brain is serving right
+	// now: `coding` (owner is at the keyboard — Telegram is deferred, tools are
+	// unrestricted) or `telegram` (owner is idle — the manager moderates in its
+	// sandbox). `mixedActive` is set only while `/telegram-mixed` runs. The return
+	// timer flips polarity back to `telegram` after the owner's inference has been
+	// idle for `mixedReturnMs`.
+	let mixedActive = false;
+	let polarity: "coding" | "telegram" = "coding";
+	let mixedReturnMs = 480_000;
+	let mixedReturnTimer: ReturnType<typeof setTimeout> | null = null;
 	// The pinned "current mode" indicator in the owner's DM: the message id we pin
 	// once and then edit in place on every mode change (so switches never spam new
 	// pins), plus the mode it currently shows (to skip redundant edits).
@@ -304,7 +336,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let connectionFailures = 0;
 
 	const updateManagerBanner = (): void => {
-		if (!manager || !managerUi) return;
+		// Mixed mode deliberately shows no manager banner/widgets — only the footer
+		// status line (see updateMixedFooter). The owner is coding; the chat-status
+		// board would be noise.
+		if (!manager || !managerUi || mixedActive) return;
 		try {
 			managerUi.setWidget(
 				MANAGER_BANNER_KEY,
@@ -314,6 +349,47 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// A captured UI handle may go stale across a session reload; the banner
 			// is cosmetic, so a failed refresh must never break the manager.
 		}
+	};
+
+	// Mixed mode's only persistent TUI chrome: a one-line status showing the mode,
+	// sub-mode, and which polarity the shared brain is serving right now.
+	const updateMixedFooter = (): void => {
+		if (!mixedActive) return;
+		const where = polarity === "telegram" ? "in Telegram" : "coding";
+		activeCtx?.ui.setStatus(
+			STATUS_KEY,
+			`mixed · ${activeSubMode ?? "observer"} · ${where}`,
+		);
+	};
+
+	const cancelMixedReturnTimer = (): void => {
+		if (mixedReturnTimer) {
+			clearTimeout(mixedReturnTimer);
+			mixedReturnTimer = null;
+		}
+	};
+
+	// Arm the idle timer that flips the shared brain back to Telegram moderation
+	// once the owner's coding turn has been idle for `mixedReturnMs`.
+	const armMixedReturnTimer = (): void => {
+		if (!mixedActive) return;
+		cancelMixedReturnTimer();
+		mixedReturnTimer = setTimeout(() => {
+			mixedReturnTimer = null;
+			if (!mixedActive || polarity === "telegram") return;
+			setPolarity("telegram");
+			// Kick the manager immediately rather than waiting for the next tick.
+			void manager?.onTick().then(updateManagerBanner);
+		}, mixedReturnMs);
+	};
+
+	// Flip the mixed-mode polarity and re-gate everything that depends on it: the
+	// manager's tool sandbox (active only in the Telegram polarity, so coding keeps
+	// full tools) and the footer indicator.
+	const setPolarity = (next: "coding" | "telegram"): void => {
+		polarity = next;
+		if (mixedActive) visibility.setActive("manager", next === "telegram");
+		updateMixedFooter();
 	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
@@ -412,7 +488,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerMatcher = null;
 		managerUi?.setWidget(MANAGER_BANNER_KEY, undefined);
 		managerUi = null;
-		await lifecycle.deactivate("manager");
+		// Tear down mixed-mode state (a no-op for the standalone manager). Deactivate
+		// the lifecycle record for whichever mode was actually running.
+		const wasMixed = mixedActive;
+		if (wasMixed) {
+			cancelMixedReturnTimer();
+			mixedActive = false;
+			polarity = "coding";
+			activeCtx?.ui.setStatus(STATUS_KEY, undefined);
+		}
+		await lifecycle.deactivate(wasMixed ? "mixed" : "manager");
 	};
 
 	// Route business updates to the manager controller. Owner control commands
@@ -454,6 +539,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// inference; the reply is still delivered from onAgentEnd (reading the recorded
 	// decision, not the messages the abort may orphan).
 	pi.on("turn_end", (_event, ctx) => {
+		// Only cap a manager turn. In mixed mode's coding polarity the owner is
+		// running the turn — never abort it on the manager's stale decision flag.
+		if (mixedActive && polarity !== "telegram") return;
 		if (manager?.turnDecided()) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
@@ -464,6 +552,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		stopTyping();
 		connect?.endDraft();
 		await connect?.onAgentEnd(event.messages);
+		// In mixed mode's coding polarity the turn that just ended is the owner's:
+		// don't feed it to the manager, and arm the idle timer that will hand the
+		// shared brain back to Telegram once the owner stays quiet.
+		if (mixedActive && polarity !== "telegram") {
+			armMixedReturnTimer();
+			return;
+		}
 		if (manager) {
 			// Pass the trailing assistant prose so the manager can recover a reply the
 			// model wrote as plain text instead of calling a tool (otherwise dropped).
@@ -486,8 +581,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("tool_execution_start", async (event) => {
 		// Record every manager tool call for the debug feed, before the connect guard
-		// (mode 2 has no ConnectController but still needs the feed).
-		if (manager) {
+		// (mode 2 has no ConnectController but still needs the feed). In mixed mode's
+		// coding polarity these are the owner's own tool calls — not manager turns.
+		if (manager && !(mixedActive && polarity !== "telegram")) {
 			let args = "";
 			try {
 				args = JSON.stringify(event.args) ?? "";
@@ -530,8 +626,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// We key off Pi's own provenance (InputEvent.source) — our Telegram injections
 	// arrive as "extension" and are not mirrored, so there is no echo loop.
 	pi.on("input", async (event) => {
-		if (connect && shouldMirrorToTelegram(classifyInputSource(event.source))) {
+		const origin = classifyInputSource(event.source);
+		if (connect && shouldMirrorToTelegram(origin)) {
 			await connect.mirrorTerminalInput(event.text).catch(() => {});
+		}
+		// Mixed mode: a prompt the owner typed at the terminal is the priority
+		// signal. Take the shared brain back for coding at once — cancel the return
+		// timer and, if the manager was mid-turn in the Telegram polarity, abort it
+		// so the owner never waits on a moderation reply. Our own Telegram injections
+		// arrive as "external" and are ignored here.
+		if (mixedActive && origin === "terminal") {
+			cancelMixedReturnTimer();
+			const wasTelegram = polarity === "telegram";
+			setPolarity("coding");
+			if (wasTelegram) await abort.abort();
 		}
 		return { action: "continue" };
 	});
@@ -774,31 +882,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await updateModePin("personal");
 	};
 
-	pi.registerCommand(COMMANDS.connect, {
-		description: "Bind this terminal session to a Telegram chat (mode 1).",
-		handler: (_args, ctx) => startConnect(ctx),
-	});
-
-	pi.registerCommand(COMMANDS.disconnect, {
-		description: "Disconnect the terminal-continuation bridge (mode 1).",
-		handler: async (_args, ctx) => {
-			if (!connect) {
-				ctx.ui.notify("Telegram connect is not active.", "warning");
-				return;
-			}
-			// Tell the chat before we tear down the poller/sender.
-			await connect
-				.sendToChat(
-					card("🔌", "Disconnected", [note("From the Pi terminal session.")]),
-				)
-				.catch(() => {});
-			// Update the pinned indicator while the client is still alive.
-			await updateModePin("stop");
-			await stopConnect(ctx);
-			ctx.ui.notify("Telegram connect: stopped.");
-		},
-	});
-
 	pi.registerCommand(COMMANDS.status, {
 		description: "Show the Telegram bridge status.",
 		handler: async (_args, ctx) => {
@@ -812,12 +895,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	// Shared launcher for both manager sub-modes; the sub-mode comes from the
-	// command the user ran (observer or takeover), not from settings.
+	// Shared launcher for both manager sub-modes, and for mixed mode (`mixed:
+	// true`), which runs the same manager runtime alongside the owner's coding
+	// thread in one session. The sub-mode comes from the command's picker, not from
+	// settings.
 	const startManager = async (
 		ctx: ExtensionCommandContext,
 		subMode: ManagerSubMode,
+		options: { mixed?: boolean } = {},
 	): Promise<void> => {
+		const mixed = options.mixed === true;
 		activeCtx = ctx;
 		if (manager || connect) {
 			ctx.ui.notify("A Telegram mode is already active.", "warning");
@@ -828,14 +915,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const { settings, token } = loaded;
 		ownerUserId = settings.allowedUserId ?? null;
 		activeSubMode = subMode;
+		// Prime mixed-mode state before anything reads it (context handler, isIdle):
+		// the owner is at the keyboard when they launch it, so start in the coding
+		// polarity with the return timer disarmed until the first coding turn ends.
+		mixedActive = mixed;
+		if (mixed) {
+			polarity = "coding";
+			mixedReturnMs = settings.mixed.returnToTelegramMs;
+		}
 
 		const activation = await lifecycle.activate({
-			mode: "manager",
-			workdir: paths.managerWorkspaceDir,
+			mode: mixed ? "mixed" : "manager",
+			workdir: mixed ? ctx.cwd : paths.managerWorkspaceDir,
 			subMode,
 		});
 		if (!activation.ok) {
-			ctx.ui.notify(`Cannot start manager: ${activation.reason}`, "error");
+			mixedActive = false;
+			ctx.ui.notify(
+				`Cannot start ${mixed ? "mixed" : "manager"}: ${activation.reason}`,
+				"error",
+			);
 			return;
 		}
 
@@ -996,9 +1095,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			consolidationQueue,
 			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 			businessStore,
-			isIdle: () => !busy,
+			// In mixed mode the manager may only run a turn while the shared brain is
+			// in the Telegram polarity; during coding the owner owns the session, so
+			// the manager stays "not idle" — it keeps ingesting/deferring but never
+			// triggers a turn until the return timer flips polarity.
+			isIdle: () => !busy && (!mixedActive || polarity === "telegram"),
 			triggerAgent: async (prompt) => {
-				pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+				// Tag every injected Telegram turn in mixed mode so the coding-polarity
+				// context filter can strip it from the owner's thread.
+				const content = mixedActive ? tagTelegramPrompt(prompt) : prompt;
+				pi.sendUserMessage(content, { deliverAs: "followUp" });
 			},
 			// Business connections reject the rich-message API, so mode-2 replies go out
 			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
@@ -1081,7 +1187,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
 			.catch(() => {});
 		visibility.setExclusive("manager", managerMatcher);
-		visibility.setActive("manager", true);
+		// Mixed starts in coding polarity, so the manager sandbox is inactive until
+		// the return timer flips to Telegram; the standalone manager is always active.
+		visibility.setActive("manager", mixed ? polarity === "telegram" : true);
 		managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
 		updateManagerBanner();
 		// Smart catch-up: answer for the owner in chats left waiting (last message
@@ -1101,31 +1209,65 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
-		ctx.ui.notify(`Telegram manager: active (${subMode}).`);
-		await updateModePin(subMode);
+		if (mixed) {
+			// Mixed shows only the footer indicator (no DM mode-pin — it is not a
+			// /switch panel target); arm the idle timer so an idle owner hands the
+			// brain to Telegram on its own.
+			updateMixedFooter();
+			armMixedReturnTimer();
+			ctx.ui.notify(`Telegram mixed: active (${subMode}).`);
+		} else {
+			ctx.ui.notify(`Telegram manager: active (${subMode}).`);
+			await updateModePin(subMode);
+		}
 	};
 
-	pi.registerCommand(COMMANDS.managerObserver, {
+	// Personal (mode 1): bind this terminal session to a single Telegram DM.
+	pi.registerCommand(COMMANDS.personal, {
 		description:
-			"Start the Telegram business manager in observer (co-pilot) sub-mode.",
-		handler: (_args, ctx) => startManager(ctx, "observer"),
+			"Bind this terminal session to a Telegram chat (personal mode).",
+		handler: (_args, ctx) => startConnect(ctx),
 	});
-	pi.registerCommand(COMMANDS.managerTakeover, {
+	// Business manager: pick a sub-mode, then run the manager.
+	pi.registerCommand(COMMANDS.manager, {
 		description:
-			"Start the Telegram business manager in takeover (auto-reply) sub-mode.",
-		handler: (_args, ctx) => startManager(ctx, "takeover"),
-	});
-	pi.registerCommand(COMMANDS.managerStop, {
-		description: "Stop the Telegram business manager (mode 2).",
+			"Start the Telegram business manager (pick observer or takeover).",
 		handler: async (_args, ctx) => {
-			if (!manager) {
-				ctx.ui.notify("Telegram manager is not active.", "warning");
-				return;
+			const subMode = await selectManagerSubMode(ctx.ui);
+			if (!subMode) return;
+			await startManager(ctx, subMode);
+		},
+	});
+	// Mixed: coding + Telegram moderation share one session (pick a sub-mode).
+	pi.registerCommand(COMMANDS.mixed, {
+		description:
+			"Run coding and Telegram moderation together (pick observer or takeover).",
+		handler: async (_args, ctx) => {
+			const subMode = await selectManagerSubMode(ctx.ui, "Mixed mode sub-mode");
+			if (!subMode) return;
+			await startManager(ctx, subMode, { mixed: true });
+		},
+	});
+	// Stop whichever Telegram mode is currently active.
+	pi.registerCommand(COMMANDS.stop, {
+		description: "Stop the active Telegram mode.",
+		handler: async (_args, ctx) => {
+			if (manager) {
+				await updateModePin("stop");
+				await stopManager();
+				ctx.ui.notify("Telegram: stopped.");
+			} else if (connect) {
+				await connect
+					.sendToChat(
+						card("🔌", "Disconnected", [note("From the Pi terminal session.")]),
+					)
+					.catch(() => {});
+				await updateModePin("stop");
+				await stopConnect(ctx);
+				ctx.ui.notify("Telegram: stopped.");
+			} else {
+				ctx.ui.notify("No Telegram mode is active.", "warning");
 			}
-			// Update the pinned indicator while the client is still alive.
-			await updateModePin("stop");
-			await stopManager();
-			ctx.ui.notify("Telegram manager: stopped.");
 		},
 	});
 

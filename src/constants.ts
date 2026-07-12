@@ -9,19 +9,17 @@ export const EXTENSION_NAME = "pi-telegram-manager";
 
 /** Slash commands this extension registers with Pi. */
 export const COMMANDS = {
-	/** Mode 1 — bind the current terminal session to a single Telegram DM. */
-	connect: "telegram-connect",
-	/** Mode 1 — explicitly tear down the terminal-continuation binding. */
-	disconnect: "telegram-disconnect",
-	/** Mode 1/2 — print the active bridge status. */
+	/** Personal — bind the current terminal session to a single Telegram DM. */
+	personal: "telegram-personal",
+	/** Business manager — pick observer/takeover, then run the manager. */
+	manager: "telegram-manager",
+	/** Mixed — coding + Telegram moderation in one session (pick observer/takeover). */
+	mixed: "telegram-mixed",
+	/** Stop whichever Telegram mode is currently active. */
+	stop: "telegram-stop",
+	/** Print the active bridge status. */
 	status: "telegram-status",
-	/** Mode 2 — start the manager in the observer (co-pilot) sub-mode. */
-	managerObserver: "telegram-manager-observer",
-	/** Mode 2 — start the manager in the takeover sub-mode. */
-	managerTakeover: "telegram-manager-takeover",
-	/** Mode 2 — explicitly stop the manager (either sub-mode). */
-	managerStop: "telegram-manager-stop",
-	/** Mode 1/2 — open the inline mode-switcher panel in the owner's bot DM. */
+	/** Open the inline mode-switcher panel in the owner's bot DM. */
 	switch: "telegram-switch",
 } as const;
 
@@ -42,5 +40,10 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "help", description: "Show available commands" },
 	];
 
-/** The two mutually-exclusive runtime modes. */
-export type BridgeMode = "connect" | "manager";
+/**
+ * The mutually-exclusive runtime modes. `connect` = personal (mode 1), `manager`
+ * = business manager (mode 2), `mixed` = coding + Telegram moderation sharing one
+ * session. The internal `connect` identifier is kept even though the user-facing
+ * command is now `telegram-personal`.
+ */
+export type BridgeMode = "connect" | "manager" | "mixed";
