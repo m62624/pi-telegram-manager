@@ -61,9 +61,12 @@ import {
 	type ManagerToolCall,
 } from "./modes/manager/debug-feed";
 import {
+	createDraftResolveTool,
 	createManagerTools,
 	type DecisionSink,
+	type DraftResolutionSink,
 	type FactSink,
+	MANAGER_RESOLVE_TOOL_NAME,
 	MANAGER_TOOL_NAMES,
 } from "./modes/manager/decision";
 import {
@@ -183,9 +186,14 @@ const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
-// Every tool the manager may use in the telegram-sandbox: the reply/memory tools
-// plus the consolidation interrogation probes.
-const MANAGER_TOOLS = [...MANAGER_TOOL_NAMES, ...INTERROGATION_TOOL_NAMES];
+// Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
+// the consolidation interrogation probes, and the resolve-draft tool (visible only
+// on a revise turn — see the matcher wrapper in startManager).
+const MANAGER_TOOLS = [
+	...MANAGER_TOOL_NAMES,
+	...INTERROGATION_TOOL_NAMES,
+	MANAGER_RESOLVE_TOOL_NAME,
+];
 
 // Plain-text /help for the owner DM while the manager/mixed mode is active (the
 // control API sends plain text, so raw URLs auto-link instead of Markdown ones).
@@ -461,9 +469,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const managerProbeSink: ProbeSink = {
 		record: (result) => manager?.probeSink().record(result),
 	};
+	const managerResolveSink: DraftResolutionSink = {
+		record: (resolution) => manager?.resolveSink().record(resolution),
+	};
 	for (const tool of [
 		...createManagerTools(managerDecisionSink, managerFactSink),
 		...createInterrogationTools(managerProbeSink),
+		createDraftResolveTool(managerResolveSink),
 	]) {
 		pi.registerTool(tool);
 	}
@@ -1017,11 +1029,24 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// any user-configured regex names. Everything else (read/write/bash,
 		// ask_user, foreign extensions) is hidden by visibility and blocked by the
 		// runtime guard.
-		managerMatcher = createToolMatcher(
+		const baseMatcher = createToolMatcher(
 			MANAGER_TOOLS,
 			settings.manager.allowedTools,
 			(warning) => ctx.ui.notify(warning, "warning"),
 		);
+		// manager_resolve_draft belongs to the manager group (so it is hidden whenever
+		// the manager is inactive) but is visible ONLY on a revise turn. On a revise
+		// turn it is the SOLE active tool — reply/silent/remember are hidden — so the
+		// model must resolve the held draft (send/refine/drop) and cannot spin calling
+		// a tool the gate ignores. On any other turn it is hidden and the normal
+		// sandbox applies. The matcher gates both the visibility gate and the runtime
+		// guard on the live revise state, recomputed before each request.
+		managerMatcher = {
+			matches: (name) =>
+				(manager?.isReviseTurn() ?? false)
+					? name === MANAGER_RESOLVE_TOOL_NAME
+					: name !== MANAGER_RESOLVE_TOOL_NAME && baseMatcher.matches(name),
+		};
 
 		// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
 		// terminal — it staleness-poisons the captured `ctx` and the module-level

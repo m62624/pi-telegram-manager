@@ -220,15 +220,19 @@ describe("ManagerController", () => {
 		expect(sendReply).not.toHaveBeenCalled();
 		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
 
-		// The reconsider turn surfaces the draft + the newer message.
+		// The reconsider turn is a REVISE turn: it surfaces the draft + the newer
+		// message and asks the model to resolve it with manager_resolve_draft.
 		const ctx = await controller.buildContextForActive();
 		const directive = ctx?.at(-1)?.content ?? "";
 		expect(directive).toContain("answer to first");
-		expect(directive).toContain("manager_reply");
+		expect(directive).toContain("manager_resolve_draft");
 		expect(ctx?.some((m) => m.content.includes("wait, also this"))).toBe(true);
+		expect(controller.isReviseTurn()).toBe(true);
 
-		// The model resends (no new mid-turn message this time) → delivered.
-		controller.decisionSink().record({ kind: "reply", text: "answer to both" });
+		// The model refines the draft (no new mid-turn message this time) → delivered.
+		controller
+			.resolveSink()
+			.record({ action: "refine", text: "answer to both" });
 		await controller.onAgentEnd();
 		expect(sendReply).toHaveBeenCalledTimes(1);
 		expect(sendReply.mock.calls[0][0].text).toContain("answer to both");
@@ -247,8 +251,22 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 
-		// Three consecutive turns, each interrupted by a fresh mid-turn message.
-		for (let i = 2; i <= 4; i += 1) {
+		// First turn: a normal reply is drafted, a mid-turn message arrives → held.
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("more 2", 5, 2),
+		});
+		setIdle(true);
+		controller.decisionSink().record({ kind: "reply", text: "draft 1" });
+		await controller.onAgentEnd();
+
+		// Two revise turns: the model refines each time, but a fresh message keeps
+		// landing mid-turn, so the draft is held again — until the cap is reached.
+		for (let i = 3; i <= 4; i += 1) {
+			expect(controller.isReviseTurn()).toBe(true);
 			setIdle(false);
 			await controller.onBusinessMessage({
 				connectionId: CONN,
@@ -257,13 +275,15 @@ describe("ManagerController", () => {
 				message: interlocutorMsg(`more ${i}`, 5, i),
 			});
 			setIdle(true);
-			controller.decisionSink().record({ kind: "reply", text: `draft ${i}` });
+			controller
+				.resolveSink()
+				.record({ action: "refine", text: `draft ${i - 1}` });
 			await controller.onAgentEnd();
 		}
 
-		// First two reconsiders held the draft; the third hit the cap and delivered.
+		// Held twice (cycles 1 and 2); the third revise hit the cap and delivered.
 		expect(sendReply).toHaveBeenCalledTimes(1);
-		expect(sendReply.mock.calls[0][0].text).toContain("draft 4");
+		expect(sendReply.mock.calls[0][0].text).toContain("draft 3");
 	});
 
 	it("recovers a reply the model wrote as plain text: re-prompts once, then delivers it", async () => {
@@ -847,6 +867,80 @@ describe("ManagerController", () => {
 		controller.decisionSink().record({ kind: "silent" });
 		await controller.onAgentEnd();
 		expect(await deps.contactStore.getFacts(String(OWNER_ID))).toEqual([]);
+	});
+
+	it("gates a revise turn on resolve-draft: manager_silent cannot drop a held answer", async () => {
+		const { controller, sendReply, setIdle, clock } = await setup();
+		// A real question arrives and a turn starts.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("how do I start in valheim?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		// A trailing chatter message lands mid-turn; the model drafts the real answer.
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("we'll see", 5, 2),
+		});
+		setIdle(true);
+		controller
+			.decisionSink()
+			.record({ kind: "reply", text: "chop wood, craft a workbench" });
+		await controller.onAgentEnd(); // held → revise turn
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(controller.isReviseTurn()).toBe(true);
+
+		// The model reflexively calls manager_silent on the trailing chatter — the gate
+		// must NOT let that end the turn or drop the drafted answer (the Valheim bug).
+		controller
+			.decisionSink()
+			.record({ kind: "silent", category: "chatter", needsReply: false });
+		expect(controller.turnDecided()).toBe(false);
+
+		// Only manager_resolve_draft ends a revise turn; the model sends the draft.
+		controller.resolveSink().record({ action: "send" });
+		expect(controller.turnDecided()).toBe(true);
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain("workbench");
+	});
+
+	it("drops a held draft only on an explicit resolve 'drop'", async () => {
+		const { controller, sendReply, setIdle, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("what time is it?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("nvm, found it", 5, 2),
+		});
+		setIdle(true);
+		controller.decisionSink().record({ kind: "reply", text: "it is 3pm" });
+		await controller.onAgentEnd(); // held → revise turn
+		expect(controller.isReviseTurn()).toBe(true);
+
+		// They retracted, so the model drops the draft — nothing is sent.
+		controller
+			.resolveSink()
+			.record({ action: "drop", reason: "they answered themselves" });
+		await controller.onAgentEnd();
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(controller.status().activeChat).not.toBe("42");
 	});
 
 	it("drives the consolidation interrogation probe-by-probe and persists verified facts", async () => {

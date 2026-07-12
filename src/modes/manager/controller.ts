@@ -50,7 +50,13 @@ import {
 	type IsolatedMessage,
 } from "./context-isolation";
 import { analyzeChat, type ConversationState } from "./conversation-state";
-import { DecisionState, FactState, resolveDecision } from "./decision";
+import {
+	DecisionState,
+	DraftResolutionState,
+	FactState,
+	type MessageCategory,
+	resolveDecision,
+} from "./decision";
 import { isBotMessage, stripBotMarker } from "./identity";
 import {
 	advance as advanceInterrogation,
@@ -108,10 +114,12 @@ export const MANAGER_TURN_DONE =
  */
 export function reviseDirective(draft: string): string {
 	return (
-		`[You were about to send this reply: «${draft}». Since then the interlocutor ` +
-		"sent new message(s), shown above. Reconsider against them: call manager_reply " +
-		"to send — resend the same text as-is if it still fits, or revise it (set " +
-		"reply_to to the message you answer) — or manager_silent to drop it.]"
+		`[You drafted this reply: «${draft}». Since then the interlocutor sent new ` +
+		"message(s), shown above. End this turn by calling manager_resolve_draft: " +
+		"'send' if the draft still fits, 'refine' with a rewritten text that folds in " +
+		"the new info, or 'drop' ONLY if they explicitly retracted, answered " +
+		"themselves, or it was already answered. A still-open question must be sent or " +
+		"refined — never dropped just because a trailing message is small talk.]"
 	);
 }
 
@@ -362,6 +370,7 @@ export class ManagerController {
 	private readonly scheduler: ChatScheduler;
 	private readonly gate: ReplyGate;
 	private readonly decision = new DecisionState();
+	private readonly resolve = new DraftResolutionState();
 	private readonly facts = new FactState();
 	private readonly probes = new ProbeState();
 	private readonly chats = new Map<string, ChatMeta>();
@@ -460,6 +469,28 @@ export class ManagerController {
 		return this.probes;
 	}
 
+	/** The per-turn sink the resolve-draft tool writes into (revise turns). */
+	resolveSink(): DraftResolutionState {
+		return this.resolve;
+	}
+
+	/**
+	 * Whether the active chat is on a REVISE turn: a reply was drafted last turn but
+	 * held because new interlocutor messages landed, and the model must now resolve
+	 * it (send/refine/drop). Public so the tool matcher can reveal manager_resolve_draft
+	 * only on these turns (and hide it everywhere else). A pending prose-correction
+	 * takes precedence over the revise directive, so it is not a revise turn then.
+	 */
+	isReviseTurn(): boolean {
+		const active = this.scheduler.activeChat();
+		return (
+			active !== null &&
+			this.pendingReply.has(active) &&
+			this.correction.get(active) === undefined &&
+			!this.consolidating
+		);
+	}
+
 	/**
 	 * Whether the model has made this turn's terminal decision, so the agent loop
 	 * can stop re-sampling instead of spinning on identical context. Terminality is
@@ -474,6 +505,12 @@ export class ManagerController {
 			// interrogation reaches `done`, at which point the context shows
 			// MANAGER_TURN_DONE so the model ends the run with one word.
 			return isDone(this.consolidating.loop);
+		}
+		// Revise turn: the gate ends the turn ONLY when the model resolved the held
+		// draft — a plain manager_reply/manager_silent must not complete it, so a
+		// ready answer can never be dropped by calling silent on trailing chatter.
+		if (this.isReviseTurn()) {
+			return this.resolve.current().action !== "none";
 		}
 		return this.decision.current().kind !== "none";
 	}
@@ -735,23 +772,56 @@ export class ManagerController {
 			this.facts.reset();
 			return null;
 		}
-		const decision = this.decision.current();
-		let text = resolveDecision(decision);
-		let requestedReplyTo =
-			decision.kind === "reply" ? decision.replyTo : undefined;
-		// Capture the decision's descriptive fields before the reset clears them.
-		const decisionKind = decision.kind;
-		const category =
-			decision.kind === "reply" || decision.kind === "silent"
-				? decision.category
-				: undefined;
-		const silentReason =
-			decision.kind === "silent" ? decision.reason : undefined;
-		const needsReply =
-			decision.kind === "reply" || decision.kind === "silent"
-				? decision.needsReply
-				: undefined;
-		this.decision.reset();
+		let text: string | null;
+		let requestedReplyTo: number | undefined;
+		let decisionKind: "reply" | "silent" | "none";
+		let category: MessageCategory | undefined;
+		let silentReason: string | undefined;
+		let needsReply: boolean | undefined;
+		// A REVISE turn: a held draft is pending, so the resolve-draft tool — not
+		// manager_reply/manager_silent — carries the outcome (the gate guaranteed it
+		// was called, or an unresolved run falls back to sending the draft as-is).
+		const pending = this.pendingReply.get(active);
+		if (pending) {
+			const resolution = this.resolve.current();
+			this.resolve.reset();
+			this.decision.reset();
+			if (resolution.action === "drop") {
+				text = null;
+				decisionKind = "silent";
+				needsReply = false;
+				silentReason = resolution.reason ?? "dropped the held draft";
+			} else {
+				// send | refine | none (gate fallback): never lose a ready answer. A
+				// resolved draft is an explicit, considered reply, so it reads as a
+				// direct question and bypasses the chatter guard below.
+				text =
+					resolution.action === "refine" && resolution.text
+						? resolution.text
+						: pending.text;
+				requestedReplyTo = pending.replyTo;
+				decisionKind = "reply";
+				category = "question";
+				needsReply = true;
+			}
+		} else {
+			const decision = this.decision.current();
+			text = resolveDecision(decision);
+			requestedReplyTo =
+				decision.kind === "reply" ? decision.replyTo : undefined;
+			// Capture the decision's descriptive fields before the reset clears them.
+			decisionKind = decision.kind;
+			category =
+				decision.kind === "reply" || decision.kind === "silent"
+					? decision.category
+					: undefined;
+			silentReason = decision.kind === "silent" ? decision.reason : undefined;
+			needsReply =
+				decision.kind === "reply" || decision.kind === "silent"
+					? decision.needsReply
+					: undefined;
+			this.decision.reset();
+		}
 		const meta = this.chats.get(active);
 		const contactName = meta?.contactName ?? active;
 		// The interlocutor's identity fields for the debug-feed card (username/phone
@@ -1051,6 +1121,7 @@ export class ManagerController {
 		const active = this.scheduler.activeChat();
 		if (active === null || !this.unserved.has(active)) return false;
 		this.decision.reset();
+		this.resolve.reset();
 		this.facts.reset();
 		// Fresh turn: only messages that arrive AFTER this point count as mid-turn
 		// arrivals that should trigger a reconsider.

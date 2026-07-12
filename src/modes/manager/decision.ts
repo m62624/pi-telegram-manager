@@ -173,6 +173,48 @@ export function resolveDecision(decision: ManagerDecision): string | null {
 	return decision.text;
 }
 
+/**
+ * How the model resolved a HELD draft on a revise turn (new interlocutor messages
+ * arrived while it was drafting a reply). The gate forces exactly one of these so a
+ * ready answer to a real question is never silently dropped by a trailing chatter
+ * message:
+ *  - `send`   — deliver the held draft as-is (the new messages did not change it);
+ *  - `refine` — deliver `text`, a rewrite of the draft that folds in the new info;
+ *  - `drop`   — discard it (they explicitly retracted, answered themselves, or it
+ *    was already answered).
+ */
+export type DraftResolution =
+	| { action: "send" }
+	| { action: "refine"; text: string }
+	| { action: "drop"; reason?: string }
+	| { action: "none" };
+
+/** A per-turn holder the resolve-draft tool writes its decision into. */
+export interface DraftResolutionSink {
+	record(resolution: DraftResolution): void;
+}
+
+/** The resolve-draft tool name — revealed only on a revise turn (see the matcher). */
+export const MANAGER_RESOLVE_TOOL_NAME = "manager_resolve_draft";
+
+/** A mutable resolve-draft holder: reset each turn, read on turn end. */
+export class DraftResolutionState implements DraftResolutionSink {
+	private resolution: DraftResolution = { action: "none" };
+
+	reset(): void {
+		this.resolution = { action: "none" };
+	}
+
+	record(resolution: DraftResolution): void {
+		// First decisive call wins.
+		if (this.resolution.action === "none") this.resolution = resolution;
+	}
+
+	current(): DraftResolution {
+		return this.resolution;
+	}
+}
+
 function ok(text: string) {
 	return { content: [{ type: "text" as const, text }], details: null };
 }
@@ -367,4 +409,65 @@ export function createManagerTools(
 	});
 
 	return [managerReply, managerSilent, managerRemember, managerSkip];
+}
+
+/**
+ * Build the resolve-draft tool. It is hidden on ordinary turns and revealed ONLY
+ * on a revise turn (a held draft awaiting reconsideration); the runtime gates the
+ * turn on it, so the model must choose send/refine/drop and can never silently
+ * lose a ready answer. Register once with `pi.registerTool`.
+ */
+export function createDraftResolveTool(
+	sink: DraftResolutionSink,
+): ToolDefinition {
+	return defineTool({
+		name: MANAGER_RESOLVE_TOOL_NAME,
+		label: "Manager Resolve Draft",
+		description:
+			"Resolve the reply you had drafted, now that new messages arrived. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that folds in the new info (put it in `text`), or 'drop' ONLY if the interlocutor explicitly retracted, answered themselves, or it was already answered. A still-open question must be sent or refined, never dropped because of trailing small talk.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: {
+					type: "string",
+					enum: ["send", "refine", "drop"],
+					description:
+						"send (deliver the draft as-is) | refine (deliver `text`) | drop (discard).",
+				},
+				text: {
+					type: "string",
+					description:
+						"Required for 'refine': the rewritten reply, based on your draft plus the new messages.",
+				},
+				reason: {
+					type: "string",
+					description: "Optional short reason, for 'drop'.",
+				},
+			},
+			required: ["action"],
+			additionalProperties: false,
+		} as never,
+		async execute(
+			_toolCallId,
+			params: { action?: string; text?: string; reason?: string },
+		) {
+			if (params.action === "refine") {
+				const text = params.text?.trim();
+				if (!text) return fail("manager_resolve_draft 'refine' requires text.");
+				sink.record({ action: "refine", text });
+				return ok("Refined reply queued for delivery.");
+			}
+			if (params.action === "drop") {
+				sink.record({
+					action: "drop",
+					reason: params.reason?.trim() || undefined,
+				});
+				return ok("Held draft dropped.");
+			}
+			// Any other value (including "send") delivers the draft as-is — the safe
+			// default that never loses a ready answer.
+			sink.record({ action: "send" });
+			return ok("Held draft queued for delivery.");
+		},
+	});
 }

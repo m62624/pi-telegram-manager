@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	createDraftResolveTool,
 	createManagerTools,
 	DecisionState,
+	DraftResolutionState,
 	FactState,
 	MANAGER_TOOL_NAMES,
 	resolveDecision,
@@ -107,6 +109,41 @@ describe("manager tools", () => {
 		expect(facts.current()).toEqual([
 			{ text: "the owner ships code", subject: "other", kind: undefined },
 		]);
+	});
+
+	it("manager_resolve_draft records send / refine / drop", async () => {
+		const state = new DraftResolutionState();
+		const tool = createDraftResolveTool(state);
+		expect(tool.name).toBe("manager_resolve_draft");
+
+		await tool.execute("t1", { action: "send" });
+		expect(state.current()).toEqual({ action: "send" });
+
+		state.reset();
+		await tool.execute("t2", { action: "refine", text: "  rewritten  " });
+		expect(state.current()).toEqual({ action: "refine", text: "rewritten" });
+
+		state.reset();
+		await tool.execute("t3", { action: "drop", reason: "answered themselves" });
+		expect(state.current()).toEqual({
+			action: "drop",
+			reason: "answered themselves",
+		});
+	});
+
+	it("manager_resolve_draft 'refine' without text is an error (draft not lost)", async () => {
+		const state = new DraftResolutionState();
+		const tool = createDraftResolveTool(state);
+		const res = await tool.execute("t1", { action: "refine" });
+		expect((res as { isError?: boolean }).isError).toBe(true);
+		expect(state.current()).toEqual({ action: "none" });
+	});
+
+	it("manager_resolve_draft treats an unknown action as a safe 'send'", async () => {
+		const state = new DraftResolutionState();
+		const tool = createDraftResolveTool(state);
+		await tool.execute("t1", { action: "bogus" });
+		expect(state.current()).toEqual({ action: "send" });
 	});
 
 	it("manager_skip fires the onSkip signal so the runtime can end the turn", async () => {
