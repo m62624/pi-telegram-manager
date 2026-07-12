@@ -4,57 +4,51 @@
 
 An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram.
 
-The point of the experiment is simple: **can a small local model be genuinely useful in your everyday life if its context is managed carefully?** So the whole design starts from the local model, not the cloud one. Unlike extensions that assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context and tested with [`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF). Almost every choice here — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt. It works with cloud models too, but that is not what it is for.
+The question behind it: **can a small local model be genuinely useful in everyday life if its context is managed carefully?** So the design starts from the local model, not a cloud one. Where other extensions assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context and tested with [`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF). Almost every choice — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt. It works with cloud models too, but that is not what it is for.
 
-The model runs **on your machine, in your own Telegram account**. It can be your private coding agent, it can answer other people in your business chats on your behalf, or — with **mixed** mode — it can do both at once out of one brain, coding when you are at the keyboard and moderating Telegram when you step away.
-
-This is a personal experiment. Expect rough edges, bugs, and behavior that changes.
+The model runs **on your machine, in your own Telegram account**, and you pick how it behaves with a **mode**. This is a personal experiment — expect rough edges, bugs, and behavior that changes.
 
 ---
 
 ## Modes
 
-The **same bot account** runs one mode at a time. What the bot *is* depends entirely on the mode.
+One bot account, one mode at a time. Each mode is a different job for the same model.
 
-### 🔀 Mixed — coding + Telegram in one brain
+### 🔀 Mixed — terminal + Telegram in one brain
 
-Mixed runs the manager alongside your **coding session in one Pi session**, with **coding always the priority**. While you are working, Telegram is deferred — the model stays on your terminal, and nothing from Telegram leaks into your coding thread. When your inference has been idle for a while (`mixed.returnToTelegramMs`, default **8 min**), the model hands itself back to Telegram and moderates in the sub-mode you picked (observer or takeover). The moment you type again it drops Telegram, aborts any in-flight moderation, and is yours.
+One Pi session runs two threads: your **terminal session** and Telegram moderation, with the **terminal always the priority**. While you are at the terminal, Telegram is deferred and nothing from it enters your session — no tokens, no confusion, and even a wake-word only queues, it never pulls the model off your work. Once your inference has been idle for `mixed.returnToTelegramMs` (default **8 min**), the brain moderates Telegram in the sub-mode you chose; the moment you type again it drops Telegram, aborts any in-flight reply, and restores your full tools. Your TUI stays clean — just a footer (`mixed · observer · coding`); enable `manager.debugFeed` for a log of what it did while you were away.
 
-The two threads are kept apart on purpose. Your coding TUI stays clean — only a small footer shows the mode and which side the brain is on right now (`mixed · observer · coding`). The Telegram side never enters your coding context, so it costs you no tokens and never confuses the model. If you want a log of what the bot did while you were away, turn on `manager.debugFeed` — it mirrors each moderation turn into your DM with the bot.
+Start it with `/telegram-mixed` (it asks for observer or takeover — see below).
 
-Start it with `/telegram-mixed`; it asks whether to moderate in **observer** or **takeover** (see below).
+### 🤖 Personal — bridge your terminal to a DM
 
-### 🤖 Personal
-
-Bridges your **current Pi terminal session** to your **private chat with the bot**. You talk to your own coding agent from your phone: send text, files, and images; get its replies (native rich Markdown), a live "typing…" indicator and streamed drafts; queue messages while it works; `/clear` the history or `/esc` a running turn. The bot only ever talks to **you** (`allowedUserId`); it does not touch any business chats.
+Binds your **current Pi terminal session** to your **private chat with the bot**, so you drive your own agent from your phone: send text, files, and images; get replies in native rich Markdown with a live "typing…" indicator and streamed drafts; queue messages while it works; `/clear` history or `/esc` a turn. The bot talks only to **you** (`allowedUserId`) and touches no business chats.
 
 Start it with `/telegram-personal`.
 
-> **The same DM with the bot serves two purposes.** In Personal mode it is the continuation of your Pi terminal. It can *also* act as a running log of the model's work — enable `manager.debugFeed` (mode 2 / mixed) to mirror each turn's thinking, tool calls, and decision into that chat, or `assistant.toolActivity` (Personal) to mirror tool calls there.
+### 🕵️ Business manager — answer other people on your behalf
 
-### 🕵️ Business manager
-
-Through a Telegram **Business** connection, the bot reads your business conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent instance multiplexes every chat, with:
+Through a Telegram **Business** connection, the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat, with:
 
 - **strict per-chat context isolation** — each turn the model sees only that one conversation, rebuilt from disk;
-- a **priority queue / scheduler** — one chat active at a time, never-replied chats first, a continuation window that keeps a live conversation going;
-- an **owner-reply window** — a first message from someone is held for a few minutes so *you* can answer first; only if you stay silent does the bot step in;
-- **persistent per-contact memory** — durable facts about each person (keyed by their account, not their name), saved and resurfaced across sessions, updated by an **idle consolidation** pass that pauses for live replies and resumes where it left off;
-- **catch-up on activation** — when you switch it on, it looks at chats left waiting and answers the ones still worth answering;
-- an optional **debug feed** — since the bot account is idle here, it can DM *you* each turn's thinking, tool calls, and decision.
+- a **priority scheduler** — one chat at a time, never-replied chats first, a continuation window that keeps a live conversation going;
+- an **owner-reply window** — a first message is held a few minutes so *you* can answer first; only if you stay silent does the bot step in;
+- **persistent per-contact memory** — durable facts about each person (keyed by their account, not their name), resurfaced across sessions and updated by an idle consolidation pass that pauses for live replies;
+- **catch-up on activation** — on start it answers the chats still worth answering;
+- an optional **debug feed** — it can DM *you* each turn's thinking, tools, and decision.
 
 Start it with `/telegram-manager`; it asks for a sub-mode:
 
 | Sub-mode | Behavior |
 | --- | --- |
-| 👁️ **Observer** | Co-pilot. Only steps in when you stay silent past the owner-reply window — you always get first crack. |
-| 🎛️ **Takeover** | The bot fully runs the business chats and replies on its own. |
+| 👁️ **Observer** | Co-pilot. Steps in only when you stay silent past the owner-reply window — you always get first crack. |
+| 🎛️ **Takeover** | The bot runs the chats and replies on its own. |
 
-> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf. All you do is flip one BotFather toggle and connect the bot — see [Getting started](#getting-started).
+Mixed uses the same two sub-modes for its Telegram side.
 
-### ⏹️ Switching modes from the chat (`/switch`)
+### ⏹️ Switching from the chat (`/switch`)
 
-Send **`/switch`** in your private chat with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Personal / Stop** from an inline keyboard — no terminal needed. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches immediately. A **pinned message** at the top of that chat always shows the currently active mode, updated in place on every switch. (Mixed is launched from the terminal, not this panel.)
+Send **`/switch`** in your DM with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Personal / Stop** from an inline keyboard — no terminal needed. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches at once. A **pinned message** at the top of that chat always shows the active mode. (Mixed is launched from the terminal, not this panel.)
 
 ---
 
@@ -62,21 +56,23 @@ Send **`/switch`** in your private chat with the bot (or tap it in the command m
 
 ### 1. Create the bot (BotFather)
 
-In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts to name your bot. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
+In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
 
-### 2. Enable Business Mode — required for manager and mixed modes
+### 2. Enable Business Mode — for manager and mixed modes
 
-The **business manager** (and the Telegram side of **mixed**) receives messages through a Telegram **Business connection**, and a bot can only be connected to a business account if **Business Mode** is turned on for it. This is a one-time BotFather toggle:
+Their Telegram side receives messages through a Telegram **Business connection**, which a bot can only accept when **Business Mode** is on for it. One-time BotFather toggle:
 
 > `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Business Mode** → **Turn on**
 
-There is no special "business bot" type and nothing to pay for on the *bot's* side — just this toggle. (Personal mode does not need it.)
+There is no special "business bot" type and nothing to pay for on the bot's side — just this toggle. (Personal mode doesn't need it.)
+
+> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
 
 ### 3. Find your Telegram user id
 
-`allowedUserId` is your **numeric** user id (not your @username) — the only account the bot obeys. Get it by messaging a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot); it replies with your `Id`.
+`allowedUserId` is your **numeric** user id (not your @username) — the only account the bot obeys. Get it from a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot).
 
-### 4. Install the extension
+### 4. Install
 
 ```bash
 pi install git:github.com/m62624/pi-telegram-manager
@@ -84,7 +80,7 @@ pi install git:github.com/m62624/pi-telegram-manager
 
 ### 5. Configure
 
-Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically `~/.pi/agent/extensions/pi-telegram-manager/settings.json`):
+Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically `~/.pi/agent/extensions/pi-telegram-manager/settings.json`):
 
 ```json
 {
@@ -94,15 +90,13 @@ Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/setti
 }
 ```
 
-`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment.
+`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment. Every other key is optional — see **[SETTINGS.md](https://github.com/m62624/pi-telegram-manager/blob/main/SETTINGS.md)**.
 
 ### 6. (Manager / mixed only) Connect the bot to your account
 
 Open Telegram **Settings → Telegram Business → Chatbots**, enter your bot's username, and choose which chats it may access.
 
-> ✅ **No Telegram Premium or paid subscription is required.** Telegram opened **connected business bots to all users** in [Bot API 10.0](https://core.telegram.org/bots/api-changelog) (**8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."*) — a bot can reply on your behalf from an ordinary, free account. There is nothing to buy: on the bot's side you only need Business Mode enabled (step 2), and on your side just connect it here. The people who message you need nothing either.
-
-Then open Pi and run one of the commands below. The extension loads `./src/index.ts` directly — no build step is needed to run it, only a Pi session restart after changes.
+Then open Pi and run a command below. The extension loads `./src/index.ts` directly — no build step, just a Pi session restart after changes.
 
 ---
 
@@ -114,7 +108,7 @@ Then open Pi and run one of the commands below. The extension loads `./src/index
 | --- | --- |
 | `/telegram-personal` | Start **Personal** mode (bind this session to your DM) |
 | `/telegram-manager` | Start the **business manager** (asks for observer / takeover) |
-| `/telegram-mixed` | Start **mixed** mode — coding + Telegram (asks for observer / takeover) |
+| `/telegram-mixed` | Start **mixed** mode — terminal + Telegram (asks for observer / takeover) |
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-switch` | Open the mode-switcher panel in your bot DM |
 | `/telegram-status` | Show the active mode |
@@ -125,96 +119,9 @@ Then open Pi and run one of the commands below. The extension loads `./src/index
 
 ## Settings
 
-All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json`. Every key is optional and layered over the defaults below. Unknown keys are ignored with a warning; a present-but-wrong-typed value fails loudly with the offending path.
+Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json`. Every key is optional and layered over the defaults; unknown keys warn, wrong-typed values fail loudly.
 
-**Override semantics.** For plain values (numbers, booleans, strings) a setting **replaces** the default. Two list settings are special: instruction-file lists are **appended** to the built-in instructions (they add to them, never replace them), and `manager.mentionWords` / `manager.allowedTools` **replace** the default list / **add** to the built-in tools as noted per row.
-
-### Top level
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `botToken` | — | replaces | Telegram bot token, or `"env:VAR"` to read it from the environment. Required. |
-| `allowedUserId` | — | replaces | Your Telegram numeric user id — the **only** user the bot obeys and the DM it uses for Personal mode, `/switch`, and the debug feed. Required for mode 1 and for `/switch`. |
-| `timezone` | system zone | replaces | IANA timezone (e.g. `"Asia/Almaty"`) for the `[Now: …]` line shown to the model. |
-| `instructionFiles` | `[]` | **appended** | Markdown files added to the system instructions in **all** modes. |
-
-### `assistant` (Personal mode)
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `assistant.rendering` | `"rich"` | replaces | `"rich"` (native Bot API rich Markdown) or `"html"`. |
-| `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates. |
-| `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block. |
-| `connect.instructionFiles` | `[]` | **appended** | Extra instruction files for Personal mode only. |
-
-### `mixed` (mixed mode)
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `mixed.returnToTelegramMs` | `480000` (8 min) | replaces | After your coding inference finishes (or an abort settles), how long the brain stays idle before it returns to Telegram moderation. The countdown starts when the turn **ends**, not while it runs. |
-
-### `connectionCheck` (connection watchdog, all modes)
-
-A silent timer probes the bot connection while a mode is active; after too many consecutive failures the mode auto-disconnects. Probes never post to chat or the debug feed — only the final auto-disconnect is surfaced.
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `connectionCheck.enabled` | `true` | replaces | Run the watchdog while a mode is active. |
-| `connectionCheck.intervalMs` | `600000` (10 min) | replaces | Probe interval. `0` also disables it. |
-| `connectionCheck.maxRetries` | `3` | replaces | Consecutive failed probes tolerated before auto-disconnect. |
-
-### `manager` (business manager, and the Telegram side of mixed)
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `manager.ownerName` | — | replaces | Your display name, so the bot can introduce itself as "{name}'s assistant" on first contact. |
-| `manager.ownerReplyWindowMs` | `300000` (5 min) | replaces | How long a first message from someone is held so **you** can answer before the bot may. |
-| `manager.continueWindowMs` | `90000` (1:30) | replaces | After the bot replies, how long the chat stays "live" (a new message keeps it active instead of re-queuing). Also governs when things are quiet enough to resume memory consolidation. |
-| `manager.liveFreshnessMs` | `120000` (2 min) | replaces | A message older than this (by its true send time) is recorded for context but does **not** wake a live reply cycle — so a redelivered old backlog never "wakes" the bot. |
-| `manager.catchUpWindowMs` | `36000000` (10 h) | replaces | On activation, the bot may answer for you in a waiting chat only if its last message is newer than this. |
-| `manager.reopenAfterMs` | `86400000` (24 h) | replaces | A chat resuming after this much silence is re-greeted. `0` disables re-greeting. |
-| `manager.rememberMessages` | `20` | replaces | Last-N messages per chat the model reads each turn. Also bounds the transcript kept on disk (old messages are pruned to ~2× this). |
-| `manager.factsLimit` | `20` | replaces | Last-N durable facts kept and injected per contact. |
-| `manager.factConsolidationQuietMs` | `1800000` (30 min) | replaces | Quiet period after a chat's last activity before an idle memory-consolidation pass may run on it. |
-| `manager.verifyLimit` | `8` | replaces | Max candidate facts individually verified in one consolidation pass. |
-| `manager.reviseThreshold` | `2` | replaces | How many times a drafted reply may be reconsidered when new messages keep arriving mid-turn before it is sent as-is. `0` sends immediately. |
-| `manager.strictReplyGuard` | `true` | replaces | Drop a reply the model itself tagged as chatter/acknowledgement (or "no reply needed") unless it was directly addressed. Curbs a weak model over-replying to banter. |
-| `manager.mentionWords` | `["llm", "manager"]` | **replaces list** | Wake-words (case-insensitive). A message containing one skips the owner-reply window; the model still decides whether it is really addressed. `[]` disables. |
-| `manager.labeler` | `"LLM agent 🤖:"` | replaces | Prefix rendered before each outgoing business reply (`""` = none). |
-| `manager.debugFeed` | `false` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. Chatty in Observer — opt-in. |
-| `manager.media.images` | `true` | replaces | Let the model see interlocutor images (vision). |
-| `manager.media.documents` | `false` | replaces | Accept non-image documents (otherwise refused). |
-| `manager.allowedTools` | `[]` | **adds to base** | Regex names of extra tools the model may call, on top of the built-in messaging tools. Empty = telegram-sandbox (messaging tools only, no computer access). |
-| `manager.instructionFiles` | `[]` | **appended** | Extra instruction files for the manager. |
-| `manager.firstMessageTemplate` | — | replaces | Override file for the first-contact greeting template. |
-| `manager.reopenTemplate` | — | replaces | Override file for the re-opening greeting template. |
-| `manager.observer.interlocutorInstructionFile` | — | replaces | Observer: extra instructions for handling the interlocutor. |
-| `manager.observer.ownerInstructionFile` | — | replaces | Observer: extra instructions about the owner. |
-| `manager.takeover.instructionFile` | — | replaces | Takeover: extra instructions. |
-
-### `files`
-
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `files.maxBytes` | `52428800` (50 MiB) | replaces | Size cap for describing/downloading inbound attachments. |
-| `files.downloadDir` | Pi's working dir | replaces | Where files sent to the bot (Personal mode) are saved. Absolute or `~`-relative. |
-
----
-
-## Timing at a glance (defaults)
-
-Tuned for a **local model** answering over minutes, not milliseconds. Slower hardware → consider raising the windows.
-
-| Window | Default | Meaning |
-| --- | --- | --- |
-| Owner-reply | 5 min | you get first crack at a new message |
-| Continuation | 1 min 30 s | how long a chat stays "live" after a reply |
-| Live freshness | 2 min | older messages are backlog, not a live trigger |
-| Consolidation quiet | 30 min | idle wait before updating memory about a chat |
-| Mixed return | 8 min | idle after a coding turn before the brain returns to Telegram |
-| Re-greet after | 24 h | silence before a resuming chat is welcomed back |
-| Catch-up window | 10 h | oldest waiting message still worth answering on start |
-| Connection check | 10 min | silent liveness probe interval |
+**See [SETTINGS.md](https://github.com/m62624/pi-telegram-manager/blob/main/SETTINGS.md)** for every key — defaults, append-vs-replace semantics, the wake-word rules (matching, the auto-added labeler, and mixed-mode priority), the labeler banner, and the timing table. The timings default for a **local model** answering over minutes, not milliseconds.
 
 ---
 
