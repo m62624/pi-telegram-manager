@@ -42,13 +42,33 @@ Send **`/switch`** in your private chat with the bot (or tap it in the command m
 
 ---
 
-## Install
+## Getting started
+
+### 1. Create the bot (BotFather)
+
+In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts to name your bot. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
+
+### 2. Enable Business Mode — required for the manager mode
+
+The **business manager** mode receives messages through a Telegram **Business connection**, and a bot can only be connected to a business account if **Business Mode** is turned on for it. This is a one-time BotFather toggle:
+
+> `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Business Mode** → **Turn on**
+
+There is no special "business bot" type and nothing to pay for on the *bot's* side — just this toggle. (Personal mode does not need it.)
+
+### 3. Find your Telegram user id
+
+`allowedUserId` is your **numeric** user id (not your @username) — the only account the bot obeys. Get it by messaging a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot); it replies with your `Id`.
+
+### 4. Install the extension
 
 ```bash
 pi install git:github.com/m62624/pi-telegram-manager
 ```
 
-Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically `~/.pi/agent/extensions/pi-telegram-manager/settings.json`) with at least a bot token and your Telegram user id:
+### 5. Configure
+
+Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically `~/.pi/agent/extensions/pi-telegram-manager/settings.json`):
 
 ```json
 {
@@ -58,9 +78,15 @@ Create the settings file at `<pi-agent-dir>/extensions/pi-telegram-manager/setti
 }
 ```
 
-`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment. For **mode 2**, connect your bot to your account under Telegram **Settings → Business → Chatbots**. Then open Pi and run one of the commands below.
+`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment.
 
-The extension loads `./src/index.ts` directly — no build step is needed to run it, only a Pi session restart after changes.
+### 6. (Manager mode only) Connect the bot to your account
+
+Open Telegram **Settings → Telegram Business → Chatbots**, enter your bot's username, and choose which chats it may access.
+
+> ⚠️ **Telegram Premium is required here** — the Telegram **Business** section (and connecting a chatbot to your account) is a Premium feature of Telegram itself, not of this extension. This applies only to **you**, the account that runs the bot: the people who message you need nothing special — they write from ordinary accounts. **Personal mode needs neither Premium nor Business** — it is just a normal bot DM with yourself.
+
+Then open Pi and run one of the commands below. The extension loads `./src/index.ts` directly — no build step is needed to run it, only a Pi session restart after changes.
 
 ---
 
