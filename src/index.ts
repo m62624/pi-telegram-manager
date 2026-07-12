@@ -562,8 +562,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("turn_end", (_event, ctx) => {
 		// Only cap a manager turn. In mixed mode's coding polarity the owner is
 		// running the turn — never abort it on the manager's stale decision flag.
-		if (!managerHoldsSession(mixedActive, polarity)) return;
-		if (manager?.turnDecided()) ctx.abort();
+		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
+		// Consolidation now walks its whole interrogation in ONE agent run: step the
+		// state machine here (no per-probe abort) and abort only when it asks — live
+		// conversation work is waiting, or the interrogation is already done and the
+		// model kept calling tools (backstop). Otherwise let the loop re-sample; the
+		// context rebuild shows the next probe (or MANAGER_TURN_DONE when finished).
+		if (manager.isConsolidating()) {
+			if (manager.stepConsolidation() === "abort") ctx.abort();
+			return;
+		}
+		// A normal reply/silent turn: cap re-sampling once the decision is recorded.
+		if (manager.turnDecided()) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;

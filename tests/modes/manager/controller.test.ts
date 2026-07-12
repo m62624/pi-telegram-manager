@@ -910,6 +910,123 @@ describe("ManagerController", () => {
 		expect(facts[0]).toMatchObject({ subject: "Alice" });
 	});
 
+	it("walks the whole interrogation in ONE run via turn_end stepping (no per-probe re-trigger)", async () => {
+		const { controller, deps, triggerAgent, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i just ordered a laptop for work"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd();
+		clock.advance(1_800_001);
+		await controller.onTick(); // starts the interrogation (one triggerAgent)
+		const triggersAtStart = triggerAgent.mock.calls.length;
+
+		// identify → step (no abort, no re-trigger): next context shows step 2.
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 1 of 3");
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		expect(controller.stepConsolidation()).toBe("continue");
+
+		// candidates → step.
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 2 of 3");
+		controller.probeSink().record({
+			tool: "candidates",
+			items: [
+				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
+			],
+		});
+		expect(controller.stepConsolidation()).toBe("continue");
+
+		// verify → step reaches done: the context tells the model to stop.
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 3 of 3");
+		controller.probeSink().record({
+			tool: "verify",
+			keep: true,
+			evidenceQuote: "ordered a laptop",
+		});
+		expect(controller.stepConsolidation()).toBe("continue");
+		expect(controller.turnDecided()).toBe(true);
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("already decided");
+
+		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
+		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
+
+		// The single run ends → agent_end persists the verified fact.
+		await controller.onAgentEnd();
+		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
+			"ordered a laptop",
+		]);
+	});
+
+	it("pre-empts an in-flight consolidation for a live reply, then resumes from the next step", async () => {
+		const { controller, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i just ordered a laptop for work"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd();
+		clock.advance(1_800_001);
+		await controller.onTick(); // starts the interrogation (identify)
+		expect(controller.isConsolidating()).toBe(true);
+
+		// identify recorded; then a FRESH live message lands mid-run (grows unserved).
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		const fresh = {
+			...interlocutorMsg("do you know a good laptop?", 5, 2),
+			date: Math.floor(clock.now() / 1000),
+		} as Message;
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: fresh,
+		});
+		// The step preserves the identify progress, then yields for the live work.
+		expect(controller.stepConsolidation()).toBe("abort");
+		await controller.onAgentEnd(); // finishConsolidationRun → pause
+		expect(controller.isConsolidating()).toBe(false);
+
+		// Serve the live message so the chat frees up again.
+		clock.advance(300_001); // owner-reply window expires → chat 42 becomes ready
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "silent" });
+		await controller.onAgentEnd();
+
+		// Idle again past the continuation window → the paused pass RESUMES from step 2
+		// (identify was already done before the pause), not restarted at step 1.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(controller.isConsolidating()).toBe(true);
+		expect(
+			(await controller.buildContextForActive())?.at(-1)?.content,
+		).toContain("Step 2 of 3");
+	});
+
 	it("aborts the interrogation (saves nothing) when identify flags a self-chat", async () => {
 		const { controller, deps, clock } = await setup();
 		await controller.onBusinessMessage({

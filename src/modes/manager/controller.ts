@@ -410,6 +410,13 @@ export class ManagerController {
 		chatId: string;
 		userId?: string;
 		loop: InterrogationState;
+		/**
+		 * The interlocutor's own transcript lines, captured at consolidation start
+		 * for the per-fact evidence check. Cached so the interrogation can step
+		 * SYNCHRONOUSLY from `turn_end` (no async chatStore read mid-run); the
+		 * transcript is static while an idle consolidation runs.
+		 */
+		interlocutorLines: string[];
 	} | null = null;
 	/**
 	 * A consolidation paused mid-interrogation because live conversation work
@@ -423,6 +430,7 @@ export class ManagerController {
 		chatId: string;
 		userId?: string;
 		loop: InterrogationState;
+		interlocutorLines: string[];
 	} | null = null;
 
 	constructor(private readonly deps: ManagerControllerDeps) {
@@ -461,9 +469,59 @@ export class ManagerController {
 	 */
 	turnDecided(): boolean {
 		if (this.consolidating) {
-			return this.probes.current() !== null;
+			// A consolidation "turn" spans the WHOLE interrogation now (one agent run
+			// walking identify -> candidates -> verify×N). It is decided only when the
+			// interrogation reaches `done`, at which point the context shows
+			// MANAGER_TURN_DONE so the model ends the run with one word.
+			return isDone(this.consolidating.loop);
 		}
 		return this.decision.current().kind !== "none";
+	}
+
+	/** Whether an idle memory-consolidation pass is currently running. */
+	isConsolidating(): boolean {
+		return this.consolidating !== null;
+	}
+
+	/**
+	 * Step the consolidation interrogation at a `turn_end`, WITHIN one agent run.
+	 * Reads the probe the model just called, advances the state machine, and tells
+	 * the caller whether to abort the run:
+	 *
+	 *  - `"abort"` — live conversation work is now waiting (pre-empt at once; the run
+	 *    is paused and resumed later), or the model kept calling tools after the
+	 *    interrogation was already done (backstop against a spin);
+	 *  - `"continue"` — let the agent loop re-sample; `pi.on("context")` rebuilds the
+	 *    context showing the next probe's directive (or MANAGER_TURN_DONE when done),
+	 *    so the whole interrogation flows in a single run with no per-probe abort.
+	 */
+	stepConsolidation(): "continue" | "abort" {
+		const current = this.consolidating;
+		if (!current) return "continue";
+		const probe = this.probes.current();
+		if (isDone(current.loop)) {
+			// Already finished: MANAGER_TURN_DONE should have ended the run. If the
+			// model called another tool anyway, abort as a backstop against a spin.
+			return probe ? "abort" : "continue";
+		}
+		// Preserve this turn's progress (a recorded probe) BEFORE possibly yielding, so
+		// a live pre-empt never discards a completed step — it resumes from the next.
+		if (probe) {
+			this.consolidating = {
+				...current,
+				loop: advanceInterrogation(
+					current.loop,
+					probe,
+					current.interlocutorLines,
+					this.deps.verifyLimit,
+				),
+			};
+			this.probes.reset();
+		}
+		// A reply is now waiting: yield so a live answer is never delayed by an
+		// in-flight consolidation. onAgentEnd pauses the pass (progress kept).
+		if (this.unserved.size > 0) return "abort";
+		return "continue";
 	}
 
 	/** Persist a connected/updated business account. */
@@ -667,9 +725,9 @@ export class ManagerController {
 	 * probe, neither of which is a chat-facing decision).
 	 */
 	async onAgentEnd(finalText?: string): Promise<ManagerTurnLog | null> {
-		// A consolidation probe finished — advance the interrogation (no reply sent).
+		// A consolidation run ended — finalize, pause, or resume it (no reply sent).
 		if (this.consolidating) {
-			await this.advanceConsolidation();
+			await this.finishConsolidationRun();
 			return null;
 		}
 		const active = this.scheduler.activeChat();
@@ -1116,7 +1174,14 @@ export class ManagerController {
 		// one — continue from the exact interrogation step it reached, so nothing
 		// already consolidated is redone.
 		if (this.pausedConsolidation) {
-			this.consolidating = this.pausedConsolidation;
+			// Resume from the exact step reached, but refresh the evidence lines in
+			// case the transcript grew while paused.
+			this.consolidating = {
+				...this.pausedConsolidation,
+				interlocutorLines: await this.loadInterlocutorLines(
+					this.pausedConsolidation.chatId,
+				),
+			};
 			this.pausedConsolidation = null;
 			this.facts.reset();
 			this.probes.reset();
@@ -1142,70 +1207,94 @@ export class ManagerController {
 			chatId: entry.chatId,
 			userId: entry.userId,
 			loop: initInterrogation(contactName),
+			interlocutorLines: await this.loadInterlocutorLines(entry.chatId),
 		};
 		this.facts.reset();
 		this.probes.reset();
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
 	}
 
-	/**
-	 * Advance the interrogation by one probe (one memory "fragment"). Reads the tool
-	 * result recorded this turn and steps the state machine, then:
-	 *
-	 *  - if the interrogation is done, persists the confirmed facts (through the
-	 *    who-is-who firewall) and drops the chat from the consolidation queue;
-	 *  - else if live conversation work appeared while this fragment ran, PAUSES —
-	 *    the advanced progress is saved and the turn is handed back to the chat, so a
-	 *    reply is never delayed; consolidation resumes from here once idle again;
-	 *  - else continues straight to the next fragment.
-	 *
-	 * Progress is never discarded: a completed fragment is kept and the next run
-	 * carries on from it.
-	 */
-	private async advanceConsolidation(): Promise<void> {
-		const current = this.consolidating;
-		if (!current) return;
+	/** The interlocutor's own transcript lines for a chat (for the evidence check). */
+	private async loadInterlocutorLines(chatId: string): Promise<string[]> {
 		const records = await this.deps.chatStore.getRecent(
-			current.chatId,
+			chatId,
 			this.deps.rememberMessages,
 		);
-		const interlocutorLines = records
+		return records
 			.filter((record) => record.author === "interlocutor")
 			.map((record) => record.text);
+	}
+
+	/**
+	 * Handle the end of a consolidation agent run. The interrogation now advances
+	 * step-by-step WITHIN one run (see {@link stepConsolidation} in `turn_end`), so
+	 * this run-boundary handler only decides what to do now that the run stopped:
+	 *
+	 *  - the interrogation is `done` → persist the confirmed facts (through the
+	 *    who-is-who firewall) and drop the chat from the consolidation queue;
+	 *  - live conversation work is waiting (the run was pre-empted for a reply) →
+	 *    PAUSE, keeping the exact step reached, and hand the turn back to the chat;
+	 *    consolidation resumes from here once idle again;
+	 *  - the run ended early without finishing (the model produced no probe tool this
+	 *    step) → safely progress the state machine one step (a missing result is
+	 *    handled by {@link advance}, so the pass always terminates) and, unless that
+	 *    reached `done`, continue the interrogation in a fresh run.
+	 *
+	 * Progress is never discarded: a completed step is kept and carried forward.
+	 */
+	private async finishConsolidationRun(): Promise<void> {
+		const current = this.consolidating;
+		if (!current) return;
+		if (isDone(current.loop)) {
+			await this.finalizeConsolidation(current);
+			return;
+		}
+		// Pre-empted by live work: pause here (progress kept) and serve the reply.
+		if (this.unserved.size > 0) {
+			this.pausedConsolidation = current;
+			this.consolidating = null;
+			await this.triggerTurn();
+			return;
+		}
+		// The run ended before finishing and nothing is waiting — the model produced
+		// no probe for the current step. Progress the machine safely (a null result
+		// ends identify/candidates and drops a single verify), so the pass can never
+		// stall, then continue in a new run unless that already completed it.
 		const next = advanceInterrogation(
 			current.loop,
 			this.probes.current(),
-			interlocutorLines,
+			current.interlocutorLines,
 			this.deps.verifyLimit,
 		);
 		this.probes.reset();
-		if (isDone(next)) {
-			// Interrogation finished: persist the confirmed facts through the firewall.
-			this.consolidating = null;
-			this.facts.reset();
-			for (const fact of finalFacts(next)) {
-				this.facts.record([
-					{ text: fact.text, subject: "interlocutor", kind: fact.kind },
-				]);
-			}
-			const contactName = this.chats.get(current.chatId)?.contactName;
-			await this.persistRecordedFacts(current.userId, contactName);
-			await this.deps.consolidationQueue.remove(current.chatId);
-			// A reply may have queued during the final fragment — serve it now.
-			await this.triggerTurn();
-			return;
-		}
-		// One fragment done. If a chat is now waiting on a reply, pause here (keeping
-		// this fragment's progress) and return to the conversation; the scheduler's
-		// continuation window (continueWindowMs, ~1:30) governs when things go quiet
-		// enough for maybeStartConsolidation to resume from this saved step.
-		if (this.unserved.size > 0) {
-			this.pausedConsolidation = { ...current, loop: next };
-			this.consolidating = null;
-			await this.triggerTurn();
-			return;
-		}
 		this.consolidating = { ...current, loop: next };
+		if (isDone(next)) {
+			await this.finalizeConsolidation(this.consolidating);
+			return;
+		}
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
+	}
+
+	/**
+	 * Persist a finished interrogation's confirmed facts (through the who-is-who
+	 * firewall), clear consolidation state, drop the chat from the queue, and serve
+	 * any reply that queued while it ran.
+	 */
+	private async finalizeConsolidation(current: {
+		chatId: string;
+		userId?: string;
+		loop: InterrogationState;
+	}): Promise<void> {
+		this.consolidating = null;
+		this.facts.reset();
+		for (const fact of finalFacts(current.loop)) {
+			this.facts.record([
+				{ text: fact.text, subject: "interlocutor", kind: fact.kind },
+			]);
+		}
+		const contactName = this.chats.get(current.chatId)?.contactName;
+		await this.persistRecordedFacts(current.userId, contactName);
+		await this.deps.consolidationQueue.remove(current.chatId);
+		await this.triggerTurn();
 	}
 }
