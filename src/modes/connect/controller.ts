@@ -25,12 +25,10 @@ import {
 import type { TelegramEvent } from "../../telegram/updates";
 import { bullet, card } from "./format";
 import {
-	formatPiCommandList,
 	type InboundImage,
 	lastAssistantReply,
 	messageText,
 	messageToTurnInput,
-	type PiCommandInfo,
 	type PromptContent,
 	parseSlashCommand,
 } from "./messages";
@@ -68,8 +66,6 @@ export interface ConnectControllerDeps {
 	onClear?: () => Promise<void>;
 	/** Handle a `/esc` (or `/cancel`) request to interrupt the running turn. */
 	onAbort?: () => Promise<void>;
-	/** Enumerate the registered Pi slash commands for the `/commands` discovery list. */
-	listCommands?: () => PiCommandInfo[];
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	outbound: OutboundSender;
@@ -81,13 +77,11 @@ export interface ConnectControllerDeps {
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const HELP_COMMANDS = new Set(["help"]);
-const LIST_COMMANDS = new Set(["commands", "menu"]);
 
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
 const HELP_TEXT = card("🧭", "Pi terminal bridge", [
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
-	bullet("/commands", "list available Pi commands"),
 	bullet("/help", "show this help"),
 ]);
 
@@ -172,10 +166,6 @@ export class ConnectController {
 		}
 		if (HELP_COMMANDS.has(command.name)) {
 			await this.sendToChat(HELP_TEXT);
-			return true;
-		}
-		if (LIST_COMMANDS.has(command.name) && this.deps.listCommands) {
-			await this.sendToChat(formatPiCommandList(this.deps.listCommands()));
 			return true;
 		}
 		return false;

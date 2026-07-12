@@ -440,7 +440,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
 		managerTurnTools = [];
-		connect?.onAgentStart(() => ctx.abort());
+		// Arm the interrupt for the running turn in BOTH modes, so a priority owner
+		// action can abort it immediately: /esc in mode 1, or /switch in either mode
+		// (which must not wait for a long consolidation/reply to finish).
+		abort.set(() => ctx.abort());
 		startTyping();
 	});
 	// End the manager's agent run as soon as it has made the turn's terminal
@@ -455,6 +458,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;
+		// Disarm the interrupt for the finished turn (both modes); the next turn
+		// re-arms it in agent_start.
+		abort.clear();
 		stopTyping();
 		connect?.endDraft();
 		await connect?.onAgentEnd(event.messages);
@@ -735,14 +741,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
 				);
 			},
-			// Discovery only: list every registered Pi command (incl. other
-			// extensions'). The SDK exposes no way to execute another
-			// extension's command remotely, so these are shown as terminal-run.
-			listCommands: () =>
-				pi.getCommands().map((command) => ({
-					name: command.name,
-					description: command.description,
-				})),
 			onContact: async (user) => {
 				await contactStore.upsertProfile(
 					extractProfileFromUser(user),
@@ -1175,6 +1173,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!ctx) return;
 		if (activeTarget() === target) return;
 		try {
+			// The owner's switch is a priority action: interrupt any in-flight turn
+			// (e.g. a long memory consolidation) so the switch takes effect at once
+			// rather than waiting for the current inference to finish. The interrupted
+			// work is safe to drop — an unfinished consolidation stays queued on disk
+			// and an unanswered chat is recovered by catch-up when that mode resumes.
+			await abort.abort();
 			// Reflect a full stop on the pinned indicator while a client is still alive
 			// (after teardown there is none to edit it); mode→mode updates the pin from
 			// inside the new mode's start.

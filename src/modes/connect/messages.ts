@@ -15,7 +15,6 @@ import type { Message, User } from "@grammyjs/types";
 import type { TurnInput } from "../../core/turns";
 import { describeAttachments } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
-import { bullet, card, note } from "./format";
 
 /** A text part of a prompt turn (structurally the SDK's `TextContent`). */
 export interface PromptTextPart {
@@ -79,32 +78,6 @@ export function parseSlashCommand(
 	const match = /^\/([a-z0-9_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text.trim());
 	if (!match) return null;
 	return { name: match[1].toLowerCase(), arg: (match[2] ?? "").trim() };
-}
-
-/** A Pi slash command surfaced for discovery (from `pi.getCommands()`). */
-export interface PiCommandInfo {
-	name: string;
-	description?: string;
-}
-
-/**
- * Render the registered Pi slash commands (from every loaded extension) as a
- * discovery list for Telegram. These run in the *terminal* — the SDK exposes no
- * way to execute another extension's command remotely — so the list is a
- * read-only map of what's available, sorted for a stable order.
- */
-export function formatPiCommandList(
-	commands: readonly PiCommandInfo[],
-): string {
-	// Keep the empty case on the same footing as the populated one — a titled card
-	// with an italic note — rather than a bare single line.
-	if (commands.length === 0) {
-		return card("🧩", "Pi commands", [note("No commands are registered yet.")]);
-	}
-	const lines = [...commands]
-		.sort((a, b) => a.name.localeCompare(b.name))
-		.map((command) => bullet(`/${command.name}`, command.description));
-	return card("🧩", "Pi commands (run in the terminal)", lines);
 }
 
 /** Map a Telegram message to the prompt-turn input (sender, reply, attachments). */
