@@ -44,6 +44,7 @@
 	},
 	"dependencies": {
 		"@grammyjs/types": "^3.28.0",
-		"grammy": "^1.44.0"
+		"grammy": "^1.44.0",
+		"telegram-markdown-formatter": "^0.1.2"
 	}
 }

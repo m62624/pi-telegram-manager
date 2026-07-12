@@ -1,18 +1,24 @@
 /**
  * Format a manager reply for a BUSINESS chat. Business connections reject the
- * newer rich-message API (`RICH_MESSAGE_UNSUPPORTED`), so mode-2 replies go out
- * as classic Telegram messages with `parse_mode: "HTML"` instead. The labeler is
- * rendered as a blockquote so it stands clearly apart from the reply body, and
- * the hidden bot marker is appended to every chunk so the owner-account echo of
- * the message is recognised as bot-sent (not typed by the owner). Long replies
- * are split on line boundaries; only the first chunk carries the labeler.
+ * newer rich-message API (`RICH_MESSAGE_UNSUPPORTED`) and cannot use it with a
+ * real person, so mode-2 replies go out as classic Telegram messages with
+ * `parse_mode: "HTML"` instead.
+ *
+ * The model writes GitHub-flavored Markdown; `telegram-markdown-formatter`
+ * converts it to the HTML subset Telegram accepts (bold/italic/code/pre/quote/
+ * links), leaving code spans verbatim — so a reply reads as formatted text, not
+ * raw `**` punctuation. The labeler is rendered as a blockquote so it stands
+ * apart from a message the owner typed, and the hidden bot marker is appended to
+ * every chunk so the owner-account echo is recognised as bot-sent. Long replies
+ * are split (HTML-aware) by the same library; only the first chunk carries the
+ * labeler.
  */
-import { splitRichMarkdown } from "../../telegram/markdown";
+import {
+	splitHtmlForTelegram,
+	telegramFormat,
+} from "telegram-markdown-formatter";
 import { escapeHtml } from "../../telegram/rich-builder";
 import { BOT_MARKER } from "./identity";
-
-/** Classic messages cap at 4096; leave room for the labeler and HTML escaping. */
-const CLASSIC_MAX_CHARS = 3500;
 
 /**
  * Build the HTML chunks for a manager reply: `[<blockquote>labeler[\nrule]</blockquote>]
@@ -35,10 +41,11 @@ export function formatManagerReplyHtmlChunks(
 				ruleLine ? `\n${escapeHtml(ruleLine)}` : ""
 			}</blockquote>`
 		: "";
-	const pieces = splitRichMarkdown(text.trim(), CLASSIC_MAX_CHARS);
-	const chunks = pieces.length > 0 ? pieces : [text.trim()];
+	const html = telegramFormat(text.trim());
+	const pieces = splitHtmlForTelegram(html);
+	const chunks = pieces.length > 0 ? pieces : [html];
 	return chunks.map((piece, index) => {
 		const head = index === 0 ? banner : "";
-		return `${head}${escapeHtml(piece)}${BOT_MARKER}`;
+		return `${head}${piece}${BOT_MARKER}`;
 	});
 }

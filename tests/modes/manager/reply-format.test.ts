@@ -25,6 +25,18 @@ describe("formatManagerReplyHtmlChunks", () => {
 		expect(chunk).toBe(`hi${BOT_MARKER}`);
 	});
 
+	it("renders the model's Markdown body as Telegram HTML, not raw", () => {
+		const [chunk] = formatManagerReplyHtmlChunks(
+			"Here is **bold**, a `code` span, and:\n- one\n- two",
+			undefined,
+		);
+		expect(chunk).toContain("<b>bold</b>");
+		expect(chunk).toContain("<code>code</code>");
+		expect(chunk).toContain("• one");
+		// The raw Markdown punctuation must not reach the interlocutor.
+		expect(chunk).not.toContain("**bold**");
+	});
+
 	it("adds the rule line as a second blockquote line when given", () => {
 		const [chunk] = formatManagerReplyHtmlChunks("hi", "LLM:", "────────");
 		expect(chunk).toContain("<blockquote>LLM:\n────────</blockquote>");

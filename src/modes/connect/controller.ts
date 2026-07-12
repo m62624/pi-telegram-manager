@@ -23,7 +23,7 @@ import {
 	toolActivityMessage,
 } from "../../telegram/tool-activity";
 import type { TelegramEvent } from "../../telegram/updates";
-import { bullet, card } from "./format";
+import { bullet, card, link, note } from "./format";
 import {
 	type InboundImage,
 	lastAssistantReply,
@@ -78,11 +78,22 @@ const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const HELP_COMMANDS = new Set(["help"]);
 
+/** The extension's repository and its Tangled mirror, shown in the help footer. */
+export const REPO_URL = "https://github.com/m62624/pi-telegram-manager";
+export const MIRROR_URL =
+	"https://tangled.org/m62624.tngl.sh/pi-telegram-manager";
+
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
-const HELP_TEXT = card("🧭", "Pi terminal bridge", [
+const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
+	bullet("/switch", "change mode — observer / takeover / personal / stop"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
 	bullet("/help", "show this help"),
+	"",
+	note(
+		"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
+	),
+	`This bot runs ${link("pi-telegram-manager", REPO_URL)} · ${link("mirror", MIRROR_URL)}`,
 ]);
 
 export class ConnectController {

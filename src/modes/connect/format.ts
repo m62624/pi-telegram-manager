@@ -18,12 +18,18 @@ export function note(text: string): string {
 	return `_${text}_`;
 }
 
+/** An inline link, `[text](url)` — rendered as a tappable link by Telegram's rich Markdown. */
+export function link(text: string, url: string): string {
+	return `[${text}](${url})`;
+}
+
 /**
- * A titled card: `icon *Title*`, then a blank line and the body. With no body it
+ * A titled card: `icon **Title**`, then a blank line and the body. With no body it
  * is just the header line, so a bare acknowledgement still carries an icon and a
- * bold title.
+ * bold title. Titles use `**bold**` (Telegram's native rich Markdown flavor —
+ * `*single*` would render as italic).
  */
 export function card(icon: string, title: string, body: string[] = []): string {
-	const header = `${icon} *${title}*`;
+	const header = `${icon} **${title}**`;
 	return body.length > 0 ? [header, "", ...body].join("\n") : header;
 }

@@ -36,7 +36,11 @@ import {
 	loadManagerInstructions,
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "./instructions/builtin";
-import { ConnectController } from "./modes/connect/controller";
+import {
+	ConnectController,
+	MIRROR_URL,
+	REPO_URL,
+} from "./modes/connect/controller";
 import { card, note } from "./modes/connect/format";
 import {
 	extractText,
@@ -180,6 +184,18 @@ const MANAGER_BANNER_KEY = "telegram-manager-banner";
 // Every tool the manager may use in the telegram-sandbox: the reply/memory tools
 // plus the consolidation interrogation probes.
 const MANAGER_TOOLS = [...MANAGER_TOOL_NAMES, ...INTERROGATION_TOOL_NAMES];
+
+// Plain-text /help for the owner DM while the manager/mixed mode is active (the
+// control API sends plain text, so raw URLs auto-link instead of Markdown ones).
+const MANAGER_HELP_TEXT = [
+	"🧭 Pi Telegram bridge",
+	"",
+	"/switch — change mode (observer / takeover / personal / stop)",
+	"",
+	"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
+	`This bot runs pi-telegram-manager: ${REPO_URL}`,
+	`Mirror: ${MIRROR_URL}`,
+].join("\n");
 
 export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
@@ -1427,9 +1443,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (event.fromId !== ownerUserId || event.chatId !== ownerUserId) {
 				return false;
 			}
-			if (!isSwitchCommand(event.message.text ?? "")) return false;
-			await sendSwitchPanel(api);
-			return true;
+			const text = (event.message.text ?? "").trim();
+			if (isSwitchCommand(text)) {
+				await sendSwitchPanel(api);
+				return true;
+			}
+			// /help works in the owner DM in every mode. Personal mode renders its own
+			// rich help (ConnectController), so only answer here when it is inactive
+			// (manager / mixed) — a plain message whose raw URLs Telegram auto-links.
+			if (!connect && /^\/help(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({ chat_id: ownerUserId, text: MANAGER_HELP_TEXT })
+					.catch(() => {});
+				return true;
+			}
+			return false;
 		}
 
 		if (event.kind === "callback_query") {
