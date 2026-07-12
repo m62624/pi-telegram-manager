@@ -1,0 +1,52 @@
+# Dependabot version updates for this repo only.
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Goal: open automatic bump PRs for npm dependencies, but never for MAJOR
+# version jumps (those tend to be breaking — e.g. a TypeScript or @types/node
+# major — and we'd rather adopt them by hand). Minor + patch updates are
+# collapsed into a single grouped PR per ecosystem to avoid PR noise.
+version: 2
+updates:
+  # --- npm (package.json / package-lock.json at the repo root) --------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    # Skip major bumps for every npm dependency; minor/patch still flow through.
+    # For 0.x pins (e.g. @earendil-works/pi-coding-agent 0.80.x) a 0.80 -> 0.81
+    # change is a *minor* bump, so those would keep auto-updating here — except
+    # the Pi SDK is handled by the dedicated sdk-watch workflow (below), so it is
+    # excluded to avoid duplicate PRs. Only X.0.0 jumps are held back elsewhere.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # The Pi coding-agent SDK is owned by the dedicated `sdk-watch` workflow
+      # (.github/workflows/sdk-watch.yml) — a single self-rewriting draft PR that
+      # also runs typecheck + tests against the new SDK. Exclude it here so
+      # Dependabot never opens a duplicate, signal-less grouped bump for it.
+      - dependency-name: "@earendil-works/pi-coding-agent"
+      - dependency-name: "@earendil-works/pi-tui"
+    # One PR for all allowed (minor + patch) npm updates instead of one each.
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- GitHub Actions used by the workflows ---------------------------------
+  # No major ignore here on purpose: actions are pinned to a major tag
+  # (e.g. actions/checkout@v7), whose only meaningful update IS the major bump
+  # (v7 -> v8). Ignoring majors would make this ecosystem never update. These
+  # land grouped and are reviewed by hand before merge anyway.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns: ["*"]

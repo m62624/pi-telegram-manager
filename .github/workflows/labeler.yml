@@ -1,0 +1,78 @@
+name: Labeler
+
+on:
+  pull_request:
+    types: [opened, edited, synchronized]
+
+jobs:
+  labeler:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Label PR based on title
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const labels_to_add = [];
+
+            // Configuration for labels and their colors
+            const mapping = {
+              'feat':     { label: 'feat',        color: '0576b9' }, // Blue
+              'fix':      { label: 'fix',         color: 'd73a4a' }, // Red
+              'refactor': { label: 'refactor',    color: 'f2c744' }, // Yellow
+              'docs':     { label: 'docs',        color: '0075ca' }, // Light Blue
+              'chore':    { label: 'chore',       color: 'bbbbbb' }, // Gray
+              'build':    { label: 'build',       color: 'ededed' }, // Silver
+              'ci':       { label: 'ci',          color: '5319e7' }, // Purple
+              'perf':     { label: 'performance', color: 'e99695' }, // Pink
+              'test':     { label: 'test',        color: 'c5def5' }, // Light Cyan
+              'style':    { label: 'style',       color: '2c61f6' }  // Royal Blue
+            };
+
+            // 1. Detect type from prefix
+            for (const [prefix, cfg] of Object.entries(mapping)) {
+              if (title.startsWith(prefix + ':') || title.startsWith(prefix + '(')) {
+                labels_to_add.push(cfg);
+              }
+            }
+
+            // 2. Detect breaking changes (exclamation mark)
+            if (title.match(/^[a-z]+(!):/) || title.match(/^[a-z]+\(.*\)(!):/)) {
+              labels_to_add.push({ label: 'breaking', color: 'd93f0b' }); // Orange-Red
+            }
+
+            if (labels_to_add.length > 0) {
+              for (const item of labels_to_add) {
+                const labelName = item.label;
+                const labelColor = item.color;
+
+                try {
+                  // Check if label exists
+                  await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: labelName
+                  });
+                } catch (e) {
+                  // Create label if not found
+                  console.log(`Creating missing label: ${labelName}`);
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: labelName,
+                    color: labelColor
+                  });
+                }
+              }
+
+              // Add labels to the PR
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labels_to_add.map(l => l.label)
+              });
+            }

@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "pin/v*"
+
+env:
+  GITHUB_USER_NAME: github-actions[bot]
+  GITHUB_USER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      rc_branch: ${{ steps.rc_branch.outputs.branch }}
+      version: ${{ steps.release_info.outputs.version }}
+      tag: v${{ steps.release_info.outputs.version }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Release Info
+        id: release_info
+        run: |
+          PIN_TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${PIN_TAG#pin/v}
+          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "'$VERSION' is not a valid semver version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create RC Branch
+        id: rc_branch
+        run: |
+          RC_BRANCH="rc/v${{ steps.release_info.outputs.version }}"
+          git config --global user.name "$GITHUB_USER_NAME"
+          git config --global user.email "$GITHUB_USER_EMAIL"
+          git checkout -b "$RC_BRANCH"
+          git push origin "$RC_BRANCH" --force
+          echo "branch=$RC_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Set Package Version
+        run: |
+          VERSION=${{ steps.release_info.outputs.version }}
+          npm version "$VERSION" --no-git-tag-version
+
+          git add package.json package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "build: update version to v$VERSION"
+            git push origin "${{ steps.rc_branch.outputs.branch }}"
+          fi
+
+          git push origin --delete "${GITHUB_REF#refs/tags/}"
+
+  tests:
+    name: Run Tests
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.rc_branch }}
+
+  publish:
+    name: Publish NPM Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    needs: [prepare, tests]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout Code from Release Branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.rc_branch }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Use Latest NPM
+        run: npm install -g npm@latest
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Publish Package
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "Skipping $PACKAGE_NAME@$PACKAGE_VERSION because it is already published on npm."
+          else
+            npm publish --access public
+          fi
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    needs: [prepare, tests, publish]
+    defaults:
+      run:
+        shell: bash
+    env:
+      R_NAME: pi-telegram-manager v${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout Code from Release Branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.rc_branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release Tag
+        run: |
+          R_TAG=${{ needs.prepare.outputs.tag }}
+          git config --global user.name "$GITHUB_USER_NAME"
+          git config --global user.email "$GITHUB_USER_EMAIL"
+          if git rev-parse "$R_TAG" >/dev/null 2>&1; then
+            git tag -f -a "$R_TAG" -m "Release v${{ needs.prepare.outputs.version }}"
+            git push origin "$R_TAG" --force
+          else
+            git tag -a "$R_TAG" -m "Release v${{ needs.prepare.outputs.version }}"
+            git push origin "$R_TAG"
+          fi
+
+      - name: Create Sync PR
+        id: sync_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Target the repo's actual default branch instead of hardcoding "main",
+          # so the sync PR keeps working if the default branch is ever renamed.
+          BASE_BRANCH="${{ github.event.repository.default_branch }}"
+          COMPARE_URL="https://github.com/${{ github.repository }}/compare/$BASE_BRANCH...${{ needs.prepare.outputs.rc_branch }}"
+          EXISTING_PR=$(gh pr list --head "${{ needs.prepare.outputs.rc_branch }}" --base "$BASE_BRANCH" --json url --jq '.[0].url')
+          if [ -z "$EXISTING_PR" ]; then
+            if PR_URL=$(gh pr create --title "release: sync ${{ env.R_NAME }} to $BASE_BRANCH" --body "This PR was created by GitHub Actions after the npm release branch was prepared." --base "$BASE_BRANCH" --head "${{ needs.prepare.outputs.rc_branch }}"); then
+              echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+            else
+              echo "GitHub Actions cannot create the sync PR. Create it manually: $COMPARE_URL"
+              echo "url=$COMPARE_URL" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "url=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate Release Notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          R_TAG=${{ needs.prepare.outputs.tag }}
+          # Compare against the previous v* tag explicitly. Without this, GitHub
+          # anchors auto-notes to the last *published* (non-draft) release; since
+          # every release is created as a draft, the baseline is stale and each
+          # new release re-lists every PR since the last published one, so old
+          # feat/fix entries pile onto the new ones.
+          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$R_TAG" | head -n1)
+          ARGS=(-f tag_name="$R_TAG")
+          if [ -n "$PREV_TAG" ]; then
+            ARGS+=(-f previous_tag_name="$PREV_TAG")
+          fi
+          NOTES=$(gh api -X POST "repos/${{ github.repository }}/releases/generate-notes" "${ARGS[@]}" --jq '.body')
+          {
+            echo "body<<EOF_NOTES"
+            echo "$NOTES"
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v3
+        with:
+          # The release title is just the tag (e.g. `v0.9.1`) so the Releases list
+          # shows the version, not `<name> v…`.
+          name: ${{ needs.prepare.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          draft: true
+          body: |
+            This is a draft release.
+
+            Before publishing, verify:
+            - npm package `pi-telegram-manager@${{ needs.prepare.outputs.version }}` is available.
+            - Pi can install it with `pi install npm:pi-telegram-manager@${{ needs.prepare.outputs.version }}`.
+            - The sync PR is ready: ${{ steps.sync_pr.outputs.url }}
+
+            ---
+
+            ${{ steps.notes.outputs.body }}
+          token: ${{ secrets.GITHUB_TOKEN }}

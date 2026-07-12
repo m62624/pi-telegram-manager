@@ -1,0 +1,70 @@
+name: Mirror to Tangled
+
+on:
+  # Fires on every update to the default branch. A merged pull request lands on
+  # main as a push event, so this single trigger covers both a direct push and a
+  # PR merge; there is no need for a separate pull_request/closed handler.
+  push:
+    branches: [main]
+  # Manual button for the first mirror, or to re-sync after fixing credentials.
+  workflow_dispatch:
+
+# Limit default GITHUB_TOKEN scopes for least privilege.
+permissions:
+  contents: read
+
+# Serialize mirror runs so two pushes can't race a `git push` to Tangled. Keep
+# the newest one; an interrupted mirror is re-driven by the next push anyway.
+concurrency:
+  group: mirror-tangled
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    name: Push main to Tangled
+    runs-on: ubuntu-latest
+    # Skip on forks: only this owner's repo holds the Tangled credentials.
+    # Match on owner (not the full name) so renaming the repo can't silently
+    # turn this condition false and skip the job again.
+    if: github.repository_owner == 'm62624'
+
+    steps:
+      - name: Checkout main (full history + tags)
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          # 0 = full history. A shallow clone would be rejected by the remote,
+          # and tags are needed so releases mirror too.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configure SSH for Tangled
+        env:
+          TANGLED_SSH_KEY: ${{ secrets.TANGLED_SSH_KEY }}
+        run: |
+          if [ -z "$TANGLED_SSH_KEY" ]; then
+            echo "::error::Secret TANGLED_SSH_KEY is not set. Add the private key in repo Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$TANGLED_SSH_KEY" > ~/.ssh/tangled
+          chmod 600 ~/.ssh/tangled
+          ssh-keyscan tangled.org >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Mirror main and tags
+        env:
+          # e.g. git@tangled.org:m62624.tngl.sh/pi-telegram-manager
+          TANGLED_REMOTE: ${{ vars.TANGLED_REMOTE }}
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/tangled -o IdentitiesOnly=yes
+        run: |
+          if [ -z "$TANGLED_REMOTE" ]; then
+            echo "::error::Variable TANGLED_REMOTE is not set. Add it in repo Settings -> Secrets and variables -> Actions -> Variables (e.g. git@tangled.org:<handle>/<repo>)."
+            exit 1
+          fi
+          git remote add tangled "$TANGLED_REMOTE"
+          # Only main is mirrored (feature branches stay on GitHub). Force so the
+          # mirror is always a faithful copy of GitHub's main, even after a
+          # history rewrite; tags follow so releases show up on Tangled.
+          git push --force tangled main
+          git push --force tangled --tags

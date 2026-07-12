@@ -1,0 +1,190 @@
+name: Pi SDK Watch
+
+# Proactively watch the Pi coding-agent SDK. The extension's peer dependency is
+# `*` (it runs against whatever Pi the user has), and the SDK is imported only
+# through the `src/pi/` boundary (enforced by an invariant test). This workflow
+# is the repo-side, *proactive* signal: when a new `@earendil-works/pi-coding-agent`
+# is published past the version this repo pins for typecheck + tests, it opens ONE
+# self-rewriting draft PR that bumps the two devDependency pins and runs typecheck
+# + tests against the new SDK, so the PR body carries a mechanical pass/fail
+# compat signal.
+#
+# No spam: the PR always lives on the single `sdk-watch` branch (re-runs
+# force-push it, so an open PR just refreshes in place) and is closed
+# automatically once the pinned version matches the latest again. The Pi SDK is
+# excluded from Dependabot (see .github/dependabot.yml) so the two never open
+# duplicate PRs.
+#
+# Note: PRs opened by the default GITHUB_TOKEN do not themselves trigger the
+# `pull_request` CI workflow (a GitHub anti-recursion rule), which is exactly
+# why the compat check runs *inline* here and is reflected in the PR body rather
+# than relying on the PR's own CI run.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sdk-watch
+  cancel-in-progress: false
+
+env:
+  SDK: "@earendil-works/pi-coding-agent"
+  TUI: "@earendil-works/pi-tui"
+  WATCH_BRANCH: sdk-watch
+
+jobs:
+  watch:
+    name: Watch Pi SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve Versions
+        id: v
+        run: |
+          set -euo pipefail
+          LATEST=$(npm view "$SDK" version)
+          # The reference is the version this repo pins for typecheck + tests
+          # (the SDK devDependency in package.json), so this workflow and what CI
+          # actually builds against never drift apart.
+          CURRENT=$(node -p "require('./package.json').devDependencies['$SDK'] || ''")
+          if [ "$CURRENT" = "$LATEST" ]; then IN_RANGE=yes; else IN_RANGE=no; fi
+          BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+          {
+            echo "latest=$LATEST"
+            echo "current=$CURRENT"
+            echo "in_range=$IN_RANGE"
+            echo "base=$BASE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Pi SDK latest=$LATEST; pinned=$CURRENT; in_range=$IN_RANGE; base=$BASE"
+
+      # --- back within range: retire the watch PR --------------------------
+      - name: Close Watch PR When Back In Range
+        if: steps.v.outputs.in_range == 'yes'
+        run: |
+          set -euo pipefail
+          NUM=$(gh pr list --head "$WATCH_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$NUM" ]; then
+            gh pr close "$NUM" --delete-branch \
+              --comment "Pinned Pi SDK matches the latest (${{ steps.v.outputs.latest }}) again — retiring this watch PR."
+          fi
+
+      # --- out of range: respect a human who has taken over the PR ---------
+      # If an open watch PR exists and its branch tip was authored by a human
+      # (you pushed a fix, or edited a file in the PR), the bot must NOT
+      # force-push over that work. It stands down until you merge or close the
+      # PR — even if a still-newer SDK appears meanwhile. This is the whole
+      # answer to "will it overwrite my changes?": no, your commit freezes it.
+      - name: Guard Against Human Takeover
+        if: steps.v.outputs.in_range == 'no'
+        id: guard
+        run: |
+          set -euo pipefail
+          BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          SKIP=no
+          if git ls-remote --exit-code --heads origin "$WATCH_BRANCH" >/dev/null 2>&1; then
+            git fetch --quiet origin "$WATCH_BRANCH"
+            OPEN_PR=$(gh pr list --head "$WATCH_BRANCH" --state open --json number --jq '.[0].number // empty')
+            TIP_EMAIL=$(git log -1 --format='%ae' "origin/$WATCH_BRANCH")
+            if [ -n "$OPEN_PR" ] && [ "$TIP_EMAIL" != "$BOT_EMAIL" ]; then
+              echo "PR #$OPEN_PR: branch tip authored by $TIP_EMAIL (not the bot) — standing down, your work is untouched."
+              SKIP=yes
+            fi
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Bump Branch
+        if: steps.v.outputs.in_range == 'no' && steps.guard.outputs.skip == 'no'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$WATCH_BRANCH" "origin/${{ steps.v.outputs.base }}"
+
+          LATEST="${{ steps.v.outputs.latest }}"
+          TUI_LATEST=$(npm view "$TUI" version)
+
+          # Bump the two devDependency pins (used for typecheck + tests). Written
+          # with tabs + trailing newline to match the repo's Biome formatting.
+          node -e "const fs=require('fs');const f='package.json';const p=JSON.parse(fs.readFileSync(f,'utf8'));p.devDependencies['$SDK']='$LATEST';p.devDependencies['$TUI']='$TUI_LATEST';fs.writeFileSync(f,JSON.stringify(p,null,'\t')+'\n')"
+
+          npm install
+
+      - name: Validate Against The New SDK
+        if: steps.v.outputs.in_range == 'no' && steps.guard.outputs.skip == 'no'
+        id: check
+        run: |
+          set -uo pipefail
+          # Swallow the exit code: a FAILING check is the most important case to
+          # surface (that is the incompatibility), so it must still open the PR.
+          if npm run build && npm test; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push And Upsert Draft PR
+        if: steps.v.outputs.in_range == 'no' && steps.guard.outputs.skip == 'no'
+        run: |
+          set -euo pipefail
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "No changes to push (already prepared)."
+            exit 0
+          fi
+          git commit -m "chore(sdk): watch — adopt Pi SDK ${{ steps.v.outputs.latest }}"
+          git push -f origin "$WATCH_BRANCH"
+
+          if [ "${{ steps.check.outputs.result }}" = "pass" ]; then
+            BADGE="✅ **typecheck + tests PASS** against ${{ steps.v.outputs.latest }} — likely a safe adoption."
+          else
+            BADGE="❌ **typecheck / tests FAIL** against ${{ steps.v.outputs.latest }} — the SDK surface probably changed; this is the incompatibility to fix before merging."
+          fi
+
+          # Build the PR body with printf (not a heredoc): every line stays
+          # indented under the block scalar, so the YAML never mis-parses it.
+          printf '%s\n' \
+            "Automated **Pi SDK watch**. A new \`$SDK\` release is past the version this repo pins for CI." \
+            "" \
+            "- latest: **${{ steps.v.outputs.latest }}**  ·  pinned: \`${{ steps.v.outputs.current }}\`" \
+            "- $BADGE" \
+            "" \
+            "**What this PR changes**" \
+            "- bumps the devDependency pins (\`$SDK\`, \`$TUI\`) used for typecheck + tests" \
+            "" \
+            "**Before merging** review the SDK boundary in \`src/pi/\` — the only place that imports \`@earendil-works/*\` (enforced by an invariant test). If the check above failed, a required \`pi.*\` / \`ctx.*\` surface moved — fix the call sites in \`src/pi/\`, not just the pins." \
+            "" \
+            "_Self-rewriting: while this branch has only bot commits, each run force-pushes it (bumping to the newest SDK), so there is only ever this one PR. **The moment you push a commit here, the watcher stands down and never touches your work** — merge or close the PR to let it resume. It also closes automatically once the pinned version matches the latest again._" \
+            > pr-body.md
+
+          NUM=$(gh pr list --head "$WATCH_BRANCH" --base "${{ steps.v.outputs.base }}" --state open --json number --jq '.[0].number // empty')
+          TITLE="chore(sdk): adopt Pi SDK ${{ steps.v.outputs.latest }}"
+          if [ -z "$NUM" ]; then
+            gh pr create --draft --base "${{ steps.v.outputs.base }}" --head "$WATCH_BRANCH" --title "$TITLE" --body-file pr-body.md
+          else
+            gh pr edit "$NUM" --title "$TITLE" --body-file pr-body.md
+            echo "Refreshed existing draft PR #$NUM (no new PR)."
+          fi
+          rm -f pr-body.md
