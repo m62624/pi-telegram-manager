@@ -962,3 +962,77 @@ describe("ManagerController", () => {
 		expect(stored?.canReply).toBe(true);
 	});
 });
+
+describe("consolidation pause/resume under live work", () => {
+	const isConsolidation = (call: unknown[]) =>
+		typeof call[0] === "string" &&
+		call[0].includes("Consolidate your long-term memory");
+	const isLiveTurn = (call: unknown[]) =>
+		typeof call[0] === "string" &&
+		call[0].includes("Respond to the latest messages");
+	const countConsolidation = (calls: unknown[][]) =>
+		calls.filter(isConsolidation).length;
+
+	it("pauses at a fragment boundary for a live reply, then resumes", async () => {
+		const { controller, triggerAgent, clock, setIdle } = await setup(
+			"observer",
+			["llm"],
+		);
+		// Seed a contact and get its chat into the consolidation queue, then clear the
+		// unanswered state (the owner replied) so nothing is waiting on a reply.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hello there", 5, 1),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("i'll take this", 100),
+		});
+
+		// Quiet long enough → an idle tick starts consolidation (fragment 1).
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
+
+		// Fragment 1 runs (identify). While it runs, a live, addressed message lands.
+		setIdle(false);
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+			ownerLinesPresent: true,
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				...interlocutorMsg("hey llm, you there?", 5, 2),
+				date: Math.floor(clock.now() / 1000),
+			},
+		});
+
+		// The fragment's turn ends → consolidation pauses and the live chat is served
+		// (a live turn, NOT another consolidation probe).
+		setIdle(true);
+		await controller.onAgentEnd();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
+		expect(isLiveTurn(triggerAgent.mock.calls.at(-1) as unknown[])).toBe(true);
+
+		// The live turn ends silent → the chat is served and the manager goes idle.
+		setIdle(false);
+		controller
+			.decisionSink()
+			.record({ kind: "silent", reason: "not addressed" });
+		setIdle(true);
+		await controller.onAgentEnd();
+
+		// Idle again → consolidation resumes from where it paused (a 2nd probe).
+		await controller.onTick();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(2);
+	});
+});
