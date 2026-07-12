@@ -14,7 +14,8 @@ Two **mutually-exclusive** modes (only one active at a time, enforced by a singl
 
 Send **`/switch`** in your private chat with the bot (or tap it in the command menu) to flip between
 modes from an inline keyboard — **Observer**, **Takeover**, **Personal** (terminal continuation), or
-**Stop** — without touching the terminal. Owner only.
+**Stop** — without touching the terminal. Owner only. A **pinned message** at the top of that chat
+always shows the currently active mode, updated in place on every switch.
 
 Status: **early development.** See the approved implementation plan for the architecture and phasing.
 

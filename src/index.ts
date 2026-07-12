@@ -122,10 +122,11 @@ import type { TelegramEvent } from "./telegram/updates";
 import { managerBannerLines } from "./ui/manager-banner";
 
 /**
- * The narrow slice of the grammY raw api the `/switch` panel needs: send a
- * message with an inline keyboard, acknowledge a button press, and edit a panel's
- * keyboard in place. Cast from `client.api` (the same pattern as `OutboundApi`),
- * so no extra `TelegramClient` methods are required.
+ * The narrow slice of the grammY raw api the `/switch` panel and the pinned
+ * mode indicator need: send a message (optionally with an inline keyboard),
+ * acknowledge a button press, edit a panel's keyboard, edit a message's text, and
+ * pin. Cast from `client.api` (the same pattern as `OutboundApi`), so no extra
+ * `TelegramClient` methods are required.
  */
 interface ControlApi {
 	sendMessage(payload: {
@@ -141,6 +142,16 @@ interface ControlApi {
 		chat_id: number;
 		message_id: number;
 		reply_markup?: InlineKeyboardMarkup;
+	}): Promise<unknown>;
+	editMessageText(payload: {
+		chat_id: number;
+		message_id: number;
+		text: string;
+	}): Promise<unknown>;
+	pinChatMessage(payload: {
+		chat_id: number;
+		message_id: number;
+		disable_notification?: boolean;
 	}): Promise<unknown>;
 }
 
@@ -278,6 +289,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
 	let activeSubMode: ManagerSubMode | null = null;
+	// The pinned "current mode" indicator in the owner's DM: the message id we pin
+	// once and then edit in place on every mode change (so switches never spam new
+	// pins), plus the mode it currently shows (to skip redundant edits).
+	let modePinMessageId: number | null = null;
+	let modePinTarget: SwitchTarget | null = null;
 
 	// Connection watchdog: a silent timer that probes the active bot connection and
 	// auto-disconnects after too many consecutive failures. `connectionFailures` is
@@ -757,6 +773,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			)
 			.catch(() => {});
 		ctx.ui.notify("Telegram connect: active.");
+		await updateModePin("personal");
 	};
 
 	pi.registerCommand(COMMANDS.connect, {
@@ -777,6 +794,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					card("🔌", "Disconnected", [note("From the Pi terminal session.")]),
 				)
 				.catch(() => {});
+			// Update the pinned indicator while the client is still alive.
+			await updateModePin("stop");
 			await stopConnect(ctx);
 			ctx.ui.notify("Telegram connect: stopped.");
 		},
@@ -1085,6 +1104,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
 		ctx.ui.notify(`Telegram manager: active (${subMode}).`);
+		await updateModePin(subMode);
 	};
 
 	pi.registerCommand(COMMANDS.managerObserver, {
@@ -1104,6 +1124,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Telegram manager is not active.", "warning");
 				return;
 			}
+			// Update the pinned indicator while the client is still alive.
+			await updateModePin("stop");
 			await stopManager();
 			ctx.ui.notify("Telegram manager: stopped.");
 		},
@@ -1153,6 +1175,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!ctx) return;
 		if (activeTarget() === target) return;
 		try {
+			// Reflect a full stop on the pinned indicator while a client is still alive
+			// (after teardown there is none to edit it); mode→mode updates the pin from
+			// inside the new mode's start.
+			if (target === "stop") await updateModePin("stop");
 			await stopAll();
 			await startMode(target, ctx);
 		} catch (error) {
@@ -1180,6 +1206,47 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				reply_markup: buildSwitchKeyboard(active),
 			})
 			.catch(() => {});
+	};
+
+	// Keep a pinned message at the top of the owner's DM showing the active mode, so
+	// the current mode is always visible without running a command. Pinned once, then
+	// edited in place on every change (no new pins per switch); "stop" shows the bot
+	// is off. Best-effort — never blocks a mode start/stop.
+	const modePinText = (target: SwitchTarget): string =>
+		target === "stop"
+			? "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode."
+			: `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
+
+	const updateModePin = async (target: SwitchTarget): Promise<void> => {
+		if (ownerUserId === null || modePinTarget === target) return;
+		const api = controlApi();
+		if (!api) return;
+		const text = modePinText(target);
+		try {
+			if (modePinMessageId !== null) {
+				await api.editMessageText({
+					chat_id: ownerUserId,
+					message_id: modePinMessageId,
+					text,
+				});
+			} else {
+				const sent = await api.sendMessage({ chat_id: ownerUserId, text });
+				modePinMessageId = sent.message_id;
+				await api
+					.pinChatMessage({
+						chat_id: ownerUserId,
+						message_id: sent.message_id,
+						disable_notification: true,
+					})
+					.catch(() => {});
+			}
+			modePinTarget = target;
+		} catch {
+			// The pinned message was likely deleted — forget it so the next update
+			// re-creates and re-pins from scratch.
+			modePinMessageId = null;
+			modePinTarget = null;
+		}
 	};
 
 	// Owner control pre-handler, wired ahead of both modes' routing. Returns true
