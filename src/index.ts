@@ -876,7 +876,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			);
 		}
 
-		const chatStore = createChatStore(fs, paths);
+		// Bound each chat transcript on disk to the last-N window the model reads
+		// (rememberMessages); older messages are pruned so files never grow forever.
+		const chatStore = createChatStore(
+			fs,
+			paths,
+			settings.manager.rememberMessages,
+		);
 		const businessStore = createBusinessStore(fs, paths.businessPath);
 		const consolidationQueue = createConsolidationQueue(
 			fs,

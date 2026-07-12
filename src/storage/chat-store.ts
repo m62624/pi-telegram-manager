@@ -1,3 +1,4 @@
+import { withFileWriteLock } from "./file-lock";
 import { safeReaddir, type TelegramFs } from "./fs";
 import type { TelegramPaths } from "./paths";
 
@@ -37,9 +38,18 @@ export interface ChatStore {
 	listChatIds(): Promise<string[]>;
 }
 
+/**
+ * @param retentionLimit When > 0, the transcript on disk is compacted to the
+ * last `retentionLimit` messages once it grows past twice that — so old messages
+ * are pruned and the file stays bounded (to ~2× the limit) instead of growing
+ * forever. Omit/0 to keep the full append-only log. Callers pass the manager's
+ * `rememberMessages` (the last-N window the model reads), so nothing still in
+ * that window is ever pruned.
+ */
 export function createChatStore(
 	fs: TelegramFs,
 	paths: TelegramPaths,
+	retentionLimit = 0,
 ): ChatStore {
 	async function readAll(chatId: string): Promise<ChatMessageRecord[]> {
 		const path = paths.chatFile(chatId);
@@ -61,10 +71,28 @@ export function createChatStore(
 
 	return {
 		async append(chatId, record) {
-			await fs.appendText(
-				paths.chatFile(chatId),
-				`${JSON.stringify(record)}\n`,
-			);
+			const path = paths.chatFile(chatId);
+			const line = `${JSON.stringify(record)}\n`;
+			if (retentionLimit <= 0) {
+				await fs.appendText(path, line);
+				return;
+			}
+			// Append then lazily compact under a lock (so a concurrent append can't be
+			// dropped by the rewrite). Only rewrite once the log passed twice the
+			// retention window, trimming back to the last `retentionLimit`; this
+			// amortises the rewrite to ~once per `retentionLimit` appends and always
+			// keeps at least the full window on disk.
+			await withFileWriteLock(path, async () => {
+				await fs.appendText(path, line);
+				const all = await readAll(chatId);
+				if (all.length > retentionLimit * 2) {
+					const kept = all.slice(-retentionLimit);
+					await fs.writeTextAtomic(
+						path,
+						`${kept.map((r) => JSON.stringify(r)).join("\n")}\n`,
+					);
+				}
+			});
 		},
 		async getRecent(chatId, limit) {
 			const all = await readAll(chatId);

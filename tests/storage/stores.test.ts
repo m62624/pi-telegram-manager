@@ -51,6 +51,33 @@ describe("chat-store", () => {
 		await fs.appendText(paths.chatFile("c"), "{partial-broken\n");
 		expect((await store.all("c")).map((r) => r.text)).toEqual(["ok"]);
 	});
+
+	it("keeps the full append-only log when no retention is set", async () => {
+		const fs = new FakeFs();
+		const store = createChatStore(fs, paths); // retention 0 (default)
+		for (let i = 0; i < 10; i++) {
+			await store.append("c", msg({ text: `m${i}`, timestamp: i }));
+		}
+		expect(await store.all("c")).toHaveLength(10);
+	});
+
+	it("prunes old messages once the log passes twice the retention window", async () => {
+		const fs = new FakeFs();
+		const store = createChatStore(fs, paths, 3); // window 3 → disk bounded to ~6
+		for (let i = 0; i < 10; i++) {
+			await store.append("c", msg({ text: `m${i}`, timestamp: i }));
+		}
+		// The last-N window the model reads is unaffected.
+		expect((await store.getRecent("c", 3)).map((r) => r.text)).toEqual([
+			"m7",
+			"m8",
+			"m9",
+		]);
+		// On disk, old messages were dropped — no more than ~2× the window is kept.
+		const all = await store.all("c");
+		expect(all.length).toBeLessThanOrEqual(6);
+		expect(all.map((r) => r.text)).not.toContain("m0");
+	});
 });
 
 describe("business-store", () => {
