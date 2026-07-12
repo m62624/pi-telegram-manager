@@ -50,6 +50,15 @@ describe("switchPanelText / switchLabel", () => {
 		expect(switchLabel("observer")).toBe("👁️ Observer");
 		expect(switchLabel("stop")).toBe("⏹️ Stop");
 	});
+
+	it("labels mixed and shows it as current without checking any button", () => {
+		expect(switchLabel("mixed")).toBe("🔀 Mixed");
+		expect(switchPanelText("mixed")).toContain("🔀 Mixed");
+		// Mixed is not a button, so no button is checked when it is the active mode —
+		// tapping any button then always switches away from mixed.
+		const buttons = buildSwitchKeyboard("mixed").inline_keyboard.flat();
+		expect(buttons.filter((b) => b.text.startsWith("✅"))).toHaveLength(0);
+	});
 });
 
 describe("isSwitchCommand", () => {

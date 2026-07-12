@@ -16,6 +16,14 @@ import type { InlineKeyboardMarkup } from "@grammyjs/types";
  */
 export type SwitchTarget = "observer" | "takeover" | "personal" | "stop";
 
+/**
+ * The runtime's current mode for display/pin purposes. It is a {@link SwitchTarget}
+ * plus `mixed`: mixed runs from the terminal and is NOT a switch button (you can't
+ * meaningfully start it from the phone), but it is still shown as the active mode
+ * in the pin and panel caption so the bot chat never misreports the state.
+ */
+export type PanelMode = SwitchTarget | "mixed";
+
 interface SwitchOption {
 	target: SwitchTarget;
 	emoji: string;
@@ -36,8 +44,9 @@ const CALLBACK_PREFIX = "switch:";
 /** The set of valid targets, for fast membership checks. */
 const TARGETS = new Set<string>(SWITCH_OPTIONS.map((option) => option.target));
 
-/** Human label for a target, e.g. `👁️ Observer` — for acks and status lines. */
-export function switchLabel(target: SwitchTarget): string {
+/** Human label for a mode, e.g. `👁️ Observer` / `🔀 Mixed` — for acks and status lines. */
+export function switchLabel(target: PanelMode): string {
+	if (target === "mixed") return "🔀 Mixed";
 	const option = SWITCH_OPTIONS.find((o) => o.target === target);
 	return option ? `${option.emoji} ${option.label}` : target;
 }
@@ -47,9 +56,7 @@ export function switchLabel(target: SwitchTarget): string {
  * check so the current mode is obvious; each button carries `switch:<target>`
  * as its `callback_data`.
  */
-export function buildSwitchKeyboard(
-	active: SwitchTarget,
-): InlineKeyboardMarkup {
+export function buildSwitchKeyboard(active: PanelMode): InlineKeyboardMarkup {
 	const buttons = SWITCH_OPTIONS.map((option) => ({
 		text:
 			option.target === active
@@ -61,8 +68,12 @@ export function buildSwitchKeyboard(
 }
 
 /** The panel's caption, naming the currently active mode above the buttons. */
-export function switchPanelText(active: SwitchTarget): string {
-	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}`;
+export function switchPanelText(active: PanelMode): string {
+	const note =
+		active === "mixed"
+			? "\n(Mixed runs from the terminal; a button below switches away from it.)"
+			: "";
+	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}${note}`;
 }
 
 /** Whether a plain message is the `/switch` command (bare or `/switch@bot`). */

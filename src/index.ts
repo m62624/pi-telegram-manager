@@ -124,6 +124,7 @@ import { extractProfileFromUser } from "./telegram/profile";
 import {
 	buildSwitchKeyboard,
 	isSwitchCommand,
+	type PanelMode,
 	parseSwitchData,
 	type SwitchTarget,
 	switchLabel,
@@ -326,7 +327,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// once and then edit in place on every mode change (so switches never spam new
 	// pins), plus the mode it currently shows (to skip redundant edits).
 	let modePinMessageId: number | null = null;
-	let modePinTarget: SwitchTarget | null = null;
+	let modePinTarget: PanelMode | null = null;
 
 	// Connection watchdog: a silent timer that probes the active bot connection and
 	// auto-disconnects after too many consecutive failures. `connectionFailures` is
@@ -1223,12 +1224,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
 		if (mixed) {
-			// Mixed shows only the footer indicator (no DM mode-pin — it is not a
-			// /switch panel target); arm the idle timer so an idle owner hands the
-			// brain to Telegram on its own.
+			// Mixed shows the footer indicator in the TUI AND a pinned indicator in the
+			// bot DM (so the bot chat reflects it too); arm the idle timer so an idle
+			// owner hands the brain to Telegram on its own.
 			updateMixedFooter();
 			armMixedReturnTimer();
 			ctx.ui.notify(`Telegram mixed: active (${subMode}).`);
+			await updateModePin("mixed");
 		} else {
 			ctx.ui.notify(`Telegram manager: active (${subMode}).`);
 			await updateModePin(subMode);
@@ -1295,9 +1297,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const controlApi = (): ControlApi | null =>
 		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
 
-	// The mode currently running, as a switch target ("stop" when idle).
-	const activeTarget = (): SwitchTarget => {
-		if (manager) return activeSubMode ?? "observer";
+	// The mode currently running, for the panel caption / pin ("stop" when idle).
+	// Mixed reports as "mixed" (not its sub-mode) so it never collides with the
+	// observer/takeover buttons — a tap while in mixed then always switches away.
+	const activeTarget = (): PanelMode => {
+		if (manager) return mixedActive ? "mixed" : (activeSubMode ?? "observer");
 		if (connect) return "personal";
 		return "stop";
 	};
@@ -1371,12 +1375,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the current mode is always visible without running a command. Pinned once, then
 	// edited in place on every change (no new pins per switch); "stop" shows the bot
 	// is off. Best-effort — never blocks a mode start/stop.
-	const modePinText = (target: SwitchTarget): string =>
-		target === "stop"
-			? "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode."
-			: `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
+	const modePinText = (target: PanelMode): string => {
+		if (target === "stop")
+			return "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode.";
+		if (target === "mixed")
+			return `📌 Bot mode: ${switchLabel("mixed")} (${activeSubMode ?? "observer"})\nMixed runs from the terminal; /switch to switch away.`;
+		return `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
+	};
 
-	const updateModePin = async (target: SwitchTarget): Promise<void> => {
+	const updateModePin = async (target: PanelMode): Promise<void> => {
 		if (ownerUserId === null || modePinTarget === target) return;
 		const api = controlApi();
 		if (!api) return;
