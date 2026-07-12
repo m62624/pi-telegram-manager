@@ -73,17 +73,15 @@ export function createChatStore(
 		async append(chatId, record) {
 			const path = paths.chatFile(chatId);
 			const line = `${JSON.stringify(record)}\n`;
-			if (retentionLimit <= 0) {
-				await fs.appendText(path, line);
-				return;
-			}
-			// Append then lazily compact under a lock (so a concurrent append can't be
-			// dropped by the rewrite). Only rewrite once the log passed twice the
-			// retention window, trimming back to the last `retentionLimit`; this
-			// amortises the rewrite to ~once per `retentionLimit` appends and always
-			// keeps at least the full window on disk.
+			// Every append is serialized under the per-path write lock, so "no lost
+			// write" holds in both modes (retention on or off) — not just when the
+			// lazy compaction below rewrites the file. When retention is on we also
+			// lazily compact: only once the log passed twice the retention window do we
+			// trim back to the last `retentionLimit`, which amortises the rewrite to
+			// ~once per `retentionLimit` appends and always keeps the full window on disk.
 			await withFileWriteLock(path, async () => {
 				await fs.appendText(path, line);
+				if (retentionLimit <= 0) return;
 				const all = await readAll(chatId);
 				if (all.length > retentionLimit * 2) {
 					const kept = all.slice(-retentionLimit);

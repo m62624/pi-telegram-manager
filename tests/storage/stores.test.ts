@@ -61,6 +61,19 @@ describe("chat-store", () => {
 		expect(await store.all("c")).toHaveLength(10);
 	});
 
+	it("serializes concurrent appends to one chat with no lost write (retention off)", async () => {
+		const fs = new FakeFs();
+		const store = createChatStore(fs, paths); // retention 0 → the unlocked path
+		await Promise.all(
+			Array.from({ length: 20 }, (_, i) =>
+				store.append("c", msg({ text: `m${i}`, timestamp: i })),
+			),
+		);
+		const texts = (await store.all("c")).map((r) => r.text).sort();
+		expect(texts).toHaveLength(20);
+		expect(new Set(texts).size).toBe(20);
+	});
+
 	it("prunes old messages once the log passes twice the retention window", async () => {
 		const fs = new FakeFs();
 		const store = createChatStore(fs, paths, 3); // window 3 → disk bounded to ~6
