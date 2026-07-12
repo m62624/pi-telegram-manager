@@ -18,7 +18,12 @@
  */
 import { join } from "node:path";
 import type { InlineKeyboardMarkup, Message } from "@grammyjs/types";
-import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
+import {
+	COMMANDS,
+	COMPLIANCE_LINKS,
+	COMPLIANCE_NOTICE,
+	TELEGRAM_BOT_COMMANDS,
+} from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
@@ -47,6 +52,7 @@ import {
 	lastAssistantReply,
 	lastAssistantThinking,
 	type PromptContent,
+	parseSlashCommand,
 } from "./modes/connect/messages";
 import { selectCatchUpChats } from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
@@ -57,6 +63,7 @@ import {
 import {
 	buildManagerFeed,
 	buildManagerNotice,
+	isEmptyFeedTurn,
 	type ManagerNoticeLevel,
 	type ManagerToolCall,
 } from "./modes/manager/debug-feed";
@@ -201,6 +208,12 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (observer / takeover / mixed / personal / stop)",
+	"/start — privacy & terms",
+	"",
+	"⚠️ Privacy & terms — read and follow these before using the bot:",
+	`• ${COMPLIANCE_LINKS.botTerms}`,
+	`• ${COMPLIANCE_LINKS.privacy}`,
+	`• ${COMPLIANCE_LINKS.business}`,
 	"",
 	"Terminal commands (/telegram-personal, -manager, -mixed) also run in Pi.",
 	`This bot runs pi-telegram-manager: ${REPO_URL}`,
@@ -536,6 +549,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Route business updates to the manager controller. Owner control commands
 	// (`/switch`, panel button presses) are intercepted first, in both modes.
 	const routeManagerEvent = async (event: TelegramEvent): Promise<void> => {
+		if (await handleStartCommand(event)) return;
 		if (await handleControl(event)) return;
 		if (!manager) return;
 		if (event.kind === "business_connection") {
@@ -612,7 +626,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// Mirror the turn (thinking, tools, decision) to the owner's bot DM when
 			// the debug feed is on. Best-effort — a feed failure never blocks a reply,
 			// but the first failure is logged so a misconfigured feed is diagnosable.
-			if (log && deliverManagerFeed) {
+			// Skip an empty card (a silent turn with no reason) — just noise. A silent
+			// WITH a reason, a reply, a hold, or a correction still posts.
+			if (log && deliverManagerFeed && !isEmptyFeedTurn(log)) {
 				// Errors are surfaced inside the sender (once), so swallow here.
 				await deliverManagerFeed(
 					log,
@@ -1473,6 +1489,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			modePinMessageId = null;
 			modePinTarget = null;
 		}
+	};
+
+	// Answer /start (incl. the Secretary "Manage Bot" deep link /start bizChat…) with
+	// the privacy/compliance reminder — for ANY user, so whoever connects or opens
+	// the bot sees the terms first. Returns true when it consumed the event.
+	const handleStartCommand = async (event: TelegramEvent): Promise<boolean> => {
+		if (event.kind !== "message") return false;
+		const command = parseSlashCommand(event.message.text ?? "");
+		if (command?.name !== "start") return false;
+		const api = controlApi();
+		if (!api) return false;
+		await api
+			.sendMessage({
+				chat_id: event.chatId,
+				text: COMPLIANCE_NOTICE,
+				link_preview_options: { is_disabled: true },
+			})
+			.catch(() => {});
+		return true;
 	};
 
 	// Owner control pre-handler, wired ahead of both modes' routing. Returns true

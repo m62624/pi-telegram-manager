@@ -179,6 +179,16 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	return RichHtml.join(blocks);
 }
 
+/**
+ * Whether a finished turn is not worth a feed card: a silent decision with no
+ * reason carries nothing to show (the blank "Stayed silent" entries) and is just
+ * noise. Anything with text — a reply, a held draft, a correction, or a silent
+ * WITH a reason — still posts.
+ */
+export function isEmptyFeedTurn(log: ManagerTurnLog): boolean {
+	return log.outcome === "silent" && !log.text?.trim();
+}
+
 /** Severity of a relayed runtime notice. */
 export type ManagerNoticeLevel = "info" | "warning" | "error";
 

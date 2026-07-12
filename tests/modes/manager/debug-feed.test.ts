@@ -3,6 +3,7 @@ import type { ManagerTurnLog } from "../../../src/modes/manager/controller";
 import {
 	buildManagerFeed,
 	buildManagerNotice,
+	isEmptyFeedTurn,
 	telegramChatDeepLink,
 } from "../../../src/modes/manager/debug-feed";
 
@@ -158,6 +159,40 @@ describe("telegramChatDeepLink", () => {
 		});
 		expect(html).toContain("#42");
 		expect(html).not.toContain("tg://openmessage");
+	});
+});
+
+describe("isEmptyFeedTurn", () => {
+	it("skips a silent turn with no reason, but keeps everything else", () => {
+		expect(
+			isEmptyFeedTurn({ chatId: "1", contactName: "X", outcome: "silent" }),
+		).toBe(true);
+		expect(
+			isEmptyFeedTurn({
+				chatId: "1",
+				contactName: "X",
+				outcome: "silent",
+				text: "   ",
+			}),
+		).toBe(true);
+		// A silent WITH a reason is informative → kept.
+		expect(
+			isEmptyFeedTurn({
+				chatId: "1",
+				contactName: "X",
+				outcome: "silent",
+				text: "owner is handling it",
+			}),
+		).toBe(false);
+		// Replies / holds / corrections always carry text → kept.
+		expect(
+			isEmptyFeedTurn({
+				chatId: "1",
+				contactName: "X",
+				outcome: "reply",
+				text: "hi",
+			}),
+		).toBe(false);
 	});
 });
 

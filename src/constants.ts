@@ -7,6 +7,33 @@
  */
 export const EXTENSION_NAME = "pi-telegram-manager";
 
+/**
+ * Telegram's terms an operator (and anyone connecting the bot) must read and
+ * follow. Surfaced on `/start` and in `/help` so using the bot is never separated
+ * from the responsibility that comes with it.
+ */
+export const COMPLIANCE_LINKS = {
+	botTerms: "https://telegram.org/tos/bot-developers",
+	privacy: "https://telegram.org/privacy",
+	/** The Secretary / Business section (acting on a user's behalf). */
+	business: "https://telegram.org/tos/bot-developers#5-4-telegram-business",
+} as const;
+
+/**
+ * Plain-text privacy/compliance reminder shown on `/start` and in `/help`. Raw
+ * URLs so a plain Telegram message auto-links them (no Markdown needed).
+ */
+export const COMPLIANCE_NOTICE = [
+	"⚠️ Privacy & terms — please read before using this bot.",
+	"",
+	"This bot runs pi-telegram-manager and, in Telegram's Secretary (Business) mode, can read and act on messages on the account owner's behalf. By using it you agree to read and follow Telegram's terms:",
+	`• Bot Developer Terms: ${COMPLIANCE_LINKS.botTerms}`,
+	`• Privacy Policy: ${COMPLIANCE_LINKS.privacy}`,
+	`• Secretary / Business section: ${COMPLIANCE_LINKS.business}`,
+	"",
+	"You alone are responsible for how you use this bot and the data it processes.",
+].join("\n");
+
 /** Slash commands this extension registers with Pi. */
 export const COMMANDS = {
 	/** Personal — bind the current terminal session to a single Telegram DM. */
@@ -31,11 +58,13 @@ export const COMMANDS = {
  */
 export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 	[
+		{ command: "start", description: "Privacy & terms" },
 		{ command: "esc", description: "Cancel the current turn" },
 		{ command: "clear", description: "Clear the conversation history" },
 		{
 			command: "switch",
-			description: "Switch bot mode (observer / takeover / personal / stop)",
+			description:
+				"Switch bot mode (observer / takeover / mixed / personal / stop)",
 		},
 		{ command: "help", description: "Show available commands" },
 	];

@@ -12,6 +12,7 @@
  * real `pi.on` handlers and command context.
  */
 import type { Message, User } from "@grammyjs/types";
+import { COMPLIANCE_LINKS, COMPLIANCE_NOTICE } from "../../constants";
 import type { AbortRegistry } from "../../core/abort";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
@@ -77,6 +78,7 @@ export interface ConnectControllerDeps {
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const HELP_COMMANDS = new Set(["help"]);
+const START_COMMANDS = new Set(["start"]);
 
 /** The extension's repository and its Tangled mirror, shown in the help footer. */
 export const REPO_URL = "https://github.com/m62624/pi-telegram-manager";
@@ -91,11 +93,13 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
+	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
 	note(
 		"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
 	),
+	`⚠️ Terms you must follow: ${link("bot developers", COMPLIANCE_LINKS.botTerms)} · ${link("privacy", COMPLIANCE_LINKS.privacy)} · ${link("secretary/business", COMPLIANCE_LINKS.business)}`,
 	`This bot runs ${link("pi-telegram-manager", REPO_URL)} · ${link("mirror", MIRROR_URL)}`,
 ]);
 
@@ -180,6 +184,12 @@ export class ConnectController {
 		}
 		if (HELP_COMMANDS.has(command.name)) {
 			await this.sendToChat(HELP_TEXT);
+			return true;
+		}
+		// /start (incl. the Secretary deep link /start bizChat…) always shows the
+		// privacy/compliance reminder, so the terms are surfaced on first contact.
+		if (START_COMMANDS.has(command.name)) {
+			await this.sendToChat(COMPLIANCE_NOTICE);
 			return true;
 		}
 		return false;

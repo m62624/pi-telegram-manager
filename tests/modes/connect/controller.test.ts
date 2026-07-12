@@ -212,10 +212,20 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(0);
 	});
 
-	it("forwards an unknown command (e.g. /start) to the agent as a prompt", async () => {
+	it("intercepts /start and shows the privacy/terms reminder, without prompting", async () => {
+		const { controller, api, sendFollowUp } = setup();
+		const handled = await controller.onEvent(messageEvent("/start"));
+		expect(handled).toBe(true);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		const markdown = api.sent.at(-1)?.rich_message.markdown ?? "";
+		expect(markdown).toContain("Privacy & terms");
+		expect(markdown).toContain("telegram.org/tos/bot-developers");
+	});
+
+	it("forwards an unknown command (e.g. /foobar) to the agent as a prompt", async () => {
 		const onClear = vi.fn(async () => {});
 		const { controller, sendFollowUp } = setup({ onClear });
-		await controller.onEvent(messageEvent("/start"));
+		await controller.onEvent(messageEvent("/foobar"));
 		expect(onClear).not.toHaveBeenCalled();
 		expect(sendFollowUp).toHaveBeenCalledTimes(1);
 	});
