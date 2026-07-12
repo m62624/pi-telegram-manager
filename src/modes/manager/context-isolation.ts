@@ -96,6 +96,45 @@ export function buildIsolatedMessages(
 	return messages;
 }
 
+/**
+ * Trim a stored transcript to a CHARACTER budget before the model sees it, so a
+ * single huge paste (or a long run of messages) can never blow a small local
+ * model's context window — the last-N window is bounded by message COUNT alone
+ * otherwise. Two independent caps, each disabled by a value <= 0:
+ *  - `maxCharsPerMessage` truncates any one over-long message, appending a
+ *    "…[+N chars]" marker so nothing looks silently lost;
+ *  - `maxContextChars` drops the OLDEST messages until the kept text fits, always
+ *    keeping at least the newest message (already capped above).
+ *
+ * Pure, and never touches disk — only the copy the model reads is trimmed.
+ */
+export function budgetRecords(
+	records: readonly ChatMessageRecord[],
+	maxCharsPerMessage: number,
+	maxContextChars: number,
+): ChatMessageRecord[] {
+	const capped = records.map((record) => {
+		const text = record.text ?? "";
+		if (maxCharsPerMessage <= 0 || text.length <= maxCharsPerMessage) {
+			return record;
+		}
+		const dropped = text.length - maxCharsPerMessage;
+		return {
+			...record,
+			text: `${text.slice(0, maxCharsPerMessage)} …[+${dropped} chars]`,
+		};
+	});
+	if (maxContextChars <= 0) return [...capped];
+	const kept: ChatMessageRecord[] = [];
+	let total = 0;
+	for (let i = capped.length - 1; i >= 0; i -= 1) {
+		total += capped[i].text?.length ?? 0;
+		if (total > maxContextChars && kept.length > 0) break;
+		kept.unshift(capped[i]);
+	}
+	return kept;
+}
+
 /** The default boundary directive shown when switching to a chat. */
 export function boundaryDirective(contactName: string): string {
 	return `[New chat with ${contactName}. This is a separate conversation; previous chats are not available.]`;

@@ -45,6 +45,7 @@ import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
 import {
 	boundaryDirective,
+	budgetRecords,
 	buildIsolatedMessages,
 	type IsolatedImage,
 	type IsolatedMessage,
@@ -233,6 +234,14 @@ export interface ManagerControllerDeps {
 	rememberMessages: number;
 	continueWindowMs: number;
 	ownerReplyWindowMs: number;
+	/**
+	 * Character budget for the transcript window the model reads: `maxCharsPerMessage`
+	 * truncates one over-long message, `maxContextChars` drops the oldest until the
+	 * window fits. Either <= 0 disables that cap. Applied over the rememberMessages
+	 * window; disk transcripts are untouched.
+	 */
+	maxCharsPerMessage: number;
+	maxContextChars: number;
 	/** Last-N durable facts kept + injected per contact. */
 	factsLimit: number;
 	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
@@ -982,9 +991,10 @@ export class ManagerController {
 		if (this.consolidating) return this.buildConsolidationContext();
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
-		const records = await this.deps.chatStore.getRecent(
-			active,
-			this.deps.rememberMessages,
+		const records = budgetRecords(
+			await this.deps.chatStore.getRecent(active, this.deps.rememberMessages),
+			this.deps.maxCharsPerMessage,
+			this.deps.maxContextChars,
 		);
 		const meta = this.chats.get(active);
 		const isolated = buildIsolatedMessages({
@@ -1058,9 +1068,13 @@ export class ManagerController {
 			chatId: string;
 			loop: InterrogationState;
 		};
-		const records = await this.deps.chatStore.getRecent(
-			current.chatId,
-			this.deps.rememberMessages,
+		const records = budgetRecords(
+			await this.deps.chatStore.getRecent(
+				current.chatId,
+				this.deps.rememberMessages,
+			),
+			this.deps.maxCharsPerMessage,
+			this.deps.maxContextChars,
 		);
 		const meta = this.chats.get(current.chatId);
 		const isolated = buildIsolatedMessages({

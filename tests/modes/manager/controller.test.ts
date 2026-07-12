@@ -67,6 +67,8 @@ async function setup(
 		labeler: "LLM agent:",
 		mentionWords,
 		rememberMessages: 20,
+		maxCharsPerMessage: 4000,
+		maxContextChars: 40000,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
 		factsLimit: 20,

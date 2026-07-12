@@ -22,6 +22,19 @@ describe("normalizeSettings", () => {
 		expect(s.manager.labeler).toBe("LLM agent 🤖:");
 	});
 
+	it("defaults the context char budget and honours overrides / 0 to disable", () => {
+		expect(DEFAULT_SETTINGS.manager.maxCharsPerMessage).toBe(4000);
+		expect(DEFAULT_SETTINGS.manager.maxContextChars).toBe(40000);
+		const s = normalizeSettings({
+			manager: { maxCharsPerMessage: 1000, maxContextChars: 0 },
+		});
+		expect(s.manager.maxCharsPerMessage).toBe(1000);
+		expect(s.manager.maxContextChars).toBe(0);
+		expect(() =>
+			normalizeSettings({ manager: { maxContextChars: -5 } }),
+		).toThrow(TypeError);
+	});
+
 	it("accepts an empty labeler (no prefix)", () => {
 		expect(
 			normalizeSettings({ manager: { labeler: "" } }).manager.labeler,

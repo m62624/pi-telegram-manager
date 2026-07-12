@@ -1137,6 +1137,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			instructions,
 			labeler: settings.manager.labeler,
 			rememberMessages: settings.manager.rememberMessages,
+			maxCharsPerMessage: settings.manager.maxCharsPerMessage,
+			maxContextChars: settings.manager.maxContextChars,
 			continueWindowMs: settings.manager.continueWindowMs,
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
 			factsLimit: settings.manager.factsLimit,

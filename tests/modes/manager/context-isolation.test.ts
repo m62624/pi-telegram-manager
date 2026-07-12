@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	boundaryDirective,
+	budgetRecords,
 	buildIsolatedMessages,
 	toRebuiltMessages,
 } from "../../../src/modes/manager/context-isolation";
@@ -134,5 +135,60 @@ describe("toRebuiltMessages", () => {
 		expect(
 			(assistant as { usage: { totalTokens: number } }).usage.totalTokens,
 		).toBe(0);
+	});
+});
+
+describe("budgetRecords", () => {
+	it("truncates a single over-long message with a marker", () => {
+		const out = budgetRecords([rec({ text: "abcdefghij" })], 4, 0);
+		expect(out[0].text).toBe("abcd …[+6 chars]");
+	});
+
+	it("leaves short messages untouched (returns the same record)", () => {
+		const input = [rec({ text: "hi" })];
+		const out = budgetRecords(input, 4, 0);
+		expect(out[0]).toBe(input[0]);
+	});
+
+	it("drops the oldest messages until the window fits, keeping the newest", () => {
+		const out = budgetRecords(
+			[
+				rec({ text: "aaaaa", messageId: 1 }),
+				rec({ text: "bbbbb", messageId: 2 }),
+				rec({ text: "ccccc", messageId: 3 }),
+			],
+			0,
+			10,
+		);
+		expect(out.map((r) => r.messageId)).toEqual([2, 3]);
+	});
+
+	it("always keeps at least the newest message even if it alone exceeds the budget", () => {
+		const out = budgetRecords(
+			[rec({ text: "abcdefghij", messageId: 9 })],
+			0,
+			3,
+		);
+		expect(out.map((r) => r.messageId)).toEqual([9]);
+	});
+
+	it("caps per-message first, then measures the window against the capped text", () => {
+		const out = budgetRecords(
+			[
+				rec({ text: "aaaaaaaa", messageId: 1 }),
+				rec({ text: "bbbbbbbb", messageId: 2 }),
+			],
+			3,
+			// Each message is capped to "aaa …[+5 chars]" (15 chars); a 20-char budget
+			// then fits only the newest.
+			20,
+		);
+		expect(out.map((r) => r.messageId)).toEqual([2]);
+		expect(out[0].text).toBe("bbb …[+5 chars]");
+	});
+
+	it("disables both caps at 0", () => {
+		const input = [rec({ text: "x".repeat(100) }), rec({ text: "y" })];
+		expect(budgetRecords(input, 0, 0)).toEqual(input);
 	});
 });

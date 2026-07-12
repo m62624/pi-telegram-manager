@@ -77,6 +77,16 @@ export interface TelegramSettings {
 		};
 		/** Last-N messages remembered per chat. */
 		rememberMessages: number;
+		/**
+		 * Character budget for the transcript window the model sees (mode 2 / mixed),
+		 * on top of the rememberMessages count — so one long paste cannot overflow a
+		 * small local context. `maxCharsPerMessage` truncates a single over-long
+		 * message (with a "…[+N chars]" marker); `maxContextChars` drops the oldest
+		 * messages until the window fits (always keeping the newest). Either at 0
+		 * disables that cap. Disk transcripts are never trimmed. Defaults 4000 / 40000.
+		 */
+		maxCharsPerMessage: number;
+		maxContextChars: number;
 		/** Last-N durable facts kept + injected per contact. Default 20. */
 		factsLimit: number;
 		/**
@@ -181,6 +191,8 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		allowedTools: [],
 		media: { images: true, documents: false },
 		rememberMessages: 20,
+		maxCharsPerMessage: 4000,
+		maxContextChars: 40000,
 		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
 		verifyLimit: 8,
@@ -406,6 +418,16 @@ export function normalizeSettings(
 				manager.rememberMessages,
 				"manager.rememberMessages",
 				d.manager.rememberMessages,
+			),
+			maxCharsPerMessage: asNonNegativeInt(
+				manager.maxCharsPerMessage,
+				"manager.maxCharsPerMessage",
+				d.manager.maxCharsPerMessage,
+			),
+			maxContextChars: asNonNegativeInt(
+				manager.maxContextChars,
+				"manager.maxContextChars",
+				d.manager.maxContextChars,
 			),
 			factsLimit: asPositiveInt(
 				manager.factsLimit,
