@@ -8,6 +8,8 @@ The question behind it: **can a small local model be genuinely useful in everyda
 
 The model runs **on your machine, in your own Telegram account**, and you pick how it behaves with a **mode**. This is a personal experiment — expect rough edges, bugs, and behavior that changes.
 
+> ⚖️ **Terms & responsibility — read before using.** By running this bot you must read and follow Telegram's terms: the [Bot Developer Terms](https://telegram.org/tos/bot-developers), the [Privacy Policy](https://telegram.org/privacy), and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business). This extension was built for **remote control and automation of your own Telegram chats**. **You alone are responsible** for how you use it and for the data it processes; the author accepts no responsibility for your use of the bot or what you do with that data. The bot also shows these links on `/start` and `/help`.
+
 ---
 
 ## Modes
@@ -22,13 +24,13 @@ Start it with `/telegram-mixed` (it asks for observer or takeover — see below)
 
 ### 🤖 Personal — bridge your terminal to a DM
 
-Binds your **current Pi terminal session** to your **private chat with the bot**, so you drive your own agent from your phone: send text, files, and images; get replies in native rich Markdown with a live "typing…" indicator and streamed drafts; queue messages while it works; `/clear` history or `/esc` a turn. The bot talks only to **you** (`allowedUserId`) and touches no business chats.
+Binds your **current Pi terminal session** to your **private chat with the bot**, so you drive your own agent from your phone: send text, files, and images; get replies in native rich Markdown with a live "typing…" indicator and streamed drafts; queue messages while it works; `/clear` history or `/esc` a turn. The bot talks only to **you** (`allowedUserId`) and touches no other chats.
 
 Start it with `/telegram-personal`.
 
-### 🕵️ Business manager — answer other people on your behalf
+### 🕵️ Secretary manager — answer other people on your behalf
 
-Through a Telegram **Business** connection, the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat, with:
+Through a Telegram **Secretary** connection (the feature Telegram formerly called **Business**; same Bot API), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat, with:
 
 - **strict per-chat context isolation** — each turn the model sees only that one conversation, rebuilt from disk;
 - a **priority scheduler** — one chat at a time, never-replied chats first, a continuation window that keeps a live conversation going;
@@ -48,7 +50,7 @@ Mixed uses the same two sub-modes for its Telegram side.
 
 ### ⏹️ Switching from the chat (`/switch`)
 
-Send **`/switch`** in your DM with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Personal / Stop** from an inline keyboard — no terminal needed. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches at once. A **pinned message** at the top of that chat always shows the active mode. (Mixed is launched from the terminal, not this panel.)
+Send **`/switch`** in your DM with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Mixed·Observer / Mixed·Takeover / Personal / Stop** from an inline keyboard — no terminal needed. Every mode, including mixed, is switchable from here. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches at once. A **pinned message** at the top of that chat always shows the active mode.
 
 ---
 
@@ -58,15 +60,17 @@ Send **`/switch`** in your DM with the bot (or tap it in the command menu) to fl
 
 In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
 
-### 2. Enable Business Mode — for manager and mixed modes
+### 2. Enable Secretary Mode — for manager and mixed modes
 
-Their Telegram side receives messages through a Telegram **Business connection**, which a bot can only accept when **Business Mode** is on for it. One-time BotFather toggle:
+Their Telegram side receives messages through a Telegram **Secretary** connection (the feature Telegram **recently renamed from Business** — the Bot API is unchanged), which a bot can only accept when **Secretary Mode** is on for it. One-time BotFather toggle:
 
-> `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Business Mode** → **Turn on**
+> `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Secretary Mode** (formerly **Business Mode**) → **Turn on**
 
-There is no special "business bot" type and nothing to pay for on the bot's side — just this toggle. (Personal mode doesn't need it.)
+There is no special "secretary bot" type and nothing to pay for on the bot's side — just this toggle. (Personal mode doesn't need it.)
 
-> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
+> ℹ️ **Under the hood** (this extension already does it for you): with Secretary Mode on, the bot handles `business_connection` updates when you connect it, receives your chats as `business_message`/`edited_business_message` updates, checks `can_reply`, and sends on your behalf with the `business_connection_id`. When you tap **Manage Bot** in a managed chat, Telegram opens the bot with a `/start bizChat<user_chat_id>` deep link — the bot answers that with its privacy/terms reminder.
+
+> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected secretary/business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
 
 ### 3. Find your Telegram user id
 
@@ -94,7 +98,7 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 
 ### 6. (Manager / mixed only) Connect the bot to your account
 
-Open Telegram **Settings → Telegram Business → Chatbots**, enter your bot's username, and choose which chats it may access.
+Open Telegram **Settings → Telegram Business / Secretary → Chatbots** (Telegram is rolling out the *Secretary* label), enter your bot's username, and choose which chats it may access.
 
 Then open Pi and run a command below. The extension loads `./src/index.ts` directly — no build step, just a Pi session restart after changes.
 
@@ -107,13 +111,13 @@ Then open Pi and run a command below. The extension loads `./src/index.ts` direc
 | Command | Purpose |
 | --- | --- |
 | `/telegram-personal` | Start **Personal** mode (bind this session to your DM) |
-| `/telegram-manager` | Start the **business manager** (asks for observer / takeover) |
+| `/telegram-manager` | Start the **secretary manager** (asks for observer / takeover) |
 | `/telegram-mixed` | Start **mixed** mode — terminal + Telegram (asks for observer / takeover) |
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-switch` | Open the mode-switcher panel in your bot DM |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot** (owner only): `/switch` (mode picker), and in Personal mode `/clear`, `/esc`, `/help`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/help`; in Personal mode also `/clear`, `/esc`.
 
 ---
 
