@@ -1128,6 +1128,14 @@ export class ManagerController {
 			this.deps.factConsolidationQuietMs,
 		);
 		if (!entry) return;
+		// Decide "is this the owner talking to themselves?" in CODE, by userId, before
+		// the model ever runs the identify probe — a namesake can never be mistaken for
+		// the owner (or vice versa) the way name-based reasoning would. A self-chat has
+		// no interlocutor to remember, so drop it from the queue and stop.
+		if (entry.userId && (await this.isOwnerUserId(entry.userId))) {
+			await this.deps.consolidationQueue.remove(entry.chatId);
+			return;
+		}
 		const contactName =
 			this.chats.get(entry.chatId)?.contactName ?? entry.chatId;
 		this.consolidating = {

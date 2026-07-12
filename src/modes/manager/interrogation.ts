@@ -277,7 +277,7 @@ export function currentProbe(state: InterrogationState): {
 		case "identify":
 			return {
 				tool: "manager_identify",
-				directive: `[Step 1 of 3. Confirm identity before saving anything. The interlocutor should be ${name}. Call manager_identify with their name, whether the owner's own lines appear here, and same_as_owner (true only if this "interlocutor" is actually the owner). Save nothing yet.]`,
+				directive: `[Step 1 of 3. This chat is with ${name} — a specific account whose identity is already confirmed; do not second-guess it from a matching name. Call manager_identify with their name, whether the owner's own lines appear here, and same_as_owner=false unless this transcript is literally the owner's own self-chat. Save nothing yet.]`,
 			};
 		case "candidates":
 			return {

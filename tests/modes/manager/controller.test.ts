@@ -1035,4 +1035,21 @@ describe("consolidation pause/resume under live work", () => {
 		await controller.onTick();
 		expect(countConsolidation(triggerAgent.mock.calls)).toBe(2);
 	});
+
+	it("skips (and dequeues) consolidation for the owner's own chat, by userId", async () => {
+		const { controller, triggerAgent, deps, clock } = await setup();
+		// A self-chat queued for consolidation: its userId is the business owner's,
+		// so no matter what its display name is, code must decide it is the owner and
+		// never run the identify probe on it.
+		await deps.consolidationQueue.upsert({
+			chatId: "self",
+			userId: String(OWNER_ID),
+			activityAt: 0,
+		});
+		clock.advance(1_800_001); // past factConsolidationQuietMs
+		await controller.onTick();
+		// No interrogation turn was started, and the self-chat was dropped from the queue.
+		expect(triggerAgent).not.toHaveBeenCalled();
+		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+	});
 });
