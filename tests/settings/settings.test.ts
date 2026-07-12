@@ -13,10 +13,10 @@ describe("normalizeSettings", () => {
 
 	it("field-merges over defaults, keeping untouched defaults", () => {
 		const s = normalizeSettings({
-			manager: { continueWindowMs: 45_000, subMode: "takeover" },
+			manager: { continueWindowMs: 45_000, rememberMessages: 50 },
 		});
 		expect(s.manager.continueWindowMs).toBe(45_000);
-		expect(s.manager.subMode).toBe("takeover");
+		expect(s.manager.rememberMessages).toBe(50);
 		// Untouched fields keep defaults.
 		expect(s.manager.ownerReplyWindowMs).toBe(300_000);
 		expect(s.manager.labeler).toBe("LLM agent 🤖:");

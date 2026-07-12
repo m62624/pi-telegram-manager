@@ -180,8 +180,6 @@ A silent timer probes the bot connection while a mode is active; after too many 
 | `files.maxBytes` | `52428800` (50 MiB) | replaces | Size cap for describing/downloading inbound attachments. |
 | `files.downloadDir` | Pi's working dir | replaces | Where files sent to the bot (Personal mode) are saved. Absolute or `~`-relative. |
 
-> **Reserved keys** — `manager.responseMode`, `manager.markRead`, `manager.throttleMs`, and `manager.subMode` are parsed for forward-compatibility but are **not wired to behavior yet**. Setting them does nothing today (the active sub-mode comes from the command you run).
-
 ---
 
 ## Timing at a glance (defaults)

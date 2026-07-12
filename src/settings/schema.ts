@@ -1,5 +1,3 @@
-import type { ManagerSubMode } from "../storage/singleton-store";
-
 /**
  * Effective settings for the extension. Persisted at
  * `<agentDir>/extensions/pi-telegram-manager/settings.json`. Unknown keys never
@@ -83,9 +81,6 @@ export interface TelegramSettings {
 		 * 120000 (2 min).
 		 */
 		liveFreshnessMs: number;
-		responseMode: "smart" | "active" | "mention";
-		markRead: boolean;
-		throttleMs: number;
 		/** Prefix prepended to each outgoing business message ("" = none). */
 		labeler: string;
 		/**
@@ -131,7 +126,6 @@ export interface TelegramSettings {
 		 * banter. Default true.
 		 */
 		strictReplyGuard: boolean;
-		subMode: ManagerSubMode;
 		observer: {
 			interlocutorInstructionFile?: string;
 			ownerInstructionFile?: string;
@@ -171,13 +165,9 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		reviseThreshold: 2,
 		debugFeed: false,
 		strictReplyGuard: true,
-		responseMode: "smart",
-		markRead: true,
-		throttleMs: 0,
 		labeler: "LLM agent 🤖:",
 		mentionWords: ["llm", "manager"],
 		instructionFiles: [],
-		subMode: "observer",
 		observer: {},
 		takeover: {},
 	},
@@ -403,22 +393,6 @@ export function normalizeSettings(
 				"manager.liveFreshnessMs",
 				d.manager.liveFreshnessMs,
 			),
-			responseMode: asEnum(
-				manager.responseMode,
-				"manager.responseMode",
-				["smart", "active", "mention"] as const,
-				d.manager.responseMode,
-			),
-			markRead: asBoolean(
-				manager.markRead,
-				"manager.markRead",
-				d.manager.markRead,
-			),
-			throttleMs: asNonNegativeInt(
-				manager.throttleMs,
-				"manager.throttleMs",
-				d.manager.throttleMs,
-			),
 			labeler: asString(manager.labeler, "manager.labeler", d.manager.labeler),
 			// Absent → the default wake-word; an explicit array (incl. []) is honoured,
 			// so `[]` disables the feature.
@@ -458,12 +432,6 @@ export function normalizeSettings(
 				manager.strictReplyGuard,
 				"manager.strictReplyGuard",
 				d.manager.strictReplyGuard,
-			),
-			subMode: asEnum(
-				manager.subMode,
-				"manager.subMode",
-				["observer", "takeover"] as const,
-				d.manager.subMode,
 			),
 			observer: {
 				interlocutorInstructionFile: asOptionalString(
