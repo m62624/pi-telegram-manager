@@ -12,6 +12,10 @@ Two **mutually-exclusive** modes (only one active at a time, enforced by a singl
   A single agent instance multiplexes chats with strict per-chat context isolation, a priority queue,
   continuation/owner-reply timers, ACID per-chat memory, and `observer`/`takeover` sub-modes.
 
+Send **`/switch`** in your private chat with the bot (or tap it in the command menu) to flip between
+modes from an inline keyboard — **Observer**, **Takeover**, **Personal** (terminal continuation), or
+**Stop** — without touching the terminal. Owner only.
+
 Status: **early development.** See the approved implementation plan for the architecture and phasing.
 
 ## Development
