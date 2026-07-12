@@ -47,7 +47,9 @@ export function switchLabel(target: SwitchTarget): string {
  * check so the current mode is obvious; each button carries `switch:<target>`
  * as its `callback_data`.
  */
-export function buildSwitchKeyboard(active: SwitchTarget): InlineKeyboardMarkup {
+export function buildSwitchKeyboard(
+	active: SwitchTarget,
+): InlineKeyboardMarkup {
 	const buttons = SWITCH_OPTIONS.map((option) => ({
 		text:
 			option.target === active
@@ -74,7 +76,7 @@ export function isSwitchCommand(text: string): boolean {
  * callback is ignored, not misrouted.
  */
 export function parseSwitchData(data: string | undefined): SwitchTarget | null {
-	if (!data || !data.startsWith(CALLBACK_PREFIX)) return null;
+	if (!data?.startsWith(CALLBACK_PREFIX)) return null;
 	const target = data.slice(CALLBACK_PREFIX.length);
 	return TARGETS.has(target) ? (target as SwitchTarget) : null;
 }

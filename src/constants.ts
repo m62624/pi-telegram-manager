@@ -21,6 +21,8 @@ export const COMMANDS = {
 	managerTakeover: "telegram-manager-takeover",
 	/** Mode 2 — explicitly stop the manager (either sub-mode). */
 	managerStop: "telegram-manager-stop",
+	/** Mode 1/2 — open the inline mode-switcher panel in the owner's bot DM. */
+	switch: "telegram-switch",
 } as const;
 
 /**
@@ -34,6 +36,10 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "esc", description: "Cancel the current turn" },
 		{ command: "clear", description: "Clear the conversation history" },
 		{ command: "commands", description: "List all Pi commands (terminal)" },
+		{
+			command: "switch",
+			description: "Switch bot mode (observer / takeover / personal / stop)",
+		},
 		{ command: "help", description: "Show available commands" },
 	];
 

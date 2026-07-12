@@ -17,7 +17,7 @@
  * reason.
  */
 import { join } from "node:path";
-import type { Message } from "@grammyjs/types";
+import type { InlineKeyboardMarkup, Message } from "@grammyjs/types";
 import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
@@ -109,8 +109,39 @@ import {
 } from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
+import {
+	buildSwitchKeyboard,
+	isSwitchCommand,
+	parseSwitchData,
+	type SwitchTarget,
+	switchLabel,
+	switchPanelText,
+} from "./telegram/switch-panel";
 import type { TelegramEvent } from "./telegram/updates";
 import { managerBannerLines } from "./ui/manager-banner";
+
+/**
+ * The narrow slice of the grammY raw api the `/switch` panel needs: send a
+ * message with an inline keyboard, acknowledge a button press, and edit a panel's
+ * keyboard in place. Cast from `client.api` (the same pattern as `OutboundApi`),
+ * so no extra `TelegramClient` methods are required.
+ */
+interface ControlApi {
+	sendMessage(payload: {
+		chat_id: number;
+		text: string;
+		reply_markup?: InlineKeyboardMarkup;
+	}): Promise<{ message_id: number }>;
+	answerCallbackQuery(payload: {
+		callback_query_id: string;
+		text?: string;
+	}): Promise<unknown>;
+	editMessageReplyMarkup(payload: {
+		chat_id: number;
+		message_id: number;
+		reply_markup?: InlineKeyboardMarkup;
+	}): Promise<unknown>;
+}
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -236,6 +267,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		setWidget: ExtensionCommandContext["ui"]["setWidget"];
 	} | null = null;
 
+	// `/switch` control state. `activeCtx` is the most recent command context —
+	// needed so a Telegram button press (which has no Pi ctx) can still notify and
+	// restart a mode; captured on every mode start. `ownerUserId` gates control to
+	// the owner; `activeSubMode` tracks the running manager sub-mode so the panel
+	// can highlight the current mode.
+	let activeCtx: ExtensionCommandContext | null = null;
+	let ownerUserId: number | null = null;
+	let activeSubMode: ManagerSubMode | null = null;
+
 	const updateManagerBanner = (): void => {
 		if (!manager || !managerUi) return;
 		try {
@@ -335,6 +375,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await managerClient?.stop().catch(() => {});
 		managerClient = null;
 		manager = null;
+		activeSubMode = null;
 		deliverManagerFeed = null;
 		mirrorManagerNotice = null;
 		visibility.setActive("manager", false);
@@ -345,8 +386,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await lifecycle.deactivate("manager");
 	};
 
-	// Route business updates to the manager controller.
+	// Route business updates to the manager controller. Owner control commands
+	// (`/switch`, panel button presses) are intercepted first, in both modes.
 	const routeManagerEvent = async (event: TelegramEvent): Promise<void> => {
+		if (await handleControl(event)) return;
 		if (!manager) return;
 		if (event.kind === "business_connection") {
 			await manager.onBusinessConnection({
@@ -507,205 +550,204 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return { settings, token };
 	};
 
-	pi.registerCommand(COMMANDS.connect, {
-		description: "Bind this terminal session to a Telegram chat (mode 1).",
-		handler: async (_args, ctx) => {
-			if (connect) {
-				ctx.ui.notify("Telegram connect is already active.", "warning");
-				return;
-			}
-			const loaded = await loadSettingsAndToken(ctx);
-			if (!loaded) return;
-			const { settings, token } = loaded;
-			if (!settings.allowedUserId) {
-				ctx.ui.notify("Set allowedUserId in settings.json first.", "error");
-				return;
-			}
-			const allowedUserId = settings.allowedUserId;
-			const activation = await lifecycle.activate({
-				mode: "connect",
-				chatId: String(allowedUserId),
-			});
-			if (!activation.ok) {
-				ctx.ui.notify(`Cannot connect: ${activation.reason}`, "error");
-				return;
-			}
+	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
+	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
+	// control panel.
+	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+		activeCtx = ctx;
+		if (connect) {
+			ctx.ui.notify("Telegram connect is already active.", "warning");
+			return;
+		}
+		const loaded = await loadSettingsAndToken(ctx);
+		if (!loaded) return;
+		const { settings, token } = loaded;
+		if (!settings.allowedUserId) {
+			ctx.ui.notify("Set allowedUserId in settings.json first.", "error");
+			return;
+		}
+		const allowedUserId = settings.allowedUserId;
+		ownerUserId = allowedUserId;
+		const activation = await lifecycle.activate({
+			mode: "connect",
+			chatId: String(allowedUserId),
+		});
+		if (!activation.ok) {
+			ctx.ui.notify(`Cannot connect: ${activation.reason}`, "error");
+			return;
+		}
 
-			// Assemble mode-1 instructions: bundled connect.md plus the user's
-			// global + connect override files (appended, never replacing defaults).
-			const connectOverride = await readInstructionFiles(fs, [
-				...settings.instructionFiles,
-				...settings.connect.instructionFiles,
-			]);
-			for (const file of connectOverride.missing) {
-				ctx.ui.notify(`Instruction file not found: ${file}`, "warning");
-			}
-			connectSystemBlock = await loadConnectInstructions({
-				fs,
-				overrideText: connectOverride.text,
-			});
-			connectTimezone = settings.timezone;
+		// Assemble mode-1 instructions: bundled connect.md plus the user's
+		// global + connect override files (appended, never replacing defaults).
+		const connectOverride = await readInstructionFiles(fs, [
+			...settings.instructionFiles,
+			...settings.connect.instructionFiles,
+		]);
+		for (const file of connectOverride.missing) {
+			ctx.ui.notify(`Instruction file not found: ${file}`, "warning");
+		}
+		connectSystemBlock = await loadConnectInstructions({
+			fs,
+			overrideText: connectOverride.text,
+		});
+		connectTimezone = settings.timezone;
 
-			client = new TelegramClient({
-				token,
-				onEvent: async (event) => {
-					await connect?.onEvent(event);
-				},
-				onError: (error) =>
-					ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
-			});
-			// Warn once (not per-message) when native rich rendering isn't reaching
-			// Telegram and we degraded to plain text — so a tester can tell a real
-			// rich reply from a fallback one.
-			let richFallbackWarned = false;
-			const outbound = new OutboundSender(
-				client.api as unknown as OutboundApi,
-				{
-					onRichFallback: (error) => {
-						if (richFallbackWarned) return;
-						richFallbackWarned = true;
-						ctx.ui.notify(
-							`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
-							"warning",
-						);
-					},
-				},
+		client = new TelegramClient({
+			token,
+			onEvent: async (event) => {
+				if (await handleControl(event)) return;
+				await connect?.onEvent(event);
+			},
+			onError: (error) =>
+				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+		});
+		// Warn once (not per-message) when native rich rendering isn't reaching
+		// Telegram and we degraded to plain text — so a tester can tell a real
+		// rich reply from a fallback one.
+		let richFallbackWarned = false;
+		const outbound = new OutboundSender(client.api as unknown as OutboundApi, {
+			onRichFallback: (error) => {
+				if (richFallbackWarned) return;
+				richFallbackWarned = true;
+				ctx.ui.notify(
+					`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
+					"warning",
+				);
+			},
+		});
+		const media = new MediaDownloader({
+			api: client.api as unknown as FileApi,
+			fetchBytes: fetchBytesFromUrl,
+			fileBaseUrl: fileBaseUrl(token),
+			maxBytes: settings.files.maxBytes,
+		});
+		const loadImages = (message: Message) =>
+			loadInlineImages(media, message, settings.files.maxBytes);
+		// Where inbound non-image files land: the configured dir, else the
+		// directory Pi runs in.
+		const downloadDir = settings.files.downloadDir
+			? expandHome(settings.files.downloadDir)
+			: process.cwd();
+		// Save every non-image attachment to disk and report its absolute path,
+		// so the model can open it with its normal tools. Per-file errors are
+		// collected and surfaced in the prompt, not swallowed.
+		const saveAttachments = async (
+			message: Parameters<typeof describeAttachments>[0],
+		) => {
+			const refs = describeAttachments(message, settings.files.maxBytes).filter(
+				(ref) => !isImage(ref),
 			);
-			const media = new MediaDownloader({
-				api: client.api as unknown as FileApi,
-				fetchBytes: fetchBytesFromUrl,
-				fileBaseUrl: fileBaseUrl(token),
-				maxBytes: settings.files.maxBytes,
-			});
-			const loadImages = (message: Message) =>
-				loadInlineImages(media, message, settings.files.maxBytes);
-			// Where inbound non-image files land: the configured dir, else the
-			// directory Pi runs in.
-			const downloadDir = settings.files.downloadDir
-				? expandHome(settings.files.downloadDir)
-				: process.cwd();
-			// Save every non-image attachment to disk and report its absolute path,
-			// so the model can open it with its normal tools. Per-file errors are
-			// collected and surfaced in the prompt, not swallowed.
-			const saveAttachments = async (
-				message: Parameters<typeof describeAttachments>[0],
-			) => {
-				const refs = describeAttachments(
-					message,
-					settings.files.maxBytes,
-				).filter((ref) => !isImage(ref));
-				const savedFiles: TurnSavedFile[] = [];
-				const errors: string[] = [];
-				const used = new Set<string>();
-				for (const ref of refs) {
-					const label = ref.fileName ?? ref.kind;
-					try {
-						const file = await media.download(ref);
-						const target = join(downloadDir, resolveSaveName(ref, used));
-						await fs.writeBytes(target, file.bytes);
-						savedFiles.push({
-							path: target,
-							kind: ref.kind,
-							size: formatBytes(file.bytes.length),
-							mimeType: ref.mimeType,
-						});
-					} catch (error) {
-						errors.push(`${label}: ${String(error)}`);
-					}
+			const savedFiles: TurnSavedFile[] = [];
+			const errors: string[] = [];
+			const used = new Set<string>();
+			for (const ref of refs) {
+				const label = ref.fileName ?? ref.kind;
+				try {
+					const file = await media.download(ref);
+					const target = join(downloadDir, resolveSaveName(ref, used));
+					await fs.writeBytes(target, file.bytes);
+					savedFiles.push({
+						path: target,
+						kind: ref.kind,
+						size: formatBytes(file.bytes.length),
+						mimeType: ref.mimeType,
+					});
+				} catch (error) {
+					errors.push(`${label}: ${String(error)}`);
 				}
-				return { savedFiles, errors };
-			};
-			// Upload a local file or URL back to the bound chat (the telegram_attach
-			// tool). Validate a local path up front so the model gets a clear error.
-			const uploadFile = async (input: {
-				path?: string;
-				url?: string;
-				caption?: string;
-			}) => {
-				if (input.path && !(await fs.exists(input.path))) {
-					throw new Error(`file not found: ${input.path}`);
-				}
-				await client?.sendDocument({ chatId: allowedUserId, ...input });
-			};
-			connect = new ConnectController({
-				allowedUserId,
-				maxBytes: settings.files.maxBytes,
-				isIdle: () => !busy,
-				sendFollowUp,
-				loadImages,
-				saveAttachments,
-				uploadFile,
-				onClear: async () => {
-					// Clearing mid-turn could orphan a tool_use/tool_result pair, so
-					// only reset while the agent is idle.
-					if (busy) {
-						await connect?.sendToChat(
-							card("⏳", "Busy right now", [
-								note("Send /clear again once I finish."),
-							]),
-						);
-						return;
-					}
-					contextReset.clear(Date.now());
+			}
+			return { savedFiles, errors };
+		};
+		// Upload a local file or URL back to the bound chat (the telegram_attach
+		// tool). Validate a local path up front so the model gets a clear error.
+		const uploadFile = async (input: {
+			path?: string;
+			url?: string;
+			caption?: string;
+		}) => {
+			if (input.path && !(await fs.exists(input.path))) {
+				throw new Error(`file not found: ${input.path}`);
+			}
+			await client?.sendDocument({ chatId: allowedUserId, ...input });
+		};
+		connect = new ConnectController({
+			allowedUserId,
+			maxBytes: settings.files.maxBytes,
+			isIdle: () => !busy,
+			sendFollowUp,
+			loadImages,
+			saveAttachments,
+			uploadFile,
+			onClear: async () => {
+				// Clearing mid-turn could orphan a tool_use/tool_result pair, so
+				// only reset while the agent is idle.
+				if (busy) {
 					await connect?.sendToChat(
-						card("🧹", "History cleared", [
-							"Starting fresh.",
-							note(
-								"Shared session: the terminal sees the cleared context too.",
-							),
+						card("⏳", "Busy right now", [
+							note("Send /clear again once I finish."),
 						]),
 					);
-				},
-				onAbort: async () => {
-					// Interrupt the running turn via the handler armed on agent_start.
-					const stopped = await abort.abort();
-					await connect?.sendToChat(
-						stopped
-							? card("⎋", "Cancelled", [note("Stopped the current turn.")])
-							: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
-					);
-				},
-				// Discovery only: list every registered Pi command (incl. other
-				// extensions'). The SDK exposes no way to execute another
-				// extension's command remotely, so these are shown as terminal-run.
-				listCommands: () =>
-					pi.getCommands().map((command) => ({
-						name: command.name,
-						description: command.description,
-					})),
-				onContact: async (user) => {
-					await contactStore.upsertProfile(
-						extractProfileFromUser(user),
-						Date.now(),
-					);
-				},
-				outbound,
-				abort,
-			});
-			toolActivityEnabled = settings.assistant.toolActivity;
-			draftPreviewsEnabled = settings.assistant.draftPreviews;
-			void client.start();
-			// Publish the tappable command menu (no manual setup needed by the user).
-			void client.api
-				.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
-				.catch(() => {});
-			heartbeat = setInterval(() => {
-				void lifecycle.heartbeat();
-			}, HEARTBEAT_INTERVAL_MS);
-			visibility.setActive("connect", true);
-			ctx.ui.setStatus(
-				STATUS_KEY,
-				`Telegram: connected (chat ${allowedUserId})`,
-			);
-			// Route through the Markdown pipeline (sendToChat), not notify(): notify
-			// HTML-escapes its string, so any `*`/`_` markup would show up literally.
-			await connect
-				.sendToChat(
-					card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
-				)
-				.catch(() => {});
-			ctx.ui.notify("Telegram connect: active.");
-		},
+					return;
+				}
+				contextReset.clear(Date.now());
+				await connect?.sendToChat(
+					card("🧹", "History cleared", [
+						"Starting fresh.",
+						note("Shared session: the terminal sees the cleared context too."),
+					]),
+				);
+			},
+			onAbort: async () => {
+				// Interrupt the running turn via the handler armed on agent_start.
+				const stopped = await abort.abort();
+				await connect?.sendToChat(
+					stopped
+						? card("⎋", "Cancelled", [note("Stopped the current turn.")])
+						: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
+				);
+			},
+			// Discovery only: list every registered Pi command (incl. other
+			// extensions'). The SDK exposes no way to execute another
+			// extension's command remotely, so these are shown as terminal-run.
+			listCommands: () =>
+				pi.getCommands().map((command) => ({
+					name: command.name,
+					description: command.description,
+				})),
+			onContact: async (user) => {
+				await contactStore.upsertProfile(
+					extractProfileFromUser(user),
+					Date.now(),
+				);
+			},
+			outbound,
+			abort,
+		});
+		toolActivityEnabled = settings.assistant.toolActivity;
+		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		void client.start();
+		// Publish the tappable command menu (no manual setup needed by the user).
+		void client.api
+			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
+			.catch(() => {});
+		heartbeat = setInterval(() => {
+			void lifecycle.heartbeat();
+		}, HEARTBEAT_INTERVAL_MS);
+		visibility.setActive("connect", true);
+		ctx.ui.setStatus(STATUS_KEY, `Telegram: connected (chat ${allowedUserId})`);
+		// Route through the Markdown pipeline (sendToChat), not notify(): notify
+		// HTML-escapes its string, so any `*`/`_` markup would show up literally.
+		await connect
+			.sendToChat(
+				card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
+			)
+			.catch(() => {});
+		ctx.ui.notify("Telegram connect: active.");
+	};
+
+	pi.registerCommand(COMMANDS.connect, {
+		description: "Bind this terminal session to a Telegram chat (mode 1).",
+		handler: (_args, ctx) => startConnect(ctx),
 	});
 
 	pi.registerCommand(COMMANDS.disconnect, {
@@ -745,6 +787,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		ctx: ExtensionCommandContext,
 		subMode: ManagerSubMode,
 	): Promise<void> => {
+		activeCtx = ctx;
 		if (manager || connect) {
 			ctx.ui.notify("A Telegram mode is already active.", "warning");
 			return;
@@ -752,6 +795,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
 		const { settings, token } = loaded;
+		ownerUserId = settings.allowedUserId ?? null;
+		activeSubMode = subMode;
 
 		const activation = await lifecycle.activate({
 			mode: "manager",
@@ -994,6 +1039,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			};
 		}
 		void managerClient.start();
+		// Publish the tappable command menu (so /switch is reachable in mode 2 too).
+		void managerClient.api
+			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
+			.catch(() => {});
 		visibility.setExclusive("manager", managerMatcher);
 		visibility.setActive("manager", true);
 		managerUi = { setWidget: ctx.ui.setWidget.bind(ctx.ui) };
@@ -1036,6 +1085,152 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			await stopManager();
 			ctx.ui.notify("Telegram manager: stopped.");
+		},
+	});
+
+	// ─── /switch: in-chat mode switcher ──────────────────────────────────────
+	// The bot's DM doubles as a control surface: `/switch` (or the command-menu
+	// button) opens an inline keyboard; a button press flips the whole runtime
+	// between modes, tearing down the old poller and starting the new one. Owner
+	// only, gated by `ownerUserId`.
+
+	// Whichever bot client is currently polling exposes the control api (send
+	// panel, answer callbacks, edit keyboards). Null when fully stopped.
+	const controlApi = (): ControlApi | null =>
+		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
+
+	// The mode currently running, as a switch target ("stop" when idle).
+	const activeTarget = (): SwitchTarget => {
+		if (manager) return activeSubMode ?? "observer";
+		if (connect) return "personal";
+		return "stop";
+	};
+
+	// Stop every active mode (either or neither may be running).
+	const stopAll = async (): Promise<void> => {
+		if (manager) await stopManager();
+		if (connect && activeCtx) await stopConnect(activeCtx);
+	};
+
+	// Start a specific mode using the captured command context.
+	const startMode = async (
+		target: SwitchTarget,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		if (target === "observer" || target === "takeover") {
+			await startManager(ctx, target);
+		} else if (target === "personal") {
+			await startConnect(ctx);
+		}
+		// "stop" starts nothing.
+	};
+
+	// Flip the runtime to `target`: no-op if already there, else stop everything
+	// and start the requested mode. Errors are surfaced, never thrown to the poller.
+	const switchMode = async (target: SwitchTarget): Promise<void> => {
+		const ctx = activeCtx;
+		if (!ctx) return;
+		if (activeTarget() === target) return;
+		try {
+			await stopAll();
+			await startMode(target, ctx);
+		} catch (error) {
+			ctx.ui.notify(`Switch failed: ${String(error)}`, "error");
+		}
+	};
+
+	// Run the switch AFTER the current update settles: `bot.stop()` on the very
+	// client whose middleware we're inside would otherwise wait on this handler and
+	// deadlock. A macrotask hop lets the update finish first.
+	const scheduleSwitch = (target: SwitchTarget): void => {
+		setTimeout(() => {
+			void switchMode(target);
+		}, 0);
+	};
+
+	// Send a fresh mode-switcher panel to the owner's DM.
+	const sendSwitchPanel = async (api: ControlApi): Promise<void> => {
+		if (ownerUserId === null) return;
+		const active = activeTarget();
+		await api
+			.sendMessage({
+				chat_id: ownerUserId,
+				text: switchPanelText(active),
+				reply_markup: buildSwitchKeyboard(active),
+			})
+			.catch(() => {});
+	};
+
+	// Owner control pre-handler, wired ahead of both modes' routing. Returns true
+	// when it consumes the event (so the mode router skips it).
+	const handleControl = async (event: TelegramEvent): Promise<boolean> => {
+		if (ownerUserId === null) return false;
+		const api = controlApi();
+		if (!api) return false;
+
+		if (event.kind === "message") {
+			// Only the owner's own DM with the bot (private chat id === user id).
+			if (event.fromId !== ownerUserId || event.chatId !== ownerUserId) {
+				return false;
+			}
+			if (!isSwitchCommand(event.message.text ?? "")) return false;
+			await sendSwitchPanel(api);
+			return true;
+		}
+
+		if (event.kind === "callback_query") {
+			if (event.fromId !== ownerUserId) return false;
+			const target = parseSwitchData(event.data);
+			if (!target) return false;
+			const already = activeTarget() === target;
+			// Answer immediately so the button stops spinning.
+			await api
+				.answerCallbackQuery({
+					callback_query_id: event.query.id,
+					text: already
+						? `Already ${switchLabel(target)}`
+						: target === "stop"
+							? "Stopping…"
+							: `Switching to ${switchLabel(target)}…`,
+				})
+				.catch(() => {});
+			if (!already) {
+				// Optimistically reflect the choice now; the real switch runs after this
+				// update settles (see scheduleSwitch). The captured `api` keeps working
+				// for the edit even once its client is torn down.
+				const chatId = event.chatId;
+				const messageId = event.query.message?.message_id;
+				if (chatId !== undefined && messageId !== undefined) {
+					await api
+						.editMessageReplyMarkup({
+							chat_id: chatId,
+							message_id: messageId,
+							reply_markup: buildSwitchKeyboard(target),
+						})
+						.catch(() => {});
+				}
+				scheduleSwitch(target);
+			}
+			return true;
+		}
+
+		return false;
+	};
+
+	pi.registerCommand(COMMANDS.switch, {
+		description: "Open the Telegram mode switcher in the owner's bot DM.",
+		handler: async (_args, ctx) => {
+			activeCtx = ctx;
+			const api = controlApi();
+			if (!api || ownerUserId === null) {
+				ctx.ui.notify(
+					"Start a Telegram mode first (the bot must be running to open the switcher).",
+					"warning",
+				);
+				return;
+			}
+			await sendSwitchPanel(api);
+			ctx.ui.notify("Telegram switcher: sent to your bot DM.");
 		},
 	});
 }
