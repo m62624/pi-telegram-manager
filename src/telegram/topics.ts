@@ -214,13 +214,14 @@ export class TopicRouter {
 	/**
 	 * Open a fresh `personal` for this session, and decide what becomes of the old one.
 	 *
-	 * A topic ages badly. The one we carried for weeks stopped accepting ordinary
-	 * messages from the Android client — they were posted OUTSIDE it, with no
-	 * `message_thread_id`, while replies (which name their target explicitly) still
-	 * landed inside; Desktop never noticed. A topic created minutes earlier worked
-	 * perfectly from the same phone. We cannot see when a topic goes stale, and there
-	 * is no signal to check for, so we do not try: every session simply starts in a
-	 * topic that is new, and none lives long enough to rot.
+	 * A topic can go bad. A three-day-old one — which had survived a rename and a chat
+	 * the owner deleted — stopped accepting ordinary messages from the Android client:
+	 * they were posted OUTSIDE it, with no `message_thread_id`, while replies (which
+	 * name their target explicitly) still landed inside, and Desktop never noticed. A
+	 * topic created minutes earlier took the same message from the same phone. What
+	 * exactly ruins a topic we do not know, and there is no signal to check for, so we
+	 * do not try to detect it: every session simply starts in a topic that is new, and
+	 * none lives long enough to find out.
 	 *
 	 * What happens to the outgoing one is decided by whether anything was SAID in it:
 	 *  - it holds a conversation → it becomes the archive (renamed), and the previous
