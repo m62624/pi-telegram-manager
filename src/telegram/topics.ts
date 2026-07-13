@@ -99,11 +99,6 @@ export class TopicRouter {
 		return this.state?.[kind];
 	}
 
-	/** Whether a thread id is the manager topic (owner input there is service noise). */
-	isManager(threadId?: number): boolean {
-		return threadId !== undefined && threadId === this.state?.manager;
-	}
-
 	/** Whether an error means the thread we addressed is gone (topic deleted). */
 	static isMissingThread(error: unknown): boolean {
 		return /message thread not found/i.test(String(error));

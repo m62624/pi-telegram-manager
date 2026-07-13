@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assistantReplyText,
 	extractText,
+	isServiceMessage,
 	lastAssistantReply,
 	lastAssistantThinking,
 	messageText,
@@ -206,5 +207,37 @@ describe("lastAssistantThinking", () => {
 			lastAssistantThinking([{ role: "assistant", content: "just text" }]),
 		).toBe("");
 		expect(lastAssistantThinking([])).toBe("");
+	});
+});
+
+describe("isServiceMessage", () => {
+	it("treats a topic-creation service message as no prompt at all", () => {
+		// Creating a topic in the bot DM posts a message with no text, caption or media.
+		// Forwarded to the agent it woke the model with an empty "[telegram|from:…]" turn.
+		expect(
+			isServiceMessage({
+				message_id: 3,
+				date: 0,
+				chat: { id: 1, type: "private", first_name: "A" },
+				from: { id: 1, is_bot: false, first_name: "A" },
+				forum_topic_created: { name: "notes", icon_color: 7322096 },
+			} as never),
+		).toBe(true);
+	});
+
+	it("keeps a real message, text or media", () => {
+		const base = {
+			message_id: 4,
+			date: 0,
+			chat: { id: 1, type: "private", first_name: "A" },
+			from: { id: 1, is_bot: false, first_name: "A" },
+		};
+		expect(isServiceMessage({ ...base, text: "hi" } as never)).toBe(false);
+		expect(
+			isServiceMessage({
+				...base,
+				photo: [{ file_id: "p", file_unique_id: "u", width: 1, height: 1 }],
+			} as never),
+		).toBe(false);
 	});
 });

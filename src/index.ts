@@ -616,7 +616,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			event.fromId === ownerUserId &&
 			event.chatId === ownerUserId
 		) {
-			if (topics?.isManager(threadOf(event))) return;
+			if (!inPersonalTopic(event)) return;
 			await takeSessionForCoding();
 			await connect.onEvent(event);
 			return;
@@ -875,6 +875,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			: undefined;
 
 	/**
+	 * Whether an owner message belongs to the conversation with the model.
+	 *
+	 * With topics live that is the `personal` topic and nothing else: the `manager`
+	 * topic is the bot reporting to itself, and a topic YOU created is yours — notes,
+	 * scratch, whatever — and must not wake the model. Without topics every message in
+	 * the DM is the conversation, as before.
+	 */
+	const inPersonalTopic = (event: TelegramEvent): boolean =>
+		!topics?.active || threadOf(event) === personalThread();
+
+	/**
 	 * Make room for the mode about to start: a mode command IS a switch. Running one
 	 * while another is active used to just warn ("a Telegram mode is already active"),
 	 * leaving you to stop it by hand; now the running mode is torn down first — the same
@@ -1108,10 +1119,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			token,
 			onEvent: async (event) => {
 				if (await handleControl(event)) return;
-				// The log topic is the bot talking to itself; anything the owner types
-				// there is not a prompt for the model (they'd use the chat topic).
-				if (event.kind === "message" && topics?.isManager(threadOf(event)))
-					return;
+				// Only the personal topic is the conversation with the model.
+				if (!inPersonalTopic(event)) return;
 				await connect?.onEvent(event);
 			},
 			onError: (error) =>

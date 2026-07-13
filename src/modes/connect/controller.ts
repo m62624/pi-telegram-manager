@@ -27,6 +27,7 @@ import type { TelegramEvent } from "../../telegram/updates";
 import { bullet, card, link, note } from "./format";
 import {
 	type InboundImage,
+	isServiceMessage,
 	lastAssistantReply,
 	messageText,
 	messageToTurnInput,
@@ -133,6 +134,9 @@ export class ConnectController {
 		if (event.kind !== "message" && event.kind !== "edited_message")
 			return false;
 		if (event.fromId !== this.deps.allowedUserId) return false;
+		// A service message (you created a topic, pinned something) has no content: it
+		// is not a prompt, and forwarding it woke the model with an empty turn.
+		if (isServiceMessage(event.message)) return false;
 
 		// Capture/refresh the sender's profile (name, username, …) for the contact
 		// store — used now for a unified record and later relayed by the manager.

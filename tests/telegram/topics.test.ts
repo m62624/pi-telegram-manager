@@ -51,8 +51,6 @@ describe("TopicRouter", () => {
 		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
 		expect(r.thread("personal")).toBe(100);
 		expect(r.thread("manager")).toBe(101);
-		expect(r.isManager(101)).toBe(true);
-		expect(r.isManager(100)).toBe(false);
 	});
 
 	it("reuses the persisted threads on the next run instead of creating new ones", async () => {

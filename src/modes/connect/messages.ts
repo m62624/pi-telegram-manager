@@ -67,6 +67,19 @@ export function messageText(message: Message): string {
 }
 
 /**
+ * Whether a message carries nothing a model could act on — a Telegram SERVICE
+ * message. Creating a topic in the bot DM, pinning something, or joining posts a
+ * message with no text, no caption and no media; forwarded to the agent it became an
+ * empty prompt (`[telegram|from:…]` with a blank body) that woke the model for
+ * nothing. Media is checked via {@link describeAttachments}, so any kind we can
+ * actually deliver counts as content.
+ */
+export function isServiceMessage(message: Message): boolean {
+	if (messageText(message).trim()) return false;
+	return describeAttachments(message).length === 0;
+}
+
+/**
  * Parse a leading Telegram bot command (`/name`, `/name@bot`, `/name arg`) into
  * its lowercased name and trailing argument. Returns null when the text is not
  * a command, so ordinary messages (and prose that merely contains a slash) pass
