@@ -41,6 +41,30 @@ describe("normalizeSettings", () => {
 		).toBe("");
 	});
 
+	// A banner made of zero-width characters would pass for a banner everywhere it
+	// is checked and show the interlocutor nothing. Turning the banner off is a
+	// choice we allow; faking one is not — so a label with nothing visible in it is
+	// simply no label.
+	it("collapses a labeler that renders to nothing", () => {
+		expect(
+			normalizeSettings({ manager: { labeler: "\u200b\u200b" } }).manager
+				.labeler,
+		).toBe("");
+		expect(
+			normalizeSettings({ manager: { labeler: " \ufeff \u2060" } }).manager
+				.labeler,
+		).toBe("");
+	});
+
+	// ...but a name that merely CONTAINS one is a name: it is on the screen, it is
+	// read, and it is not ours to rewrite.
+	it("keeps invisible characters inside a real name", () => {
+		expect(
+			normalizeSettings({ manager: { labeler: "Pi\u200bAgent:" } }).manager
+				.labeler,
+		).toBe("Pi\u200bAgent:");
+	});
+
 	it("collects unknown top-level keys as warnings without failing", () => {
 		const warnings: string[] = [];
 		normalizeSettings({ nope: 1, botToken: "x" }, warnings);

@@ -259,6 +259,26 @@ function asOptionalString(value: unknown, path: string): string | undefined {
 	throw new TypeError(`${path} must be a string`);
 }
 
+/** Characters that occupy no space: soft hyphen, zero-width marks, the BOM. */
+const INVISIBLE = /[\u00ad\u200b-\u200f\u2060-\u2064\u206a-\u206f\ufeff]/g;
+
+/**
+ * A labeler that renders to nothing IS nothing.
+ *
+ * The banner is what tells the person on the other end that a machine is writing,
+ * and `""` honestly turns it off — that choice is the operator's to make. What is
+ * not on offer is the third state: a label built out of zero-width characters,
+ * which passes every "is it set?" check and puts not one pixel on the screen. So a
+ * string with nothing visible in it collapses to `""` — no banner, and no pretence
+ * of one.
+ *
+ * Invisible characters INSIDE a real name are left alone: they are part of how the
+ * name was written, and the name is still there to be read.
+ */
+export function visibleLabeler(value: string): string {
+	return value.replace(INVISIBLE, "").trim() === "" ? "" : value;
+}
+
 function asBoolean(value: unknown, path: string, fallback: boolean): boolean {
 	if (value === undefined) return fallback;
 	if (typeof value === "boolean") return value;
@@ -499,7 +519,9 @@ export function normalizeSettings(
 				"manager.liveFreshnessMs",
 				d.manager.liveFreshnessMs,
 			),
-			labeler: asString(manager.labeler, "manager.labeler", d.manager.labeler),
+			labeler: visibleLabeler(
+				asString(manager.labeler, "manager.labeler", d.manager.labeler),
+			),
 			labelerRule: asString(
 				manager.labelerRule,
 				"manager.labelerRule",

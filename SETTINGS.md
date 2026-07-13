@@ -78,15 +78,29 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 | `manager.reviseThreshold` | `2` | replaces | How many times a drafted reply may be reconsidered when new messages keep arriving mid-turn before it is sent as-is. `0` sends immediately. |
 | `manager.strictReplyGuard` | `true` | replaces | Drop a reply the model itself tagged as chatter/acknowledgement (or "no reply needed") unless it was directly addressed. Curbs a weak model over-replying to banter. |
 | `manager.mentionWords` | `["llm", "manager"]` | **replaces list** (+ labeler) | Wake-words — see [Wake-words](#wake-words) below. |
-| `manager.labeler` | `"LLM agent 🤖:"` | replaces | The banner prefixed to each outgoing business reply, rendered as a blockquote so it stands apart from a message you typed. `""` removes the banner entirely (and the rule line with it). |
+| `manager.labeler` | `"LLM agent 🤖:"` | replaces | The banner prefixed to each outgoing business reply, rendered as a blockquote so it stands apart from a message you typed. `""` removes the banner entirely (and the rule line with it) — the bot still tells people what it is when it introduces itself and whenever it is asked (see [Telling people it is a bot](#telling-people-it-is-a-bot)). A label with nothing visible in it (zero-width characters only) counts as `""`. |
 | `manager.labelerRule` | `"────────────"` | replaces | A second line under the labeler, inside the same blockquote — a horizontal rule that makes the banner taller and easier to spot. You control its look and length by the string itself; `""` removes just the rule line (the labeler stays). Ignored when `labeler` is `""`. |
 | `manager.log` | `true` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. With `topics` on it goes to its own **manager** topic, so it never buries the conversation; without topics it shares the single DM and is chatty (turn it off there). Renamed from `manager.debugFeed`, which is still read when this key is unset. |
 | `manager.media.images` | `true` | replaces | Let the model see interlocutor images (vision). |
 | `manager.media.documents` | `false` | replaces | Accept non-image documents (otherwise refused). |
 | `manager.allowedTools` | `[]` | **adds to base** | Regex names of extra tools the model may call, on top of the built-in messaging tools. Empty = telegram-sandbox (messaging tools only, no computer access). |
 | `manager.instructionFiles` | `[]` | **appended** | Extra instruction files for the manager. |
-| `manager.firstMessageTemplate` | — | replaces | Override file for the first-contact greeting template. |
+| `manager.firstMessageTemplate` | — | replaces | Override file for the first-contact greeting template. Controls the tone and shape of the greeting, not whether the bot says it is a bot — see below. |
 | `manager.reopenTemplate` | — | replaces | Override file for the re-opening greeting template. |
+
+### Telling people it is a bot
+
+The manager answers strangers on your behalf, so one rule is bundled with the
+extension and **no setting reaches it**: when it opens a conversation with someone
+new it says it is an AI assistant answering for you, and when anyone asks whether
+they are talking to a bot it answers truthfully. That instruction is appended
+**last**, after your own `instructionFiles`, so your text cannot quietly outweigh
+it.
+
+Everything around it is still yours: the tone and wording of the greeting
+(`manager.firstMessageTemplate`), the name it signs with (`manager.labeler`),
+whether messages carry a banner at all (`labeler: ""`), the subjects it will and
+will not go into (`manager.instructionFiles`).
 
 ### Wake-words
 

@@ -753,15 +753,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// Mixed: the owner writing in their own bot DM is the personal bridge, not a
 		// managed conversation. It carries the same priority as the terminal — take
 		// the brain back for coding (aborting a moderation turn in flight) and hand
-		// the message to the ConnectController. The log topic is service output, so
-		// anything typed there is ignored.
+		// the message to the ConnectController. Which topic it was typed in changes
+		// only where the message ends up, never whether it is answered.
 		if (
 			connect &&
 			(event.kind === "message" || event.kind === "edited_message") &&
 			event.fromId === ownerUserId &&
 			event.chatId === ownerUserId
 		) {
-			if (!(await acceptAsPersonal(event))) return;
+			await acceptAsPersonal(event);
 			await takeSessionForCoding();
 			await connect.onEvent(event);
 			return;
@@ -1198,25 +1198,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			: undefined;
 
 	/**
-	 * Whether an owner message belongs to the conversation with the model — and the
-	 * place that repairs the topics when it does not look like it.
+	 * Take an owner message as the conversation, wherever it was typed — and repair the
+	 * topics when it arrives from somewhere unexpected.
 	 *
-	 * The `manager` topic is the bot reporting to itself: never a prompt. Everything
-	 * else the owner types in their own DM is a message to their bot, wherever it was
-	 * typed — including the plain DM after they DELETED the topics, which used to be
-	 * swallowed in silence (the router still pointed at a dead thread). So an
-	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
-	 * message is taken as personal: the reply lands in the fresh `personal` topic.
+	 * EVERY message the owner types in their own DM is a message to their bot: there is
+	 * nobody else in that chat. So none is ignored — not the one typed in the plain DM
+	 * after they DELETED the topics (which used to be swallowed in silence, the router
+	 * still pointing at a dead thread), and not the one typed in the `manager` feed.
+	 * The feed is where the bot reports to itself, so the owner's line there gets moved
+	 * out into `personal` rather than left to look like part of the report — the same
+	 * treatment the "All" view gets. The bot's OWN cards in that feed are never touched:
+	 * a private chat delivers no updates for what the bot posted itself.
 	 *
 	 * A message with NO thread is one typed OUTSIDE the topics — the "All" view, where
 	 * Telegram itself labels the input box "message outside a topic". Live proof: a
 	 * message typed inside `personal` arrives with `message_thread_id` set to it and
-	 * `is_topic_message=true`, so the absence is not silence, it is the answer. Such a
-	 * message is brought over too, since the answer to it goes to `personal` and the
-	 * conversation there must not read as the bot talking to itself.
+	 * `is_topic_message=true`, so the absence is not silence, it is the answer.
 	 */
-	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
-		if (!topics?.active) return true;
+	const acceptAsPersonal = async (event: TelegramEvent): Promise<void> => {
+		if (!topics?.active) return;
 		const place = placeOfOwnerMessage({
 			thread: threadOf(event),
 			isTopicMessage:
@@ -1224,16 +1224,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					? event.message.is_topic_message
 					: undefined,
 			personal: personalThread(),
-			manager: managerThread(),
+			ours: topics.ownThreads,
 		});
-		if (place === "manager") return false;
 		notePersonalActivity();
-		if (place === "personal") return true;
+		if (place === "personal") return;
 		// A topic we do not know may be one the owner made — or ours, deleted and
 		// replaced. Re-check ours (recreating whatever is gone) before answering.
 		if (place === "topic") await topics.revalidate();
-		noteStray(event, place === "outside");
-		return true;
+		// Ours to tidy (`manager`, the archive, the "All" view) → the message is MOVED.
+		// A topic the owner made is theirs → it is only copied.
+		noteStray(event, place !== "topic");
 	};
 
 	/**
@@ -1252,9 +1252,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * actually answers, right as the answer starts being written.
 	 *
 	 * The value says whether the ORIGINAL is then removed — and that depends on where it
-	 * was typed. The "All" view is not a place: nothing lives there, so the message is
-	 * MOVED out of it. A topic the owner made themselves IS a place, theirs, and the bot
-	 * has no business emptying it: from there the message is only copied.
+	 * was typed. The "All" view is not a place: nothing lives there. The bot's own topics
+	 * (`manager`, the archive) are not places for the owner to write either — they are
+	 * its furniture. From both, the message is MOVED. A topic the owner made themselves IS
+	 * a place, theirs, and the bot has no business emptying it: from there it is copied.
 	 */
 	const strayMessages = new Map<number, { moveOut: boolean }>();
 
@@ -1577,9 +1578,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				// but the pin never did — in the one mode where a wiped chat is most likely.
 				if (await handleStartCommand(event)) return;
 				if (await handleControl(event)) return;
-				// The manager topic is service output; everything else the owner types is
-				// the conversation (and repairs the topics if they were deleted).
-				if (!(await acceptAsPersonal(event))) return;
+				// Whatever the owner types is the conversation, wherever they typed it —
+				// the topics are only where it is filed (and repaired, if they deleted one).
+				await acceptAsPersonal(event);
 				await connect?.onEvent(event);
 			},
 			onError: (error) =>

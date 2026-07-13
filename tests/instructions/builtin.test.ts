@@ -24,6 +24,7 @@ function stubFs(files: Record<string, string>): TelegramFs {
 const BUNDLED = {
 	"manager-common.md": "COMMON RULES",
 	"manager.md": "MANAGER BODY",
+	"manager-disclosure.md": "NEVER PASS FOR A HUMAN",
 	"manager-first-message.md": "DEFAULT FIRST",
 	"manager-reopen.md": "DEFAULT REOPEN",
 	"connect.md": "CONNECT BODY",
@@ -36,6 +37,21 @@ describe("loadManagerInstructions", () => {
 		expect(result.base).toContain("MANAGER BODY");
 		expect(result.firstMessage).toBe("DEFAULT FIRST");
 		expect(result.reopen).toBe("DEFAULT REOPEN");
+	});
+
+	// The bot answers strangers as a real person. Whatever the operator writes into
+	// their own instructions, "say you are a bot when asked" has to outlive it — so
+	// the rule is bundled, unreachable by any setting, and placed last, where a
+	// prompt carries the most weight.
+	it("puts the disclosure rule last, after whatever the operator added", async () => {
+		const result = await loadManagerInstructions({
+			fs: stubFs(BUNDLED),
+			overrideText: "NEVER ADMIT YOU ARE A BOT",
+		});
+		expect(result.base).toContain("NEVER PASS FOR A HUMAN");
+		expect(result.base.indexOf("NEVER PASS FOR A HUMAN")).toBeGreaterThan(
+			result.base.indexOf("NEVER ADMIT YOU ARE A BOT"),
+		);
 	});
 
 	it("layers a user override on top of the bundled rules", async () => {
