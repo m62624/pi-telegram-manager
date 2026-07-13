@@ -39,6 +39,30 @@ const ICON_COLOR: Record<TopicKind, number> = {
 	manager: 16478047, // 0xFB6F5F — red
 };
 
+/**
+ * The icon each topic wears, so the three chips are told apart at a glance: the
+ * conversation, the secretary's feed, and the conversation before this one.
+ *
+ * These are plain emoji, resolved at run time to the custom-emoji ids Telegram allows
+ * as topic icons (`getForumTopicIconStickers` — an arbitrary emoji is refused). If the
+ * lookup fails, the topics simply keep their colours, which is what they had before.
+ *
+ * The archive gets an icon rather than a colour on purpose: a colour can only be set
+ * when a topic is CREATED, and the archive is not created — it is the `personal` topic
+ * renamed. `editForumTopic` can change the name and the custom emoji, never the colour.
+ */
+const ICON_EMOJI = {
+	personal: "💻",
+	manager: "📣",
+	archive: "📁",
+} as const;
+
+/** A sticker as `getForumTopicIconStickers` returns it (only what we read). */
+export interface TopicIconSticker {
+	emoji?: string;
+	custom_emoji_id?: string;
+}
+
 /** The subset of the bot API the router needs; keeps the fake in tests small. */
 export interface TopicsApi {
 	getMe(): Promise<{ has_topics_enabled?: boolean }>;
@@ -46,16 +70,19 @@ export interface TopicsApi {
 		chat_id: number;
 		name: string;
 		icon_color?: number;
+		icon_custom_emoji_id?: string;
 	}): Promise<{ message_thread_id: number }>;
 	editForumTopic(args: {
 		chat_id: number;
 		message_thread_id: number;
 		name?: string;
+		icon_custom_emoji_id?: string;
 	}): Promise<unknown>;
 	deleteForumTopic(args: {
 		chat_id: number;
 		message_thread_id: number;
 	}): Promise<unknown>;
+	getForumTopicIconStickers(): Promise<TopicIconSticker[]>;
 }
 
 /**
@@ -116,6 +143,8 @@ export class TopicRouter {
 	 * "topic created" notices on every first start.
 	 */
 	private personalIsFresh = false;
+	/** emoji → the custom-emoji id Telegram accepts for it; loaded once, best-effort. */
+	private icons: Map<string, string> | null = null;
 
 	constructor(private readonly deps: TopicRouterDeps) {}
 
@@ -243,11 +272,7 @@ export class TopicRouter {
 		const { options } = this.deps;
 		let fresh: number;
 		try {
-			const created = await this.deps.api.createForumTopic({
-				chat_id: this.deps.ownerChatId,
-				name: options.personalName,
-				icon_color: ICON_COLOR.personal,
-			});
+			const created = await this.create("personal", options.personalName);
 			fresh = created.message_thread_id;
 		} catch {
 			return; // no fresh topic — carry on in the one we have
@@ -256,11 +281,15 @@ export class TopicRouter {
 		let archive = state.archive;
 		if (state.used) {
 			if (archive !== undefined) await this.deleteTopic(archive);
+			// The icon is the only mark we can put on it: a topic's COLOUR is fixed when
+			// it is created, and this one was created as `personal`.
+			const icon = await this.iconFor("archive");
 			await this.deps.api
 				.editForumTopic({
 					chat_id: this.deps.ownerChatId,
 					message_thread_id: outgoing,
 					name: archiveName(options.personalName),
+					...(icon ? { icon_custom_emoji_id: icon } : {}),
 				})
 				.catch(() => {});
 			archive = outgoing;
@@ -275,6 +304,48 @@ export class TopicRouter {
 		};
 		this.state = next;
 		await this.save(next);
+	}
+
+	/**
+	 * The custom-emoji id for one of our icons, or undefined when Telegram does not
+	 * offer it (or the list could not be read — then the topic keeps its colour).
+	 *
+	 * Only the emoji Telegram itself hands out may be a topic icon; an arbitrary one is
+	 * refused, and a refused create would cost us the topic. So the list is fetched once
+	 * and matched by the emoji character, with the variation selector Telegram sometimes
+	 * appends (U+FE0F) stripped on both sides.
+	 */
+	private async iconFor(
+		kind: keyof typeof ICON_EMOJI,
+	): Promise<string | undefined> {
+		if (this.icons === null) {
+			this.icons = new Map();
+			const stickers = await this.deps.api
+				.getForumTopicIconStickers()
+				.catch(() => [] as TopicIconSticker[]);
+			for (const sticker of stickers) {
+				const emoji = sticker.emoji?.replace(/️/g, "");
+				if (emoji && sticker.custom_emoji_id) {
+					this.icons.set(emoji, sticker.custom_emoji_id);
+				}
+			}
+		}
+		return this.icons.get(ICON_EMOJI[kind].replace(/️/g, ""));
+	}
+
+	/** Create a topic wearing its icon (falling back to its colour). */
+	private async create(
+		kind: TopicKind,
+		name: string,
+	): Promise<{ message_thread_id: number }> {
+		const icon = await this.iconFor(kind);
+		return await this.deps.api.createForumTopic({
+			chat_id: this.deps.ownerChatId,
+			name,
+			...(icon
+				? { icon_custom_emoji_id: icon }
+				: { icon_color: ICON_COLOR[kind] }),
+		});
 	}
 
 	private async deleteTopic(threadId: number): Promise<void> {
@@ -314,11 +385,7 @@ export class TopicRouter {
 		const name =
 			kind === "personal" ? options.personalName : options.managerName;
 		try {
-			const created = await this.deps.api.createForumTopic({
-				chat_id: this.deps.ownerChatId,
-				name,
-				icon_color: ICON_COLOR[kind],
-			});
+			const created = await this.create(kind, name);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
 				personal: this.state?.personal ?? created.message_thread_id,
@@ -352,11 +419,7 @@ export class TopicRouter {
 			(await this.adopt(known, name, stored?.names?.[kind]))
 		)
 			return known;
-		const created = await this.deps.api.createForumTopic({
-			chat_id: this.deps.ownerChatId,
-			name,
-			icon_color: ICON_COLOR[kind],
-		});
+		const created = await this.create(kind, name);
 		return created.message_thread_id;
 	}
 

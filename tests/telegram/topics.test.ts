@@ -20,6 +20,12 @@ function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
 		deleteForumTopic: vi.fn(
 			async (_args: { chat_id: number; message_thread_id: number }) => ({}),
 		),
+		// What Telegram allows as a topic icon; anything else is refused.
+		getForumTopicIconStickers: vi.fn(async () => [
+			{ emoji: "💻", custom_emoji_id: "id-personal" },
+			{ emoji: "📣", custom_emoji_id: "id-manager" },
+			{ emoji: "📁", custom_emoji_id: "id-archive" },
+		]),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
 }
@@ -391,6 +397,61 @@ describe("TopicRouter: a fresh personal topic every session", () => {
 		expect(api.deleteForumTopic).not.toHaveBeenCalled();
 		expect(api.editForumTopic).not.toHaveBeenCalledWith(
 			expect.objectContaining({ name: "personal (archive)" }),
+		);
+	});
+});
+
+// The three chips must be told apart at a glance. Icons, not colours: a colour can
+// only be set when a topic is created, and the archive is a renamed `personal`.
+describe("TopicRouter: topic icons", () => {
+	it("gives each topic its icon, and marks the archive when it renames it", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi();
+		const a = router(first, fs).router;
+		await a.ensure();
+
+		expect(first.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "personal",
+				icon_custom_emoji_id: "id-personal",
+			}),
+		);
+		expect(first.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "manager",
+				icon_custom_emoji_id: "id-manager",
+			}),
+		);
+		await a.markUsed();
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession();
+
+		expect(second.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (archive)",
+				icon_custom_emoji_id: "id-archive",
+			}),
+		);
+	});
+
+	it("falls back to the topic colours when Telegram offers no icons", async () => {
+		const api = fakeApi({
+			getForumTopicIconStickers: vi.fn(async () => {
+				throw new Error("500: Internal Server Error");
+			}),
+		});
+		const r = router(api).router;
+		await r.ensure();
+
+		expect(api.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal", icon_color: 7322096 }),
+		);
+		expect(api.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "manager", icon_color: 16478047 }),
 		);
 	});
 });
