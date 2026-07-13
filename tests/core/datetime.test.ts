@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatNowLine } from "../../src/core/datetime";
+import { backgroundNowMessage, formatNowLine } from "../../src/core/datetime";
 
 // 2026-07-10T09:32:00Z — a Friday in UTC.
 const T = Date.UTC(2026, 6, 10, 9, 32, 0);
@@ -21,5 +21,19 @@ describe("formatNowLine", () => {
 		expect(formatNowLine(T, "Not/AZone")).toMatch(
 			/^\[Now: \w{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [+-]\d{2}:\d{2}\]$/,
 		);
+	});
+});
+
+describe("backgroundNowMessage", () => {
+	it("labels the clock as background so the model does not answer it", () => {
+		// Regression: as the LAST message in the context, a bare "[Now: …]" read as a
+		// fresh prompt — traces show the model pausing mid-task to reason about it.
+		const message = backgroundNowMessage(
+			Date.UTC(2026, 6, 13, 5, 33),
+			"Asia/Almaty",
+		);
+		expect(message).toContain("Background");
+		expect(message).toContain("Do not reply to it");
+		expect(message).toContain("[Now: Mon 2026-07-13 10:33 +05:00]");
 	});
 });

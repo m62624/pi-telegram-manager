@@ -50,3 +50,19 @@ export function formatNowLine(now: number, timezone?: string): string {
 	const time = `${parts.hour}:${parts.minute}`;
 	return `[Now: ${parts.weekday} ${date} ${time} ${offset}]`;
 }
+
+/**
+ * The clock as a standalone context message (mode 1 / mixed-coding), where it is
+ * the LAST message the model reads and is therefore easy to mistake for a fresh
+ * prompt: traces showed the model stopping mid-task to reason about "the system is
+ * telling me the current time". So it is labelled as background and says outright
+ * that no reply is wanted. The manager's contexts embed the clock in a message that
+ * already carries a directive, so they keep the bare {@link formatNowLine}.
+ */
+export function backgroundNowMessage(now: number, timezone?: string): string {
+	return (
+		"[Background, not a message from anyone: the clock, refreshed every turn. " +
+		"Do not reply to it, do not comment on it — just carry on with the task " +
+		`above. ${formatNowLine(now, timezone)}]`
+	);
+}

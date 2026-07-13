@@ -28,7 +28,7 @@ import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
-import { formatNowLine } from "./core/datetime";
+import { backgroundNowMessage, formatNowLine } from "./core/datetime";
 import { expandHome, readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -281,7 +281,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			...messages,
 			{
 				role: "user",
-				content: formatNowLine(Date.now(), connectTimezone),
+				content: backgroundNowMessage(Date.now(), connectTimezone),
 				timestamp: Date.now(),
 			},
 		];
