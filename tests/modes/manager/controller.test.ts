@@ -1384,6 +1384,25 @@ describe("consolidation pause/resume under live work", () => {
 		expect(triggerAgent).not.toHaveBeenCalled();
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
 	});
+
+	it("queues a chat known only from disk, so a restart does not lose its memory", async () => {
+		// The queue used to be fed by live traffic alone: a conversation that ended
+		// before this process started was never consolidated at all. Activation seeds
+		// it from the transcripts on disk instead.
+		const { controller, triggerAgent, deps, clock } = await setup();
+		await controller.seedConsolidation(
+			"chat-1",
+			{ connectionId: "conn", contactName: "Ada", userId: "77" },
+			clock.now(),
+		);
+		expect(await deps.consolidationQueue.all()).toEqual([
+			{ chatId: "chat-1", userId: "77", activityAt: clock.now() },
+		]);
+
+		clock.advance(1_800_001); // quiet long enough
+		await controller.onTick();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
+	});
 });
 
 /** A message the interlocutor FORWARDED into the chat (pasted-in content). */

@@ -113,13 +113,6 @@ export interface ConnectControllerDeps {
 /** See {@link ConnectControllerDeps.albumWindowMs}. */
 export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 
-/**
- * How many un-answered stray messages are remembered (see `strayMessages`). A turn
- * claims its own, so this only bounds the ones no turn ever came for — commands,
- * edits, messages sent while a mode was off.
- */
-const MAX_STRAY_MESSAGES = 50;
-
 // Telegram bot commands the bridge handles itself instead of forwarding to the
 // agent. Everything else (including /start) falls through as an ordinary prompt.
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
@@ -160,19 +153,6 @@ export class ConnectController {
 	private readonly albumTimers = new Map<string, unknown>();
 	/** The open forward batch, so a burst of forwards reaches the model as one turn. */
 	private readonly forwards: ForwardBursts;
-	/**
-	 * Owner messages Telegram places in a topic that is NOT the personal one:
-	 * message id → that thread.
-	 *
-	 * Telegram cannot move a message between topics, so such a message stays where it
-	 * was written while the answer goes to the personal topic — the topic then reads
-	 * as if the bot were talking to itself. It cannot be prevented, so it is made
-	 * legible: the answer is sent as a REPLY to that message, which quotes it. Bounded,
-	 * so a long run of stray messages cannot grow this without limit.
-	 */
-	private readonly strayMessages = new Map<number, number>();
-	/** The stray message the running turn answers; consumed by that turn's first send. */
-	private strayReply: { messageId: number; thread: number } | null = null;
 
 	constructor(private readonly deps: ConnectControllerDeps) {
 		this.forwards = new ForwardBursts(this.forwardPolicy);
@@ -219,73 +199,17 @@ export class ConnectController {
 	}
 
 	/**
-	 * Remember a message the owner typed outside the personal topic — but only on
-	 * POSITIVE evidence that it was.
+	 * Deliver the model's text into the personal topic.
 	 *
-	 * An inbound message carries `message_thread_id` only when Telegram says which
-	 * topic it belongs to. When the field is absent we do NOT know that the owner
-	 * typed outside the topic — we know nothing at all, and treating that as "stray"
-	 * made the bot quote every single message the owner sent.
-	 */
-	private noteStray(message: Message): void {
-		const personal = this.deps.chatThread?.();
-		// No topics at all (or none resolved yet): the DM is one stream, nothing strays.
-		if (personal === undefined) return;
-		const thread = message.message_thread_id;
-		if (thread === undefined || thread === personal) return;
-		this.strayMessages.set(message.message_id, thread);
-		if (this.strayMessages.size > MAX_STRAY_MESSAGES) {
-			const oldest = this.strayMessages.keys().next();
-			if (!oldest.done) this.strayMessages.delete(oldest.value);
-		}
-	}
-
-	/** Claim the stray message this turn was built from, if any (it is answered once). */
-	private takeStray(sourceMessageIds: readonly number[]) {
-		let claimed: { messageId: number; thread: number } | null = null;
-		for (const id of sourceMessageIds) {
-			const thread = this.strayMessages.get(id);
-			if (thread === undefined) continue;
-			// An album/forward batch is several messages but ONE question: quote the first.
-			claimed ??= { messageId: id, thread };
-			this.strayMessages.delete(id);
-		}
-		return claimed;
-	}
-
-	/**
-	 * Deliver the model's text, quoting the stray message when this turn answers one.
-	 *
-	 * Telegram may refuse to quote a message that lives in a different topic — and an
-	 * answer is never worth losing to a formatting nicety, so the send degrades in
-	 * order: quote it from the personal topic; else answer in the topic it was asked
-	 * in, still quoting; else plain, as before.
+	 * A message the owner typed in another topic is not answered where it was typed:
+	 * Telegram cannot move it, and quoting it across topics is not something the
+	 * clients agree on (phone, desktop and web each rendered the quote differently,
+	 * and each was wrong in its own way). Instead the message itself is FORWARDED
+	 * into the personal topic before the model sees it (see the topic router), so the
+	 * conversation there stays whole and the answer needs no trick at all.
 	 */
 	private async sendAnswer(text: string): Promise<void> {
-		const stray = this.strayReply;
-		if (!stray) {
-			await this.deps.outbound.sendMarkdown(this.target, text);
-			return;
-		}
-		// Only the run's first message quotes it; the rest are the same answer.
-		this.strayReply = null;
-		const attempts: OutboundTarget[] = [
-			{ ...this.target, replyToMessageId: stray.messageId },
-			{
-				chatId: this.deps.allowedUserId,
-				messageThreadId: stray.thread,
-				replyToMessageId: stray.messageId,
-			},
-			this.target,
-		];
-		for (const [index, target] of attempts.entries()) {
-			try {
-				await this.deps.outbound.sendMarkdown(target, text);
-				return;
-			} catch (error) {
-				if (index === attempts.length - 1) throw error;
-			}
-		}
+		await this.deps.outbound.sendMarkdown(this.target, text);
 	}
 
 	/** Handle an inbound Telegram event. Returns true when it enqueued/edited a turn. */
@@ -302,8 +226,6 @@ export class ConnectController {
 		if (this.deps.onContact && event.message.from) {
 			void this.deps.onContact(event.message.from).catch(() => {});
 		}
-
-		this.noteStray(event.message);
 
 		// Intercept the bridge's own control commands (e.g. /clear) so they never
 		// reach the agent as a prompt. Unknown commands (and /start, /help) fall
@@ -517,7 +439,6 @@ export class ConnectController {
 		if (this.isOpenAlbum(next.id)) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
-		this.strayReply = this.takeStray(item.sourceMessageIds);
 		await this.deps.sendFollowUp(this.toContent(item));
 	}
 
@@ -563,9 +484,6 @@ export class ConnectController {
 		this.deps.abort.clear();
 		const reply = fallbackReply ? lastAssistantReply(messages) : null;
 		if (reply) await this.sendAnswer(reply);
-		// The run is over: a message that goes out later (a notice, a tool's output) is
-		// no longer this question's answer and must not quote it.
-		this.strayReply = null;
 		await this.dispatch();
 	}
 

@@ -902,6 +902,27 @@ export class ManagerController {
 	}
 
 	/**
+	 * Put a chat that already has a transcript back in line for memory consolidation.
+	 *
+	 * The queue is fed by live traffic alone, and the in-memory chat map starts empty:
+	 * a chat whose last message arrived before this process did was therefore never a
+	 * candidate, and its facts were never consolidated — for a bot that is restarted
+	 * often, that is every chat. So on activation the transcripts on disk are queued,
+	 * stamped with their real last-activity time, and an idle manager works through
+	 * them. A chat already queued keeps its stamp (upsert is by chat id), and one that
+	 * has since been consolidated is simply reconsolidated — facts are deduplicated
+	 * where they are stored.
+	 */
+	async seedConsolidation(
+		chatId: string,
+		meta: ChatMeta,
+		activityAt: number,
+	): Promise<void> {
+		if (!this.chats.has(chatId)) this.chats.set(chatId, meta);
+		await this.touchConsolidation(chatId, activityAt);
+	}
+
+	/**
 	 * Resolve the finished turn's decision and deliver a reply if the model chose
 	 * to. `finalText` is the turn's trailing assistant prose (if any), used only to
 	 * recover a reply the model wrote as plain text instead of calling a tool.

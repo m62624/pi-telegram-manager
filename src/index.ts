@@ -197,6 +197,13 @@ interface ControlApi {
 		chat_id: number;
 		message_id: number;
 	}): Promise<unknown>;
+	/** Copies a message the owner typed elsewhere into the personal topic. */
+	forwardMessage(payload: {
+		chat_id: number;
+		message_thread_id?: number;
+		from_chat_id: number;
+		message_id: number;
+	}): Promise<unknown>;
 }
 
 /**
@@ -475,19 +482,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let polarity: "coding" | "telegram" = "coding";
 	let mixedReturnMs = 480_000;
 	let mixedReturnTimer: ReturnType<typeof setTimeout> | null = null;
-	// The pinned "current mode" indicator in the owner's DM: the message id we pin
-	// once and then edit in place on every mode change (so switches never spam new
-	// pins).
-	let modePinMessageId: number | null = null;
 	/**
-	 * The pin lives in the owner's DM, not in this process: without persisting its id
-	 * a restarted Pi forgot it and pinned a SECOND message ("Закреплённое сообщение
-	 * #2") instead of editing the one already there. Loaded on the first pin update
-	 * of a session, written whenever a new pin is created.
+	 * Every mode message this bot has posted and not yet removed, newest last.
+	 *
+	 * Not one id but a LIST, because the chat is the only real record and we are not
+	 * its only author: a mode message can survive us (a crash between posting and
+	 * saving, a `/start` that deliberately let go of the old one), and one forgotten
+	 * message means the chat keeps a stale "Bot mode: …" line forever while the next
+	 * switch deletes the wrong one. Deleting the whole list on every update makes the
+	 * chat converge on exactly one mode message, whatever happened before.
+	 *
+	 * Persisted, because the ids live in the owner's DM and not in this process: a
+	 * restarted Pi that forgot them used to pin a SECOND message next to the first.
 	 */
+	let modePinMessageIds: number[] = [];
 	interface ModePinState {
 		ownerChatId: number;
-		messageId: number;
+		/** Historic single-id form; still read so an existing pin is not orphaned. */
+		messageId?: number;
+		messageIds?: number[];
 	}
 	let modePinLoaded = false;
 
@@ -498,31 +511,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			paths.modePinPath,
 		).catch(() => null);
-		if (stored && stored.ownerChatId === ownerChatId) {
-			modePinMessageId = stored.messageId;
-		}
+		if (!stored || stored.ownerChatId !== ownerChatId) return;
+		modePinMessageIds = [
+			...(stored.messageIds ?? []),
+			...(stored.messageId !== undefined ? [stored.messageId] : []),
+		];
 	};
 
-	/**
-	 * Drop what we know about the pin, so the next update posts a fresh one.
-	 *
-	 * Needed because "the message still exists" and "the owner can still see it" are
-	 * different facts: clearing the chat wipes the owner's copy while Telegram keeps
-	 * accepting edits to that message id — so the bot would go on editing a message
-	 * nobody can read.
-	 */
+	/** Forget the pin entirely (an error path: better a new one than a ghost). */
 	const forgetModePin = async (): Promise<void> => {
-		modePinMessageId = null;
+		modePinMessageIds = [];
 		await fs.removeFile(paths.modePinPath).catch(() => {});
 	};
 
 	const saveModePin = async (
 		ownerChatId: number,
-		messageId: number,
+		messageIds: number[],
 	): Promise<void> => {
+		modePinMessageIds = messageIds;
 		await writeJson<ModePinState>(fs, paths.modePinPath, {
 			ownerChatId,
-			messageId,
+			messageIds,
 		}).catch(() => {});
 	};
 
@@ -1178,8 +1187,39 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		reportTopicRouting(event);
 		if (thread === undefined || thread === personalThread()) return true;
 		if (thread === managerThread()) return false;
+		// Written in some other topic — the "All" view, a topic the owner made, the
+		// plain DM after they deleted ours. The topics may also be gone entirely, so
+		// re-check them first; then bring the message itself over.
 		await topics.revalidate();
+		await mirrorIntoPersonal(event);
 		return true;
+	};
+
+	/**
+	 * Forward a message the owner typed outside the personal topic into it.
+	 *
+	 * Telegram cannot MOVE a message between topics, so the question stays where it
+	 * was typed while the answer goes to `personal` — leaving the topic reading as if
+	 * the bot talked to itself. Quoting the far message was tried and abandoned: the
+	 * clients do not agree on cross-topic replies (phone, desktop and web each showed
+	 * it differently), so the message is copied over instead. A forward is plain and
+	 * works everywhere: `personal` then holds the question and its answer, in order.
+	 *
+	 * Best-effort — a failed forward must never swallow the prompt itself.
+	 */
+	const mirrorIntoPersonal = async (event: TelegramEvent): Promise<void> => {
+		if (event.kind !== "message" && event.kind !== "edited_message") return;
+		const api = controlApi();
+		const personal = personalThread();
+		if (!api || personal === undefined) return;
+		await api
+			.forwardMessage({
+				chat_id: event.chatId,
+				message_thread_id: personal,
+				from_chat_id: event.chatId,
+				message_id: event.message.message_id,
+			})
+			.catch(() => {});
 	};
 
 	/**
@@ -2049,8 +2089,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * pin. "The message exists" and "the owner can see it" are simply not the same
 	 * fact, and nothing in the Bot API tells them apart.
 	 *
-	 * So the pin is not maintained, it is REPLACED: delete the one we posted last (if
-	 * it is still there), post a new one, pin it. Connecting, switching and stopping
+	 * So the pin is not maintained, it is REPLACED: delete every mode message we
+	 * remember (if any is still there), post a new one, pin it. Connecting, switching and stopping
 	 * are each a real event the person should see arrive, the chat never collects more
 	 * than one mode message, and an owner who unpinned or deleted it needs no special
 	 * case — the next update simply posts one that exists.
@@ -2059,6 +2099,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * than swallowed.
 	 */
 	const updateModePin = async (target: PanelMode): Promise<void> => {
+		// Serialised: two updates at once (a switch racing a shutdown) would each read
+		// the same "previous" id, delete it twice and post twice — leaving a message
+		// nobody remembers, which is exactly the duplicate this is meant to prevent.
+		modePinChain = modePinChain.then(() => runModePinUpdate(target));
+		await modePinChain;
+	};
+
+	let modePinChain: Promise<void> = Promise.resolve();
+
+	const runModePinUpdate = async (target: PanelMode): Promise<void> => {
 		if (ownerUserId === null) return;
 		await loadModePin(ownerUserId);
 		const api = controlApi();
@@ -2089,17 +2139,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		};
 
 		try {
-			if (modePinMessageId !== null) {
-				// Already gone (deleted by hand, or with the chat): that is the normal
-				// case, not an error — we are about to replace it anyway.
+			// Remove every mode message we know of, not just the last one. A delete that
+			// fails is the normal case (deleted by hand, or with the chat), not an error —
+			// we are about to replace it anyway.
+			for (const messageId of modePinMessageIds) {
 				await api
-					.deleteMessage({ chat_id: owner, message_id: modePinMessageId })
+					.deleteMessage({ chat_id: owner, message_id: messageId })
 					.catch(() => {});
-				await forgetModePin();
 			}
+			modePinMessageIds = [];
 			const messageId = await post();
-			modePinMessageId = messageId;
-			await saveModePin(owner, messageId);
+			await saveModePin(owner, [messageId]);
 			await api
 				.pinChatMessage({
 					chat_id: owner,
@@ -2141,12 +2191,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			})
 			.catch(() => {});
 		// The owner pressing Start means their chat begins again — after deleting it,
-		// that is the only way back in. Everything we remember about the pin describes
-		// a message they can no longer see, while Telegram still accepts edits to it,
-		// so the bot would silently keep editing a ghost and pin nothing. Post a fresh
-		// pin instead, showing whatever mode is actually running.
+		// that is the only way back in, and the chat has no mode message any more. Post
+		// one showing whatever mode is actually running. (The old ids are dropped by the
+		// update itself: deleting a message the owner already wiped simply fails.)
 		if (event.fromId === ownerUserId && event.chatId === ownerUserId) {
-			await forgetModePin();
 			await updateModePin(activeTarget());
 		}
 		return true;
@@ -2371,5 +2419,26 @@ async function catchUpOnActivation(
 			contactName,
 			userId,
 		});
+	}
+	// Memory catch-up, for EVERY chat with a transcript — not only the ones being
+	// answered. Consolidation candidates were only ever created by live traffic, so a
+	// conversation that ended before this process started was never consolidated at
+	// all; queueing them here is what makes memory survive a restart.
+	for (const chat of chats) {
+		const userId = lastInterlocutorUserId(chat.records);
+		if (!userId) continue; // no contact to remember facts about
+		const activityAt = chat.records[chat.records.length - 1]?.timestamp;
+		if (activityAt === undefined) continue;
+		await manager
+			.seedConsolidation(
+				chat.chatId,
+				{
+					connectionId: connection.id,
+					contactName: lastInterlocutorName(chat.records) ?? chat.chatId,
+					userId,
+				},
+				activityAt,
+			)
+			.catch(() => {});
 	}
 }

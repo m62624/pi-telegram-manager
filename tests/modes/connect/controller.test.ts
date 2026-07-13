@@ -545,9 +545,10 @@ describe("ConnectController forwards", () => {
 });
 
 // The owner's DM is split into topics, and they can type outside the personal one
-// (the "All" view, the plain chat). Telegram cannot move that message into the
-// topic, so the answer quotes it instead — otherwise the personal topic reads as
-// the bot talking to nobody.
+// (the "All" view, the plain chat). The answer still goes to the personal topic:
+// the message itself is forwarded there by the topic router (see acceptAsPersonal),
+// so the controller has no cross-topic trickery to do. Quoting the far message was
+// tried in its place and removed — the clients did not agree on what it meant.
 describe("ConnectController: a message typed outside the personal topic", () => {
 	const PERSONAL = 5;
 	/** A topic that is not the personal one (a topic the owner made themselves). */
@@ -571,92 +572,17 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		} as Update);
 	}
 
-	it("answers in the personal topic, quoting the stray message", async () => {
+	it.each([
+		["typed in another topic", FOREIGN],
+		["typed in the personal topic", PERSONAL],
+		["typed with no topic at all", undefined],
+	])("answers in the personal topic, plain, for a message %s", async (_name, thread) => {
 		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11, FOREIGN));
+		await controller.onEvent(threadEvent(11, thread));
 		await controller.deliverAssistant("answer");
 
 		expect(api.sent).toHaveLength(1);
 		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
-		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
-	});
-
-	it("quotes it once, not on every message of the run", async () => {
-		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11, FOREIGN));
-		await controller.deliverAssistant("first");
-		await controller.deliverAssistant("second");
-
-		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
-		expect(api.sent[1]).not.toHaveProperty("reply_parameters");
-	});
-
-	it("leaves a message typed IN the personal topic alone", async () => {
-		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11, PERSONAL));
-		await controller.deliverAssistant("answer");
-
-		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
 		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
-	});
-
-	it("leaves a message Telegram gave no topic for alone", async () => {
-		// Live regression: inbound messages arrived with no message_thread_id at all,
-		// which was read as "typed outside the topic" — so the bot quoted the owner's
-		// every word. An absent field is not evidence; only a different topic is.
-		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11));
-		await controller.deliverAssistant("answer");
-
-		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
-		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
-	});
-
-	it("does not quote a later notice — the run is over", async () => {
-		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11, FOREIGN));
-		await controller.onAgentEnd([], false);
-		await controller.sendToChat("a notice");
-
-		expect(api.sent[0].text ?? api.sent[0].rich_message).toBeDefined();
-		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
-	});
-
-	it("answers where the question was asked when Telegram refuses the quote", async () => {
-		// Telegram rejecting a cross-topic quote must never cost the answer.
-		class RefusesCrossTopicQuotes extends FakeOutboundApi {
-			async sendRichMessage(
-				args: Parameters<FakeOutboundApi["sendRichMessage"]>[0],
-			) {
-				// Quoting a message that lives in ANOTHER topic (11 is in FOREIGN).
-				if (args.reply_parameters && args.message_thread_id === PERSONAL) {
-					throw new Error("400: message to be replied not found");
-				}
-				return super.sendRichMessage(args);
-			}
-			async sendMessage(args: Parameters<FakeOutboundApi["sendMessage"]>[0]) {
-				// Quoting a message that lives in ANOTHER topic (11 is in FOREIGN).
-				if (args.reply_parameters && args.message_thread_id === PERSONAL) {
-					throw new Error("400: message to be replied not found");
-				}
-				return super.sendMessage(args);
-			}
-		}
-		const api = new RefusesCrossTopicQuotes();
-		const controller = new ConnectController({
-			allowedUserId: ALLOWED,
-			maxBytes: 1000,
-			isIdle: () => true,
-			sendFollowUp: async () => {},
-			outbound: new OutboundSender(api),
-			abort: new AbortRegistry(),
-			chatThread: () => PERSONAL,
-		});
-		await controller.onEvent(threadEvent(11, FOREIGN));
-		await controller.deliverAssistant("answer");
-
-		expect(api.sent).toHaveLength(1);
-		expect(api.sent[0].message_thread_id).toBe(FOREIGN);
-		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
 	});
 });
