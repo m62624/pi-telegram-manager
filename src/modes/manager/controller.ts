@@ -297,6 +297,12 @@ export interface ManagerControllerDeps {
 	 * no re-read.
 	 */
 	reviseThreshold: number;
+	/**
+	 * The account owner's Telegram user id (`allowedUserId`), as a string. Used to tell
+	 * the owner's own messages from an interlocutor's when the business connection is
+	 * not (yet) in the store — see `onBusinessMessage`.
+	 */
+	ownerUserId?: string;
 	/** The Owner's display name, for self-introduction on first contact (optional). */
 	ownerName?: string;
 	/**
@@ -650,7 +656,15 @@ export class ManagerController {
 		// gate/scheduler timers still run off the wall clock, i.e. from arrival).
 		const messageTime = input.message.date ? input.message.date * 1000 : now;
 		const connection = await this.deps.businessStore.get(input.connectionId);
-		const ownerId = connection?.userId;
+		// Who the owner is decides EVERYTHING about a message: their own messages are
+		// context (and, in takeover, the freeze), an interlocutor's are the job. The
+		// stored connection is the authority — but it can be missing (Telegram only
+		// sends `business_connection` on change, so a bot connected before its first
+		// run has none until traffic teaches us), and without a fallback every owner
+		// message, including the bot's own echo, was classified as an interlocutor's.
+		// `ownerUserId` is the configured account owner, which is exactly who the
+		// business account belongs to.
+		const ownerId = connection?.userId ?? this.deps.ownerUserId;
 		const fromOwnerSide =
 			ownerId !== undefined && String(input.fromId) === ownerId;
 

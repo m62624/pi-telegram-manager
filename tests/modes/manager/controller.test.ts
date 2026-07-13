@@ -1480,3 +1480,81 @@ describe("ManagerController forward budget", () => {
 		expect(texts.some((t) => t.includes("one more"))).toBe(true);
 	});
 });
+
+describe("ManagerController owner identity without a stored connection", () => {
+	/** The manager, with an EMPTY business store — the state a bot connected before
+	 * its first run is in: Telegram only sends `business_connection` on change. */
+	async function noConnectionSetup(subMode: ManagerSubMode = "takeover") {
+		const base = await setup(subMode);
+		const fs = new FakeFs();
+		const paths = createTelegramPaths("/agent-2");
+		const controller = new ManagerController({
+			...base.deps,
+			businessStore: createBusinessStore(fs, paths.businessPath),
+			ownerUserId: String(OWNER_ID),
+		});
+		return { ...base, controller };
+	}
+
+	it("still knows the owner's own message is not an interlocutor's", async () => {
+		// Regression: with no stored connection the owner id was undefined, so every
+		// owner message — including the bot's own echo — was classified as the
+		// interlocutor's, and the manager would answer the owner.
+		const { controller, triggerAgent, clock } = await noConnectionSetup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("I will handle this one myself"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+		expect(controller.status().activeChat).toBeUndefined();
+	});
+
+	it("still freezes the chat in takeover while the owner holds it", async () => {
+		const { controller, triggerAgent, clock } = await noConnectionSetup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you there?"),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("yes, one sec"),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("ok!", 5, 2),
+		});
+		// Inside the window the owner still holds the chat: the bot stays out of it.
+		clock.advance(60_000);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+
+		// Once they have been quiet for a full window the freeze lifts and the deferred
+		// message is served — exactly as with a stored connection.
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it("still treats an interlocutor message as the job", async () => {
+		const { controller, triggerAgent, clock } = await noConnectionSetup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hello?"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+});

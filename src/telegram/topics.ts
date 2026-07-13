@@ -182,6 +182,48 @@ export class TopicRouter {
 		return await this.ensure();
 	}
 
+	/**
+	 * Replace ONE topic that a send just proved dead ("message thread not found"), and
+	 * return its new thread id.
+	 *
+	 * This is the repair path that does not trust the start-up probe: whatever
+	 * `editForumTopic` reports for a deleted thread, a failed send is proof, so the
+	 * topic is recreated on the spot and the caller retries there. Without it a topic
+	 * the owner deleted mid-run degraded the whole run to the plain DM — and the
+	 * manager topic never came back.
+	 */
+	async recreate(kind: TopicKind): Promise<number | undefined> {
+		const { options } = this.deps;
+		if (!options.enabled) return undefined;
+		const name =
+			kind === "personal" ? options.personalName : options.managerName;
+		try {
+			const created = await this.deps.api.createForumTopic({
+				chat_id: this.deps.ownerChatId,
+				name,
+				icon_color: ICON_COLOR[kind],
+			});
+			const state: TopicsState = {
+				ownerChatId: this.deps.ownerChatId,
+				personal: this.state?.personal ?? created.message_thread_id,
+				manager: this.state?.manager ?? created.message_thread_id,
+				names: {
+					personal: options.personalName,
+					manager: options.managerName,
+				},
+			};
+			state[kind] = created.message_thread_id;
+			await this.save(state);
+			this.state = state;
+			return created.message_thread_id;
+		} catch {
+			// Topics are unusable now (Threaded Mode off, API error): the caller falls
+			// back to the plain DM, and the next `ensure` rebuilds from scratch.
+			this.state = null;
+			return undefined;
+		}
+	}
+
 	/** A stored topic that still exists (adopted under the wanted name), else a new one. */
 	private async resolveTopic(
 		kind: TopicKind,

@@ -17,7 +17,11 @@
  * reason.
  */
 import { join } from "node:path";
-import type { InlineKeyboardMarkup, Message } from "@grammyjs/types";
+import type {
+	BusinessConnection,
+	InlineKeyboardMarkup,
+	Message,
+} from "@grammyjs/types";
 import {
 	COMMANDS,
 	COMPLIANCE_LINKS,
@@ -242,13 +246,20 @@ const REPLY_RIGHT_NOTICE = [
 	`Setup steps: ${SETUP_GUIDE_URL}`,
 ].join("\n");
 
-/** Sent when no Secretary connection exists yet: the bot has no chats to manage. */
+/**
+ * Sent when nothing has proved the Secretary connection yet. It cannot be checked
+ * on demand: Telegram delivers `business_connection` only when the connection
+ * CHANGES, and there is no API to list connections — so a bot connected before its
+ * first run has nothing to show for it until a message arrives. Hence the careful
+ * wording: this says what we have SEEN, not what is true.
+ */
 const NOT_CONNECTED_NOTICE = [
-	"ℹ️ This bot is not connected to your account yet, so the manager has no",
-	"chats to work with.",
+	"ℹ️ No Secretary connection seen yet — no traffic and no connection update",
+	"since this mode started. If the bot IS already connected, ignore this: it",
+	"clears itself as soon as any message arrives in a managed chat.",
 	"",
-	"Connect it: Telegram → Settings → Business / Secretary → Chatbots →",
-	"add this bot and pick which chats it may access (and let it reply).",
+	"If it is not connected: Telegram → Settings → Business / Secretary →",
+	"Chatbots → add this bot and pick which chats it may access (and let it reply).",
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
 ].join("\n");
@@ -734,6 +745,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		) {
 			cancelNotConnectedCheck();
 		}
+		// Learn the connection from the traffic itself. `business_connection` is only
+		// delivered when the connection CHANGES, so a bot connected before its first run
+		// never had one persisted — and everything keyed on the stored connection was
+		// silently degraded: the manager could not tell the OWNER's own messages from an
+		// interlocutor's (that identity is `connection.userId`), and the startup check
+		// claimed "not connected" on every start. Each business message carries its
+		// connection id, and `getBusinessConnection` turns that id into the real thing.
+		if (
+			event.kind === "business_message" ||
+			event.kind === "edited_business_message" ||
+			event.kind === "deleted_business_messages"
+		) {
+			await learnBusinessConnection(event.connectionId);
+		}
 		if (event.kind === "business_connection") {
 			await manager.onBusinessConnection({
 				connectionId: event.connectionId,
@@ -991,6 +1016,51 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
+	 * The connected business accounts. One store for the whole extension: the manager
+	 * writes it, the "not connected" check and the feed's owner-chat lookup read it.
+	 */
+	const businessStore = createBusinessStore(fs, paths.businessPath);
+
+	/** Connection ids we already tried to resolve, so one unknown id asks Telegram once. */
+	const learnedConnections = new Set<string>();
+
+	/**
+	 * Resolve a connection id seen in traffic into the real `BusinessConnection` and
+	 * persist it. `business_connection` updates arrive only on CHANGE, so a bot that
+	 * was connected before its first run has nothing stored — and the store is what
+	 * tells the manager who the OWNER is. `getBusinessConnection` (Bot API 7.2) turns
+	 * the id every business message carries into that record. Best-effort: a failure
+	 * leaves the manager on its `ownerUserId` fallback.
+	 */
+	const learnBusinessConnection = async (
+		connectionId: string,
+	): Promise<void> => {
+		if (!manager || !managerClient || learnedConnections.has(connectionId)) {
+			return;
+		}
+		learnedConnections.add(connectionId);
+		if (await businessStore.get(connectionId)) return;
+		try {
+			const api = managerClient.api as unknown as {
+				getBusinessConnection(args: {
+					business_connection_id: string;
+				}): Promise<BusinessConnection>;
+			};
+			const connection = await api.getBusinessConnection({
+				business_connection_id: connectionId,
+			});
+			await manager.onBusinessConnection({
+				connectionId,
+				connection,
+				isEnabled: connection.is_enabled ?? true,
+			});
+		} catch {
+			// Older API server, or the connection vanished: allow a later retry.
+			learnedConnections.delete(connectionId);
+		}
+	};
+
+	/**
 	 * Tell the owner what the bot was NOT given, in the DM where they will actually
 	 * see it. A missing toggle is invisible from the inside: the manager simply never
 	 * receives a chat, or receives them and cannot answer — both look like a bug in
@@ -1167,15 +1237,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			{
 				onRichFallback: (error) => {
 					// The topic we addressed is gone (deleted mid-session): that is not a
-					// rich-rendering problem — drop to the plain DM so the NEXT send lands,
-					// instead of reporting a misleading formatting warning every message.
+					// rich-rendering problem. Recreate it right away — the next send then
+					// lands in the fresh topic instead of the plain DM.
 					if (TopicRouter.isMissingThread(error)) {
 						if (topics?.active) {
-							topics.fallBack();
-							ctx.ui.notify(
-								"The personal topic is gone — using the plain DM. It is recreated on the next mode start.",
-								"warning",
-							);
+							void topics.recreate("personal").then((thread) => {
+								if (thread === undefined) {
+									ctx.ui.notify(
+										"The personal topic is gone and could not be recreated — using the plain DM.",
+										"warning",
+									);
+								}
+							});
 						}
 						return;
 					}
@@ -1530,7 +1603,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			paths,
 			settings.manager.rememberMessages,
 		);
-		const businessStore = createBusinessStore(fs, paths.businessPath);
 		const consolidationQueue = createConsolidationQueue(
 			fs,
 			paths.consolidationQueuePath,
@@ -1631,6 +1703,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			liveFreshnessMs: settings.manager.liveFreshnessMs,
 			reopenAfterMs: settings.manager.reopenAfterMs,
 			reviseThreshold: settings.manager.reviseThreshold,
+			ownerUserId: settings.allowedUserId
+				? String(settings.allowedUserId)
+				: undefined,
 			ownerName: settings.manager.ownerName,
 			strictReplyGuard: settings.manager.strictReplyGuard,
 			mentionWords: effectiveMentionWords,
@@ -1709,8 +1784,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						html,
 					);
 				} catch (error) {
-					// A thread that vanished (topic deleted) would fail every card from
-					// here on: drop to the plain DM and retry this one there.
+					// The manager topic is gone (the owner deleted it). A failed send is the
+					// only reliable proof of that — so recreate the topic here and retry the
+					// card in it, instead of quietly degrading the whole run to the plain DM
+					// and never bringing the topic back.
+					if (topics?.active && TopicRouter.isMissingThread(error)) {
+						const thread = await topics.recreate("manager");
+						await managerOutbound
+							.notify({ chatId, messageThreadId: thread }, html)
+							.catch(() => {});
+						return;
+					}
 					if (topics?.active) {
 						topics.fallBack();
 						await managerOutbound.notify({ chatId }, html).catch(() => {});

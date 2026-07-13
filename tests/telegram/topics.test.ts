@@ -263,3 +263,45 @@ describe("TopicRouter.revalidate", () => {
 		expect(r.thread("personal")).toBeUndefined();
 	});
 });
+
+describe("TopicRouter.recreate", () => {
+	it("replaces the one topic a failed send proved dead, keeping the other", async () => {
+		// A send that failed with "message thread not found" is the only reliable proof
+		// that a topic is gone — the start-up probe cannot be trusted for it. So the
+		// topic is rebuilt on the spot and the caller retries in the new thread.
+		const api = fakeApi();
+		const { router: r } = router(api);
+		await r.ensure();
+		expect(r.thread("manager")).toBe(101);
+
+		const thread = await r.recreate("manager");
+		expect(thread).toBe(102);
+		expect(r.thread("manager")).toBe(102);
+		// The personal topic is untouched.
+		expect(r.thread("personal")).toBe(100);
+		expect(r.active).toBe(true);
+	});
+
+	it("persists the new thread, so the next run reuses it", async () => {
+		const fs = new FakeFs();
+		const api = fakeApi();
+		const { router: first } = router(api, fs);
+		await first.ensure();
+		await first.recreate("manager");
+
+		const { router: second } = router(fakeApi(), fs);
+		await second.ensure();
+		expect(second.thread("manager")).toBe(102);
+		expect(second.thread("personal")).toBe(100);
+	});
+
+	it("degrades to the plain DM when even creating a topic fails", async () => {
+		const api = fakeApi();
+		const { router: r } = router(api);
+		await r.ensure();
+		api.createForumTopic.mockRejectedValue(new Error("403: Forbidden"));
+		expect(await r.recreate("manager")).toBeUndefined();
+		expect(r.active).toBe(false);
+		expect(r.thread("manager")).toBeUndefined();
+	});
+});
