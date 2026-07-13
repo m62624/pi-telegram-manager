@@ -120,7 +120,8 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- context caps: ${s.manager.maxCharsPerMessage} chars/message, ${humanCount(s.manager.maxContextChars)} chars total`,
 			`- wake words: ${s.manager.mentionWords.length > 0 ? s.manager.mentionWords.join(", ") : "(none beyond the bot's name)"}`,
 			`- owner is called: ${s.manager.ownerName || "(not set)"}`,
-			`- inbound media: images ${onOff(s.manager.media.images)}, documents ${onOff(s.manager.media.documents)}`,
+			`- images from interlocutors: ${s.manager.media.images ? "shown to you" : "not shown (you see [image not shown])"}`,
+			`- documents from interlocutors: ${s.manager.media.documents ? "acknowledged by name" : "not accepted"} — never opened either way (no file tools in this mode)`,
 			`- debug feed to the owner's DM: ${onOff(s.manager.log)}`,
 			"",
 		);

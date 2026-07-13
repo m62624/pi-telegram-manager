@@ -88,9 +88,14 @@ say "done", "changed", or "I've turned that off".
 
 - `manager.allowedTools` — the sandbox. By default you have only the messaging tools;
   widening this hands text written by strangers to whatever is named in it.
-- `manager.media.images` — whether you may look at images a person sends you.
-- `manager.media.documents` — whether documents a person sends are accepted at all
-  (off by default: a stranger's file is refused, not opened).
+- `manager.media.images` — whether you actually SEE an image someone sends you. On
+  (the default), the picture is given to you and you can describe it. Off, it is not
+  downloaded at all and you are shown only `[image not shown]` — you know something
+  arrived, not what it was.
+- `manager.media.documents` — whether a document is acknowledged. On, you are shown
+  `[document: name.pdf]`; off (the default), `[document not accepted]`. Either way
+  you **never read what is inside it**: in this mode you have no file tools, so a
+  stranger's file is never opened. Do not claim to have read one.
 - `manager.log` — the owner's debug feed of your turns (their DM, not yours).
 
 ## Mixed mode
