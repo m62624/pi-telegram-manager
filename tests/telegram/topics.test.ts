@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TopicRouter, type TopicsApi } from "../../src/telegram/topics";
+import {
+	placeOfOwnerMessage,
+	TopicRouter,
+	type TopicsApi,
+} from "../../src/telegram/topics";
 import { FakeFs } from "../helpers/fake-fs";
 
 const OWNER = 42;
@@ -553,5 +557,56 @@ describe("TopicRouter: a topic Telegram will not delete", () => {
 				name: "personal (archive)",
 			}),
 		);
+	});
+});
+
+// Where an owner message was written decides everything that happens to it — including
+// whether the bot may delete it. That question gets its own tests.
+describe("placeOfOwnerMessage", () => {
+	const topics = { personal: 5, manager: 6 };
+
+	it("reads the topic Telegram names", () => {
+		expect(placeOfOwnerMessage({ thread: 5, ...topics })).toBe("personal");
+		expect(placeOfOwnerMessage({ thread: 6, ...topics })).toBe("manager");
+	});
+
+	it("calls a topic we did not make the owner's own", () => {
+		// Copied into `personal`, never emptied: that topic is theirs.
+		expect(placeOfOwnerMessage({ thread: 9, ...topics })).toBe("topic");
+	});
+
+	it('reads no thread as the "All" view — the one place a message is moved OUT of', () => {
+		expect(placeOfOwnerMessage({ thread: undefined, ...topics })).toBe(
+			"outside",
+		);
+	});
+
+	it("never moves a message Telegram calls a topic message but will not place", () => {
+		// The safety catch: deleting the owner's words out of a topic we cannot name is
+		// the worse failure of the two.
+		expect(
+			placeOfOwnerMessage({
+				thread: undefined,
+				isTopicMessage: true,
+				...topics,
+			}),
+		).toBe("personal");
+	});
+
+	it("treats everything as the conversation while topics are not resolved yet", () => {
+		expect(
+			placeOfOwnerMessage({
+				thread: undefined,
+				personal: undefined,
+				manager: undefined,
+			}),
+		).toBe("outside");
+		expect(
+			placeOfOwnerMessage({
+				thread: 9,
+				personal: undefined,
+				manager: undefined,
+			}),
+		).toBe("topic");
 	});
 });

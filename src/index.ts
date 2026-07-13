@@ -156,7 +156,11 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
-import { TopicRouter, type TopicsApi } from "./telegram/topics";
+import {
+	placeOfOwnerMessage,
+	TopicRouter,
+	type TopicsApi,
+} from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
 import { fitLine, fitLines, terminalWidth } from "./ui/fit";
 import { managerBannerLines } from "./ui/manager-banner";
@@ -1209,42 +1213,24 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 */
 	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
 		if (!topics?.active) return true;
-		const thread = threadOf(event);
 		reportTopicRouting(event);
-		if (thread === managerThread()) return false;
+		const place = placeOfOwnerMessage({
+			thread: threadOf(event),
+			isTopicMessage:
+				event.kind === "message" || event.kind === "edited_message"
+					? event.message.is_topic_message
+					: undefined,
+			personal: personalThread(),
+			manager: managerThread(),
+		});
+		if (place === "manager") return false;
 		notePersonalActivity();
-		if (isOutsidePersonal(event)) {
-			// A topic we do not know may be one the owner made — or ours, deleted and
-			// replaced. Re-check them (recreating whatever is gone) before answering.
-			if (thread !== undefined) await topics.revalidate();
-			noteStray(event);
-		}
+		if (place === "personal") return true;
+		// A topic we do not know may be one the owner made — or ours, deleted and
+		// replaced. Re-check ours (recreating whatever is gone) before answering.
+		if (place === "topic") await topics.revalidate();
+		noteStray(event, place === "outside");
 		return true;
-	};
-
-	/**
-	 * Whether an owner message was typed OUTSIDE the personal topic.
-	 *
-	 * A message written IN a topic always names it. Measured, not assumed: the same text
-	 * sent into one freshly created topic from Telegram Desktop and from Telegram for
-	 * Android arrived identically — `message_thread_id` set to that topic,
-	 * `is_topic_message: true`, both anchored to the topic's creation message. So no
-	 * thread means the message was not written in a topic at all: it was typed in the
-	 * "All" view, where Telegram itself labels the input box "message outside a topic".
-	 *
-	 * (This is the fact the whole feature rests on, and it was worth measuring: for a
-	 * while the owner's phone appeared to drop the field, which made an absent thread
-	 * look meaningless. It was writing in "All" and not in the topic it seemed to be in.)
-	 *
-	 * `is_topic_message` is the safety catch: should Telegram ever mark a message as a
-	 * topic message without saying which topic, it is NOT treated as an outsider —
-	 * moving the owner's own words out of their topic is the worse failure of the two.
-	 */
-	const isOutsidePersonal = (event: TelegramEvent): boolean => {
-		if (event.kind !== "message") return false;
-		const thread = threadOf(event);
-		if (thread !== undefined) return thread !== personalThread();
-		return event.message.is_topic_message !== true;
 	};
 
 	/**
@@ -1261,33 +1247,42 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * followed by three more sentences — copying each on arrival filled the topic with
 	 * forwards before the bot had even begun to think. One turn, one copy of what it
 	 * actually answers, right as the answer starts being written.
+	 *
+	 * The value says whether the ORIGINAL is then removed — and that depends on where it
+	 * was typed. The "All" view is not a place: nothing lives there, so the message is
+	 * MOVED out of it. A topic the owner made themselves IS a place, theirs, and the bot
+	 * has no business emptying it: from there the message is only copied.
 	 */
-	const strayMessages = new Set<number>();
+	const strayMessages = new Map<number, { moveOut: boolean }>();
 
-	const noteStray = (event: TelegramEvent): void => {
+	const noteStray = (event: TelegramEvent, moveOut: boolean): void => {
 		if (event.kind !== "message") return;
 		// A command (/clear, /help) is an instruction to the bridge, not a line of the
 		// conversation — the topic needs no record of it.
 		if ((event.message.text ?? "").startsWith("/")) return;
-		strayMessages.add(event.message.message_id);
+		strayMessages.set(event.message.message_id, { moveOut });
 		// Bound it: turns claim their own, so this only holds the ones no turn came for.
 		if (strayMessages.size > MAX_STRAY_MESSAGES) {
-			const oldest = strayMessages.values().next();
+			const oldest = strayMessages.keys().next();
 			if (!oldest.done) strayMessages.delete(oldest.value);
 		}
 	};
 
 	/**
-	 * Move the messages this turn answers into `personal`: copy each one there, then
-	 * remove the original from where it was typed.
+	 * Bring the messages this turn answers into `personal`: copy each one there, and —
+	 * only for those typed in the "All" view — remove the original, so the question is
+	 * MOVED rather than duplicated. "Bots can delete incoming messages in private chats"
+	 * is the one lever Telegram gives us for that.
 	 *
-	 * The removal is what makes it a MOVE rather than a duplicate — "Bots can delete
-	 * incoming messages in private chats" is the one lever Telegram gives us, and
-	 * without it the question stands twice in the chat: once outside the topic, once
-	 * inside it. It happens only after the copy is safely there, so a failed forward
-	 * costs nothing: the message stays where it is and is simply answered from the
-	 * topic, as before. (Telegram refuses to delete anything older than 48 hours; that
-	 * failure is ignored for the same reason.)
+	 * A message from a topic the OWNER made is copied and left alone. That topic is
+	 * theirs — notes, a scratch thread, whatever they built it for — and a bot that
+	 * empties it to keep its own conversation tidy is a bot that deletes your things.
+	 * The copy is enough: `personal` still reads as a whole conversation.
+	 *
+	 * The delete happens only once the copy is safely there, so a failed forward costs
+	 * nothing: the message stays where it is and is answered from `personal`, as before.
+	 * (Telegram refuses to delete anything older than 48 hours; ignored for the same
+	 * reason.)
 	 */
 	const mirrorStraysIntoPersonal = async (
 		sourceMessageIds: readonly number[],
@@ -1297,7 +1292,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!api || personal === undefined || ownerUserId === null) return;
 		const owner = ownerUserId;
 		for (const messageId of sourceMessageIds) {
-			if (!strayMessages.delete(messageId)) continue;
+			const stray = strayMessages.get(messageId);
+			if (!stray) continue;
+			strayMessages.delete(messageId);
 			const copied = await api
 				.forwardMessage({
 					chat_id: owner,
@@ -1307,7 +1304,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				})
 				.then(() => true)
 				.catch(() => false);
-			if (!copied) continue;
+			if (!copied || !stray.moveOut) continue;
 			await api
 				.deleteMessage({ chat_id: owner, message_id: messageId })
 				.catch(() => {});

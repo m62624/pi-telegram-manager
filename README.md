@@ -217,7 +217,9 @@ Your DM with the bot is **two topics**, split by *whose* conversation it is: **p
 
 *Not rendering? Open them in the repository: [`assets/threaded-mode-1-open-mini-app.jpg`](assets/threaded-mode-1-open-mini-app.jpg), [`assets/threaded-mode-2-toggle.jpg`](assets/threaded-mode-2-toggle.jpg).*
 
-Leave **Disallow users to create new threads** off — the extension creates the `personal` and `manager` topics itself, and you may want to add your own.
+Leave **Disallow users to create new threads** off — the extension creates the `personal` and `manager` topics itself, and you may want your own besides. They are safe to keep: the bot **never deletes a topic you made**, and it only ever removes the ones it created (see [below](#why-the-personal-topic-is-new-every-session)). A message you write in a topic of your own is **copied** into `personal` so the conversation there stays whole, and the original is left exactly where you put it. Only the "All" view is different — nothing lives there, so a message typed in it is *moved*, not copied.
+
+Turn the switch **on** if you would rather the DM held nothing but the bot's own topics; you then cannot create or delete topics there at all — including, usefully, not deleting `personal` by accident.
 
 If the toggle is off, the bot does not die — it falls back to one flat DM — but it **tells you so**, in that DM, with a link back to this section, on every mode start. Silence it only by deciding: either turn Threaded Mode on, or say you meant it with `topics.enabled: false` (then also consider `manager.log: false`, since the feed is chatty in a single stream).
 

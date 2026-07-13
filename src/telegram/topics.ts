@@ -42,6 +42,41 @@ export function deadName(personalName: string): string {
 	return `${personalName} (closed)`;
 }
 
+/**
+ * Where an owner message was written — the fact everything about it depends on.
+ *
+ *  - `personal` — the conversation with the model: answered, and left alone;
+ *  - `manager`  — the bot reporting to itself: never a prompt, ignored;
+ *  - `outside`  — the "All" view, where Telegram itself labels the input box "message
+ *    outside a topic". Nothing lives there, so the message is MOVED into `personal`
+ *    (copied, then deleted) and the conversation stays in one place;
+ *  - `topic`    — a topic the owner made themselves. It is copied into `personal` and
+ *    the original is LEFT THERE: that topic is theirs, and a bot that empties it to tidy
+ *    its own conversation is a bot that deletes your things.
+ *
+ * A message written in a topic always names it (`message_thread_id`, plus
+ * `is_topic_message`) — measured on Desktop and on Android, into an old topic and a new
+ * one. So the absence of a thread is not missing information: it is the answer.
+ * `isTopicMessage` is the safety catch — should Telegram ever mark a message as a topic
+ * message without saying which topic, it is treated as `personal` rather than moved out
+ * of a topic we cannot name.
+ */
+export type OwnerMessagePlace = "personal" | "manager" | "outside" | "topic";
+
+export function placeOfOwnerMessage(input: {
+	thread: number | undefined;
+	isTopicMessage?: boolean;
+	personal: number | undefined;
+	manager: number | undefined;
+}): OwnerMessagePlace {
+	const { thread, personal, manager } = input;
+	if (thread !== undefined) {
+		if (thread === manager) return "manager";
+		return thread === personal ? "personal" : "topic";
+	}
+	return input.isTopicMessage === true ? "personal" : "outside";
+}
+
 /** Topic icon colors, from the fixed palette Bot API allows. */
 const ICON_COLOR: Record<TopicKind, number> = {
 	personal: 7322096, // 0x6FB9F0 — blue
