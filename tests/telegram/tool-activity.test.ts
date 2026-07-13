@@ -5,6 +5,8 @@ import {
 	toolActivityHtml,
 	toolActivityLabel,
 	toolActivityMessage,
+	truncateTail,
+	unwrapToolResult,
 } from "../../src/telegram/tool-activity";
 
 describe("formatToolArgs", () => {
@@ -265,5 +267,101 @@ describe("tool card status and result", () => {
 		}).html;
 		expect(html).toContain("✅");
 		expect(html).not.toContain("<b>Result</b>");
+	});
+});
+
+describe("unwrapToolResult", () => {
+	it("unwraps the SDK's result envelope into the plain output it carries", () => {
+		// This is the bug the cards had: JSON-printing the envelope turned a directory
+		// listing into {"content":[{"type":"text","text":".\n./.codex\n…
+		expect(
+			unwrapToolResult({
+				content: [{ type: "text", text: ".\n./.codex\n./src" }],
+				isError: false,
+			}),
+		).toBe(".\n./.codex\n./src");
+	});
+
+	it("joins several text parts and names an image instead of dumping it", () => {
+		expect(
+			unwrapToolResult({
+				content: [
+					{ type: "text", text: "before" },
+					{ type: "image", data: "BASE64…", mimeType: "image/png" },
+					{ type: "text", text: "after" },
+				],
+			}),
+		).toBe("before\n[image]\nafter");
+	});
+
+	it("passes a bare string through and JSON-prints anything unrecognized", () => {
+		expect(unwrapToolResult("plain output")).toBe("plain output");
+		expect(unwrapToolResult({ matches: 3 })).toBe('{\n  "matches": 3\n}');
+		expect(unwrapToolResult(null)).toBe("");
+	});
+});
+
+describe("truncateTail", () => {
+	it("keeps the END of a long output and counts what it dropped", () => {
+		// The verdict of a command is at the bottom: an error, a summary, the last file.
+		const text = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const out = truncateTail(text, 40);
+		expect(out).toContain("line 100");
+		expect(out).not.toContain("line 1\n");
+		expect(out).toMatch(/^… \(\d+ earlier lines\)\n/);
+	});
+
+	it("starts at a line boundary, never mid-line", () => {
+		const out = truncateTail("aaaa\nbbbb\ncccc", 6);
+		expect(out).toBe("… (2 earlier lines)\ncccc");
+	});
+
+	it("leaves a short output untouched", () => {
+		expect(truncateTail("short", 100)).toBe("short");
+	});
+});
+
+describe("tool card result rendering", () => {
+	it("renders a wrapped result as readable text, not as JSON", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "find ." },
+			status: "ok",
+			result: { content: [{ type: "text", text: "./a.ts\n./b.ts" }] },
+		}).html;
+		expect(html).toContain("./a.ts\n./b.ts");
+		expect(html).not.toContain('"content"');
+		expect(html).not.toContain("\\n");
+	});
+
+	it("points at the full log when the tool saved one and we truncated", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "bash",
+				args: { command: "npm run build" },
+				status: "ok",
+				result: {
+					content: [{ type: "text", text: "x".repeat(500) }],
+					details: { fullOutputPath: "/tmp/pi-bash-1.log" },
+				},
+			},
+			{ maxResultChars: 50 },
+		).html;
+		expect(html).toContain("<code>/tmp/pi-bash-1.log</code>");
+	});
+
+	it("does not point at a full log when nothing was truncated", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "echo hi" },
+			status: "ok",
+			result: {
+				content: [{ type: "text", text: "hi" }],
+				details: { fullOutputPath: "/tmp/pi-bash-2.log" },
+			},
+		}).html;
+		expect(html).not.toContain("/tmp/pi-bash-2.log");
 	});
 });
