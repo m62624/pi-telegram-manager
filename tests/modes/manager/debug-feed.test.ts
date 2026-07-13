@@ -5,6 +5,7 @@ import {
 	buildManagerNotice,
 	isEmptyFeedTurn,
 	telegramChatDeepLink,
+	telegramMessageDeepLink,
 } from "../../../src/modes/manager/debug-feed";
 
 const NOW = "[Now: 2026-07-11 20:00 +05]";
@@ -45,7 +46,9 @@ describe("buildManagerFeed", () => {
 		expect(html).toContain("question");
 		// The reply target is named (the interlocutor), not a bare message id.
 		expect(html).toContain("to Alice");
-		expect(html).not.toContain("#7");
+		// …in the header. The Contact block still offers the message id as a jump link.
+		expect(html.slice(0, html.indexOf("<blockquote>"))).not.toContain("#7");
+		expect(html).toContain("Message: ");
 		// Thinking is folded into a collapsed <details> disclosure.
 		expect(html).toContain("<details>");
 		expect(html).toContain("Model thinking");
@@ -128,13 +131,19 @@ describe("telegramChatDeepLink", () => {
 		);
 	});
 
-	it("falls back to tg://, optionally jumping to a message, without a username", () => {
+	it("falls back to tg:// without a username", () => {
 		expect(telegramChatDeepLink({ userId: "5" })).toBe(
 			"tg://openmessage?user_id=5",
 		);
-		expect(telegramChatDeepLink({ userId: "5", messageId: 7 })).toBe(
+	});
+
+	it("links a single message separately, so a card can offer both taps", () => {
+		expect(telegramMessageDeepLink({ userId: "5", messageId: 7 })).toBe(
 			"tg://openmessage?user_id=5&message_id=7",
 		);
+		// No message, no user id → no link (the raw id is shown instead).
+		expect(telegramMessageDeepLink({ userId: "5" })).toBeUndefined();
+		expect(telegramMessageDeepLink({ messageId: 7 })).toBeUndefined();
 	});
 
 	it("returns undefined without a username or a numeric user id", () => {

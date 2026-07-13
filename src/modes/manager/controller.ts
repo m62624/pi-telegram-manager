@@ -229,6 +229,8 @@ export interface ManagerTurnLog {
 	text?: string;
 	/** The Telegram message id a delivered reply threaded to. */
 	replyToMessageId?: number;
+	/** The interlocutor's latest message — where a log card's message link points. */
+	lastMessageId?: number;
 }
 
 export interface ManagerControllerDeps {
@@ -319,6 +321,8 @@ interface ChatMeta {
 	contactName: string;
 	/** The interlocutor's Telegram user id — where durable facts are stored. */
 	userId?: string;
+	/** Message id of their latest message — what a log card links you to. */
+	lastMessageId?: number;
 }
 
 /**
@@ -655,6 +659,7 @@ export class ManagerController {
 			connectionId: input.connectionId,
 			contactName,
 			userId: from ? String(from.id) : undefined,
+			lastMessageId: input.message.message_id,
 		});
 		if (from) {
 			await this.deps.contactStore.upsertProfile(
@@ -844,6 +849,7 @@ export class ManagerController {
 			languageCode: profile?.languageCode,
 			isPremium: profile?.isPremium,
 			isBot: profile?.isBot,
+			lastMessageId: meta?.lastMessageId,
 		};
 		// Persist any durable facts the model recorded mid-conversation.
 		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
