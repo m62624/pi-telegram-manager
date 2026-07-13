@@ -1,28 +1,18 @@
+> ⚠️ Experimental. pi-telegram-manager is built **for local models** and, at runtime, is driven by one — a small local model (tested with [Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF)) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
+
 # pi-telegram-manager
 
-> ⚖️ **Terms & responsibility — read this before anything else.**
->
-> Running this bot makes **you** a Telegram bot developer, and you must read and follow Telegram's rules: the [Bot Developer Terms](https://telegram.org/tos/bot-developers), the [Privacy Policy](https://telegram.org/privacy), and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business).
->
-> This extension was built for **remote control and automation of your own Telegram chats**. In manager and mixed modes it reads conversations with **other people** and can answer **on your behalf** — those people are talking to a machine without necessarily knowing it. Decide for yourself whether that is fair in each chat, and say so where it matters (the bot prefixes its messages with a visible label by default — see `manager.labeler`).
->
-> **You alone are responsible** for how you use it and for the data it processes; the author accepts no responsibility for your use of the bot or what you do with that data. The bot repeats these links on `/start` and `/help`.
+An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram — as your own assistant on your phone, and as a secretary that answers other people on your behalf. The model runs **on your machine, in your own Telegram account**.
 
-> ⚠️ **Experimental.** Built **for local models** and, at runtime, driven by one — a small local model (tested with [`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF)) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
+> ⚖️ **Terms & responsibility — read before using.** Running this bot makes **you** a Telegram bot developer: follow the [Bot Developer Terms](https://telegram.org/tos/bot-developers), the [Privacy Policy](https://telegram.org/privacy), and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business). In manager and mixed modes the bot reads chats with **other people** and answers **on your behalf** — they are talking to a machine without necessarily knowing it (it labels its messages by default; see `manager.labeler`). **You alone are responsible** for how you use it and for the data it processes. The bot repeats these links on `/start` and `/help`.
 
----
-
-An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram.
-
-The question behind it: **can a small local model be genuinely useful in everyday life if its context is managed carefully?** So the design starts from the local model, not a cloud one. Where other extensions assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context. Almost every choice — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt. It works with cloud models too, but that is not what it is for.
-
-The model runs **on your machine, in your own Telegram account**, and you pick how it behaves with a **mode**. This is a personal experiment — expect rough edges, bugs, and behavior that changes.
+The question behind it: **can a small local model be genuinely useful in everyday life if its context is managed carefully?** So the design starts from the local model, not a cloud one. Where other extensions assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context. Almost every choice — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt.
 
 ### What this deliberately is not
 
-**One local model, one session. No sub-agents, no agent swarm, no orchestration layer, no cloud-scale machinery** — and that is a decision, not a gap waiting to be filled. Every one of those tricks assumes you can afford to spend context and calls freely; a single small local model cannot, and adding them would quietly break the very thing this extension is for. So instead of spawning a helper for each chat, one model handles them all, seeing exactly one conversation at a time.
+**One local model, one session. No sub-agents, no agent swarm, no orchestration layer** — a decision, not a gap waiting to be filled. Those tricks assume you can spend context and calls freely; a small local model cannot. So one model handles every chat, seeing exactly one conversation at a time.
 
-If you need it for a cloud model — parallel agents, a big context, a delegation layer — **fork it**. The code is MIT, the ports are injected, and the pieces you would replace (context building, the scheduler, the memory passes) are the ones deliberately kept small. It runs on cloud models as-is; it is simply not tuned for them, and it will not grow features that only make sense there.
+Need the cloud shape — parallel agents, a big context, a delegation layer? **Fork it.** MIT, ports injected, and the pieces you would replace (context building, the scheduler, the memory passes) are the ones deliberately kept small. It runs on cloud models as-is; it is simply not tuned for them, and will not grow features that only make sense there.
 
 ---
 
@@ -40,9 +30,7 @@ Developer version — the latest `main`, including changes not yet released to n
 pi install git:github.com/m62624/pi-telegram-manager
 ```
 
-Both channels can have bugs; the difference is only what they track — npm follows tagged releases, GitHub follows `main`. Pick npm for released versions and GitHub to try the newest changes.
-
-Then follow **[Getting started](#getting-started)** — a bot token, your user id, and (for the manager) one BotFather toggle.
+Both channels can have bugs; the difference is only what they track — npm follows tagged releases, GitHub follows `main`. Then set it up: **[Getting started](#getting-started)**.
 
 ---
 
@@ -64,9 +52,7 @@ Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc`
 
 ### 🕵️ Secretary manager — answer other people on your behalf
 
-Through a Telegram **Secretary** connection (the feature Telegram formerly called **Business**; same Bot API), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat.
-
-It runs in one of two sub-modes. In one sentence:
+Through a Telegram **Secretary** connection (formerly called **Business**), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat, in one of two sub-modes. In one sentence:
 
 > 👁️ **Observer stays silent until it is called.**  🎛️ **Takeover keeps talking until it is thrown out.**
 
@@ -224,7 +210,7 @@ The toggle in step 2 only *allows* the bot to be connected; this is where you ac
 
 *Not rendering? Open it in the repository: [`assets/connect-secretary-bot.gif`](assets/connect-secretary-bot.gif).*
 
-Then open Pi and run one of the commands below.
+Then open Pi and start a mode.
 
 ---
 
@@ -247,9 +233,9 @@ Then open Pi and run one of the commands below.
 
 ## Settings
 
-Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json`. Every key is optional and layered over the defaults; unknown keys warn, wrong-typed values fail loudly.
+Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json`. Every key is optional and layered over the defaults; unknown keys warn, wrong-typed values fail loudly. The timings default for a **local model** answering over minutes, not milliseconds.
 
-**See [SETTINGS.md](SETTINGS.md)** for every key — defaults, append-vs-replace semantics, the wake-word rules, the labeler banner, the topics layout, and the full timing table. The timings default for a **local model** answering over minutes, not milliseconds.
+**Every key, with its default: [SETTINGS.md](SETTINGS.md).**
 
 ---
 
