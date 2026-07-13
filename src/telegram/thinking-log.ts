@@ -1,18 +1,20 @@
 /**
- * The live trace of a turn, rendered into the streaming draft: the steps the agent
- * has finished, and the one it is on right now.
+ * What the agent is doing RIGHT NOW, rendered into the streaming draft.
  *
- * This is what the terminal shows and Telegram did not. A single "Thinking…" line
- * says the agent is alive; it does not say that it already read three files and is
- * now four seconds into a test run. The finished steps render as ordinary lines and
- * the current one as `<tg-thinking>`, which Telegram animates — so exactly one
- * thing in the draft is moving, and it is the thing that is actually happening.
+ * Between the prompt and the first token the chat was blank: a turn spent reading
+ * files or running a build looked like nothing was happening. The current step goes
+ * into `<tg-thinking>`, which Telegram animates, and carries its own elapsed clock —
+ * so "it is alive" becomes "it is four seconds into npm test".
  *
- * The whole trace lives in an ephemeral draft: it animates in place and leaves
- * nothing behind in the chat. Nothing here is the model's reasoning — the SDK
- * exposes none. These are actions.
+ * It shows ONLY the running step. Finished calls already stand in the chat as tool
+ * cards (real messages, each with its ✅), and listing them here printed the same
+ * call twice, one under the other. The draft covers the gap the cards do not: the
+ * call that has not returned yet.
+ *
+ * The draft is ephemeral — it animates in place and leaves nothing in the history.
+ * Nothing here is the model's reasoning; the SDK exposes none. These are actions.
  */
-import { inlineCode, italic, RichHtml, thinking } from "./rich-builder";
+import { inlineCode, RichHtml, thinking } from "./rich-builder";
 
 export interface ThinkingStep {
 	/** The tool call this step belongs to, so parallel calls do not overwrite each other. */
@@ -24,9 +26,6 @@ export interface ThinkingStep {
 	endedAt?: number;
 	failed?: boolean;
 }
-
-/** Steps kept visible; older ones collapse into a count, so a long turn stays readable. */
-const MAX_VISIBLE_STEPS = 6;
 
 /** Only show a duration once it is worth showing — every step is "0s" at first. */
 const MIN_ELAPSED_MS = 1_000;
@@ -66,40 +65,30 @@ export class ThinkingLog {
 	}
 
 	/**
-	 * Render the trace as of `now`. Finished steps are plain lines with a tick (or a
-	 * cross); the running one animates. With no steps yet, only the headline animates
-	 * — the model is sampling and there is nothing else true to say.
+	 * Render what is happening RIGHT NOW: the running step, with its own elapsed
+	 * clock, or the headline while the model is merely sampling.
+	 *
+	 * Finished steps are deliberately NOT listed. The tool cards already stand in the
+	 * chat as real messages, one per call, each with its own ✅ — repeating them in the
+	 * draft printed the same call twice, right under itself, which reads as a bug
+	 * rather than as history. The draft is for the thing that has no card yet.
+	 *
+	 * With several calls in flight (the model can fire them in parallel), the OLDEST
+	 * unfinished one is shown: it is the one the turn is actually waiting on.
 	 */
 	html(now: number): RichHtml {
-		if (this.steps.length === 0) return thinking(this.headline);
-
-		const parts: RichHtml[] = [];
-		const hidden = Math.max(0, this.steps.length - MAX_VISIBLE_STEPS);
-		if (hidden > 0) {
-			parts.push(
-				paragraph(
-					italic(`… (${hidden} earlier step${hidden === 1 ? "" : "s"})`),
-				),
-			);
-		}
-		const visible = this.steps.slice(hidden);
-		for (const step of visible) {
-			const running = step.endedAt === undefined;
-			const line = this.line(step, now);
-			parts.push(running ? thinking(line) : paragraph(line));
-		}
-		return RichHtml.join(parts);
+		const running = this.steps.find((step) => step.endedAt === undefined);
+		if (!running) return thinking(this.headline);
+		return thinking(this.line(running, now));
 	}
 
-	/** `✓ bash — npm test (4s)`; the running step keeps its own elapsed clock. */
+	/** `▸ bash — npm test (4s)` — the running step keeps its own elapsed clock. */
 	private line(step: ThinkingStep, now: number): RichHtml {
-		const running = step.endedAt === undefined;
-		const mark = running ? "▸ " : step.failed ? "✕ " : "✓ ";
-		const parts: RichHtml[] = [RichHtml.text(mark), inlineCode(step.toolName)];
+		const parts: RichHtml[] = [RichHtml.text("▸ "), inlineCode(step.toolName)];
 		if (step.hint) {
 			parts.push(RichHtml.text(` — ${step.hint}`));
 		}
-		const elapsed = (step.endedAt ?? now) - step.startedAt;
+		const elapsed = now - step.startedAt;
 		if (elapsed >= MIN_ELAPSED_MS) {
 			parts.push(RichHtml.text(` (${formatElapsed(elapsed)})`));
 		}
@@ -113,9 +102,4 @@ export function formatElapsed(ms: number): string {
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	return `${minutes}m ${seconds % 60}s`;
-}
-
-/** A block-level line in the draft (the trace is a document, not one inline string). */
-function paragraph(content: RichHtml): RichHtml {
-	return RichHtml.raw(`<p>${content.html}</p>`);
 }

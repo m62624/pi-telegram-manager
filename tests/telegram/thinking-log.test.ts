@@ -4,45 +4,71 @@ import { formatElapsed, ThinkingLog } from "../../src/telegram/thinking-log";
 const T0 = 1_000_000;
 
 describe("ThinkingLog", () => {
-	it("animates only the headline before any tool is called", () => {
+	it("animates the headline before any tool is called", () => {
 		// The model is sampling: there is nothing else true to say yet.
 		const log = new ThinkingLog();
 		expect(log.html(T0).html).toBe("<tg-thinking>Thinking…</tg-thinking>");
 		expect(log.isEmpty()).toBe(true);
 	});
 
-	it("animates the running step and settles the finished ones", () => {
+	it("shows the running step with its elapsed clock", () => {
 		const log = new ThinkingLog();
 		log.start({
 			callId: "1",
-			toolName: "read",
-			hint: "src/index.ts",
-			startedAt: T0,
-		});
-		log.finish("1", T0 + 2_000, false);
-		log.start({
-			callId: "2",
 			toolName: "bash",
 			hint: "npm test",
-			startedAt: T0 + 2_000,
+			startedAt: T0,
 		});
-
-		const html = log.html(T0 + 6_000).html;
-		// Exactly one thing moves, and it is the thing that is actually happening.
-		expect(html.match(/<tg-thinking>/g)).toHaveLength(1);
-		expect(html).toContain("<p>✓ <code>read</code> — src/index.ts (2s)</p>");
-		expect(html).toContain(
+		expect(log.html(T0 + 4_000).html).toBe(
 			"<tg-thinking>▸ <code>bash</code> — npm test (4s)</tg-thinking>",
 		);
 	});
 
-	it("crosses out a step that failed", () => {
+	it("does NOT list finished steps — the tool cards already show them", () => {
+		// Listing them printed the same call twice: once as a card with its ✅, once
+		// again in the draft right underneath it.
 		const log = new ThinkingLog();
-		log.start({ callId: "1", toolName: "bash", hint: "exit 1", startedAt: T0 });
-		log.finish("1", T0 + 1_500, true);
-		const html = log.html(T0 + 1_500).html;
-		expect(html).toContain("✕ <code>bash</code>");
-		expect(html).not.toContain("✓ <code>bash</code>");
+		log.start({
+			callId: "1",
+			toolName: "bash",
+			hint: "find . -type f",
+			startedAt: T0,
+		});
+		log.finish("1", T0 + 2_000, false);
+
+		const html = log.html(T0 + 2_000).html;
+		expect(html).not.toContain("find . -type f");
+		// Back to the headline: nothing is running, and the model is thinking again.
+		expect(html).toBe("<tg-thinking>Thinking…</tg-thinking>");
+	});
+
+	it("moves on to the next call and forgets the finished one", () => {
+		const log = new ThinkingLog();
+		log.start({ callId: "1", toolName: "read", hint: "a.ts", startedAt: T0 });
+		log.finish("1", T0 + 1_000, false);
+		log.start({
+			callId: "2",
+			toolName: "grep",
+			hint: "TODO",
+			startedAt: T0 + 1_000,
+		});
+
+		const html = log.html(T0 + 3_000).html;
+		expect(html).toBe(
+			"<tg-thinking>▸ <code>grep</code> — TODO (2s)</tg-thinking>",
+		);
+		expect(html).not.toContain("read");
+	});
+
+	it("waits on the OLDEST call still in flight when several run at once", () => {
+		const log = new ThinkingLog();
+		log.start({ callId: "a", toolName: "read", startedAt: T0 });
+		log.start({ callId: "b", toolName: "grep", startedAt: T0 + 500 });
+		// The younger one returns; the turn is still waiting on the older one.
+		log.finish("b", T0 + 1_000, false);
+		expect(log.html(T0 + 3_000).html).toBe(
+			"<tg-thinking>▸ <code>read</code> (3s)</tg-thinking>",
+		);
 	});
 
 	it("hides a duration nobody cares about", () => {
@@ -51,32 +77,6 @@ describe("ThinkingLog", () => {
 		log.start({ callId: "1", toolName: "ls", startedAt: T0 });
 		expect(log.html(T0 + 200).html).toBe(
 			"<tg-thinking>▸ <code>ls</code></tg-thinking>",
-		);
-	});
-
-	it("collapses old steps so a long turn stays readable", () => {
-		const log = new ThinkingLog();
-		for (let i = 0; i < 9; i++) {
-			log.start({ callId: String(i), toolName: `tool${i}`, startedAt: T0 });
-			log.finish(String(i), T0 + 1, false);
-		}
-		const html = log.html(T0 + 1).html;
-		expect(html).toContain("(3 earlier steps)");
-		expect(html).not.toContain("tool0");
-		expect(html).toContain("tool8");
-	});
-
-	it("keeps parallel calls apart", () => {
-		const log = new ThinkingLog();
-		log.start({ callId: "a", toolName: "read", startedAt: T0 });
-		log.start({ callId: "b", toolName: "grep", startedAt: T0 });
-		log.finish("b", T0 + 3_000, false);
-
-		const html = log.html(T0 + 3_000).html;
-		// "b" is done; "a" is still running and still counting.
-		expect(html).toContain("✓ <code>grep</code> (3s)");
-		expect(html).toContain(
-			"<tg-thinking>▸ <code>read</code> (3s)</tg-thinking>",
 		);
 	});
 
