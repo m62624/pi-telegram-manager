@@ -79,6 +79,11 @@ export interface ConnectControllerDeps {
 	 */
 	chatThread?: () => number | undefined;
 	/**
+	 * How many images one turn may carry (an album folds into a single turn). `0` or
+	 * undefined = no cap; the reason to cap is a small local context, not any Pi limit.
+	 */
+	maxImages?: number;
+	/**
 	 * Quiet window that closes an album (Telegram delivers one message per photo, a
 	 * few tens of ms apart). Default 1500 ms — long enough for a slow group, short
 	 * enough that a single photo is not noticeably delayed.
@@ -197,6 +202,7 @@ export class ConnectController {
 			const open = this.albums.get(groupId);
 			if (open !== undefined) {
 				const folded = this.queue.appendToItem(open, {
+					maxImages: this.deps.maxImages,
 					// Only the first message of an album carries your caption; the rest add
 					// nothing but their picture, so their bare "[photo]" header is dropped.
 					text: event.message.caption ? turn : undefined,

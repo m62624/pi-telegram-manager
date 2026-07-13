@@ -189,6 +189,14 @@ export interface TelegramSettings {
 	files: {
 		maxBytes: number;
 		/**
+		 * How many images one turn may carry to the model. Telegram delivers an album
+		 * as separate messages (one photo each, up to 10) and this extension folds them
+		 * into a single turn; Pi itself imposes no limit, so the cap exists only to
+		 * protect a small local context — each picture costs real tokens. Default 10
+		 * (Telegram's own album cap); lower it for a small vision model, `0` = no cap.
+		 */
+		maxImagesPerTurn: number;
+		/**
 		 * Directory where files a user sends to the bot (mode 1) are saved. Absolute
 		 * or `~`-relative. When unset, files are saved into the directory Pi runs in
 		 * (its current working directory).
@@ -228,7 +236,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		observer: {},
 		takeover: {},
 	},
-	files: { maxBytes: 52_428_800 },
+	files: { maxBytes: 52_428_800, maxImagesPerTurn: 10 },
 };
 
 // --- field validators (throw TypeError with a path on a wrong type) ---
@@ -555,6 +563,11 @@ export function normalizeSettings(
 				files.maxBytes,
 				"files.maxBytes",
 				d.files.maxBytes,
+			),
+			maxImagesPerTurn: asNonNegativeInt(
+				files.maxImagesPerTurn,
+				"files.maxImagesPerTurn",
+				d.files.maxImagesPerTurn,
 			),
 			downloadDir: asOptionalString(files.downloadDir, "files.downloadDir"),
 		},

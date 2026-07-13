@@ -82,6 +82,8 @@ export class MessageQueue {
 		part: {
 			text?: string;
 			images?: Array<{ data: string; mimeType: string }>;
+			/** Cap on the turn's images; falsy = no cap. Oldest are kept, extras dropped. */
+			maxImages?: number;
 			sourceMessageId: number;
 		},
 	): boolean {
@@ -90,7 +92,11 @@ export class MessageQueue {
 		const text = part.text?.trim();
 		if (text) item.text = item.text ? `${item.text}\n\n${text}` : text;
 		if (part.images && part.images.length > 0) {
-			item.images = [...(item.images ?? []), ...part.images];
+			const merged = [...(item.images ?? []), ...part.images];
+			item.images =
+				part.maxImages && merged.length > part.maxImages
+					? merged.slice(0, part.maxImages)
+					: merged;
 		}
 		item.sourceMessageIds.push(part.sourceMessageId);
 		return true;

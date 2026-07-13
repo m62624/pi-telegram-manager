@@ -1028,6 +1028,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connect = new ConnectController({
 			allowedUserId,
 			maxBytes: settings.files.maxBytes,
+			maxImages: settings.files.maxImagesPerTurn,
 			isIdle: () => !busy,
 			sendFollowUp,
 			loadImages,
@@ -1406,6 +1407,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			mentionWords: effectiveMentionWords,
 			timezone: settings.timezone,
 			maxBytes: settings.files.maxBytes,
+			maxImages: settings.files.maxImagesPerTurn,
 			media: settings.manager.media,
 			loadImages: loadManagerImages,
 			clock: { now: () => Date.now() },

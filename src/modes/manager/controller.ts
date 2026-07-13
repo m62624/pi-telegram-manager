@@ -170,12 +170,6 @@ export const MENTION_HINT =
 	"direct question or request addressed to you; if the word is just mentioned in " +
 	"passing (describing something, not asking you), stay silent.]";
 
-/**
- * How many images one turn may carry. Telegram caps an album at 10; we keep the
- * newest few, since a small local model's context is the scarce resource here.
- */
-const MAX_TURN_IMAGES = 6;
-
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -310,6 +304,12 @@ export interface ManagerControllerDeps {
 	timezone?: string;
 	/** Byte cap for describing/downloading inbound attachments. */
 	maxBytes: number;
+	/**
+	 * Cap on images per turn — an album arrives as separate messages and accumulates
+	 * for the chat's next turn. Falsy = no cap (Pi imposes none either; the cap exists
+	 * to protect a small local context).
+	 */
+	maxImages?: number;
 	/** Which inbound media reaches the model (images vision / documents). */
 	media: ManagerMediaPolicy;
 	clock: Clock;
@@ -762,9 +762,11 @@ export class ManagerController {
 				const loaded = (await this.deps.loadImages?.(message)) ?? [];
 				if (loaded.length > 0) {
 					const pending = this.latestImages.get(chatId) ?? [];
+					const merged = [...pending, ...loaded];
+					const cap = this.deps.maxImages;
 					this.latestImages.set(
 						chatId,
-						[...pending, ...loaded].slice(-MAX_TURN_IMAGES),
+						cap && merged.length > cap ? merged.slice(-cap) : merged,
 					);
 				}
 			} else {

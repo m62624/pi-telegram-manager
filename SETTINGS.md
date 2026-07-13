@@ -105,6 +105,7 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
 | `files.maxBytes` | `52428800` (50 MiB) | replaces | Size cap for describing/downloading inbound attachments. |
+| `files.maxImagesPerTurn` | `10` | replaces | How many images one turn may carry to the model. Telegram delivers an album as separate messages (one photo each, up to 10) and this extension folds them into a single turn; Pi imposes no limit of its own, so this cap exists only to protect a small local context — each picture costs real tokens. `0` = no cap. |
 | `files.downloadDir` | Pi's working dir | replaces | Where files sent to the bot (Personal mode) are saved. Absolute or `~`-relative. |
 
 ---

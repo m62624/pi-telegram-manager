@@ -181,6 +181,20 @@ describe("normalizeSettings", () => {
 		).toEqual({ enabled: true, personalName: "me", managerName: "bot" });
 	});
 
+	it("caps images per turn at Telegram's album size by default", () => {
+		// Pi imposes no limit of its own; the cap protects a small local context.
+		expect(normalizeSettings({}).files.maxImagesPerTurn).toBe(10);
+		expect(
+			normalizeSettings({ files: { maxImagesPerTurn: 3 } }).files
+				.maxImagesPerTurn,
+		).toBe(3);
+		// 0 disables the cap entirely.
+		expect(
+			normalizeSettings({ files: { maxImagesPerTurn: 0 } }).files
+				.maxImagesPerTurn,
+		).toBe(0);
+	});
+
 	it("defaults strictReplyGuard on and reads an optional ownerName", () => {
 		expect(normalizeSettings({}).manager.strictReplyGuard).toBe(true);
 		expect(normalizeSettings({}).manager.ownerName).toBeUndefined();
