@@ -3,7 +3,10 @@ import {
 	defaultDescribeArgs,
 	formatToolArgs,
 	toolActivityHtml,
+	toolActivityLabel,
 	toolActivityMessage,
+	truncateTail,
+	unwrapToolResult,
 } from "../../src/telegram/tool-activity";
 
 describe("formatToolArgs", () => {
@@ -134,5 +137,231 @@ describe("toolActivityMessage", () => {
 		});
 		expect(message.html).toBeDefined();
 		expect(message.html).toContain("<code>ls</code>");
+	});
+});
+
+describe("toolActivityLabel", () => {
+	it("names the tool and its primary argument on one line", () => {
+		expect(
+			toolActivityLabel({ toolName: "bash", args: { command: "npm test" } }),
+		).toBe("bash — npm test");
+		expect(
+			toolActivityLabel({
+				toolName: "read",
+				args: { file_path: "src/index.ts" },
+			}),
+		).toBe("read — src/index.ts");
+	});
+
+	it("falls back to the bare tool name when no argument speaks for it", () => {
+		expect(toolActivityLabel({ toolName: "ls" })).toBe("ls");
+		expect(toolActivityLabel({ toolName: "ls", args: { recurse: true } })).toBe(
+			"ls",
+		);
+	});
+
+	it("collapses a multi-line argument to one truncated line", () => {
+		const label = toolActivityLabel(
+			{ toolName: "bash", args: { command: "find .\n | sort\n | uniq" } },
+			{ maxHintChars: 12 },
+		);
+		expect(label).toBe("bash — find . | sor…");
+		expect(label).not.toContain("\n");
+	});
+});
+
+describe("tool card status and result", () => {
+	it("posts without a mark and completes with a tick", () => {
+		expect(
+			toolActivityHtml({ toolName: "bash", args: { command: "ls" } }).html,
+		).not.toContain("✅");
+
+		const done = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "ls" },
+			status: "ok",
+			result: "a.ts\nb.ts",
+		}).html;
+		expect(done).toContain("✅");
+		expect(done).toContain("<b>Result</b>");
+		expect(done).toContain("a.ts\nb.ts");
+	});
+
+	it("marks a failure and titles its output as an error", () => {
+		const failed = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "exit 1" },
+			status: "error",
+			result: "command failed",
+		}).html;
+		expect(failed).toContain("❌");
+		expect(failed).toContain("<b>Error</b>");
+		expect(failed).not.toContain("<b>Result</b>");
+	});
+
+	it("marks a call the abort caught mid-flight", () => {
+		const cancelled = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "sleep 60" },
+			status: "cancelled",
+		}).html;
+		expect(cancelled).toContain("⏹️");
+		// Nothing came back, so there is no result section to show.
+		expect(cancelled).not.toContain("<b>Result</b>");
+	});
+
+	it("escapes a result that would otherwise break the markup", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "a.html" },
+			status: "ok",
+			result: '<script>alert("x")</script> & </details>',
+		}).html;
+		expect(html).toContain("&lt;script&gt;");
+		expect(html).toContain("&amp;");
+		// The card's own structure survives: exactly one details block, still closed.
+		expect(html.match(/<details/g)).toHaveLength(1);
+		expect(html.endsWith("</details>")).toBe(true);
+	});
+
+	it("keeps a structured result as JSON and a string result as text", () => {
+		const json = toolActivityHtml({
+			toolName: "grep",
+			args: { pattern: "x" },
+			status: "ok",
+			result: { matches: 3 },
+		}).html;
+		expect(json).toContain('<pre><code class="language-json">');
+		expect(json).toContain('"matches": 3');
+
+		const text = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "echo hi" },
+			status: "ok",
+			result: "hi",
+		}).html;
+		// A shell log is not JSON and must not be quoted like one.
+		expect(text).toContain("<pre>hi</pre>");
+	});
+
+	it("truncates a huge result instead of blowing the message limit", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "bash",
+				args: { command: "cat big" },
+				status: "ok",
+				result: "x".repeat(9000),
+			},
+			{ maxResultChars: 100 },
+		).html;
+		expect(html).toContain("… (truncated)");
+		expect(html.length).toBeLessThan(1000);
+	});
+
+	it("shows no result section when the tool returned nothing", () => {
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "a" },
+			status: "ok",
+			result: "",
+		}).html;
+		expect(html).toContain("✅");
+		expect(html).not.toContain("<b>Result</b>");
+	});
+});
+
+describe("unwrapToolResult", () => {
+	it("unwraps the SDK's result envelope into the plain output it carries", () => {
+		// This is the bug the cards had: JSON-printing the envelope turned a directory
+		// listing into {"content":[{"type":"text","text":".\n./.codex\n…
+		expect(
+			unwrapToolResult({
+				content: [{ type: "text", text: ".\n./.codex\n./src" }],
+				isError: false,
+			}),
+		).toBe(".\n./.codex\n./src");
+	});
+
+	it("joins several text parts and names an image instead of dumping it", () => {
+		expect(
+			unwrapToolResult({
+				content: [
+					{ type: "text", text: "before" },
+					{ type: "image", data: "BASE64…", mimeType: "image/png" },
+					{ type: "text", text: "after" },
+				],
+			}),
+		).toBe("before\n[image]\nafter");
+	});
+
+	it("passes a bare string through and JSON-prints anything unrecognized", () => {
+		expect(unwrapToolResult("plain output")).toBe("plain output");
+		expect(unwrapToolResult({ matches: 3 })).toBe('{\n  "matches": 3\n}');
+		expect(unwrapToolResult(null)).toBe("");
+	});
+});
+
+describe("truncateTail", () => {
+	it("keeps the END of a long output and counts what it dropped", () => {
+		// The verdict of a command is at the bottom: an error, a summary, the last file.
+		const text = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const out = truncateTail(text, 40);
+		expect(out).toContain("line 100");
+		expect(out).not.toContain("line 1\n");
+		expect(out).toMatch(/^… \(\d+ earlier lines\)\n/);
+	});
+
+	it("starts at a line boundary, never mid-line", () => {
+		const out = truncateTail("aaaa\nbbbb\ncccc", 6);
+		expect(out).toBe("… (2 earlier lines)\ncccc");
+	});
+
+	it("leaves a short output untouched", () => {
+		expect(truncateTail("short", 100)).toBe("short");
+	});
+});
+
+describe("tool card result rendering", () => {
+	it("renders a wrapped result as readable text, not as JSON", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "find ." },
+			status: "ok",
+			result: { content: [{ type: "text", text: "./a.ts\n./b.ts" }] },
+		}).html;
+		expect(html).toContain("./a.ts\n./b.ts");
+		expect(html).not.toContain('"content"');
+		expect(html).not.toContain("\\n");
+	});
+
+	it("points at the full log when the tool saved one and we truncated", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "bash",
+				args: { command: "npm run build" },
+				status: "ok",
+				result: {
+					content: [{ type: "text", text: "x".repeat(500) }],
+					details: { fullOutputPath: "/tmp/pi-bash-1.log" },
+				},
+			},
+			{ maxResultChars: 50 },
+		).html;
+		expect(html).toContain("<code>/tmp/pi-bash-1.log</code>");
+	});
+
+	it("does not point at a full log when nothing was truncated", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "echo hi" },
+			status: "ok",
+			result: {
+				content: [{ type: "text", text: "hi" }],
+				details: { fullOutputPath: "/tmp/pi-bash-2.log" },
+			},
+		}).html;
+		expect(html).not.toContain("/tmp/pi-bash-2.log");
 	});
 });

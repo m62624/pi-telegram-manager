@@ -25,7 +25,12 @@ import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
+import { isTopicAnchor } from "../../telegram/message-context";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
+import {
+	buildRichHtmlMessage,
+	type RichHtml,
+} from "../../telegram/rich-builder";
 import {
 	type ToolCallActivity,
 	toolActivityMessage,
@@ -79,6 +84,8 @@ export interface ConnectControllerDeps {
 		path?: string;
 		url?: string;
 		caption?: string;
+		/** Thread the upload under an existing message (the tool card it completes). */
+		replyToMessageId?: number;
 	}) => Promise<void>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
@@ -157,6 +164,11 @@ export class ConnectController {
 	private draftId = 0;
 	/** Monotonic source of draft ids, so each message animates as its own draft. */
 	private draftCounter = 0;
+	/** Tool cards awaiting their outcome: toolCallId → the message to edit, and what it said. */
+	private readonly toolCards = new Map<
+		string,
+		{ messageId: number; activity: ToolCallActivity }
+	>();
 	/** Albums still being collected: media_group_id → the queued turn it folds into. */
 	private readonly albums = new Map<string, string>();
 	private readonly albumTimers = new Map<string, unknown>();
@@ -421,14 +433,35 @@ export class ConnectController {
 		return this.deps.loadImages(message).catch(() => []);
 	}
 
-	/** Save non-image attachments to disk, swallowing a wholesale failure. */
+	/**
+	 * Save non-image attachments to disk, swallowing a wholesale failure.
+	 *
+	 * A REPLIED-TO message's files are saved too. Replying to a file is how a person
+	 * says "this one" — including to a file the BOT sent, like the full-output log of
+	 * a tool call. Without this the model only ever saw the reply's caption ("📄 full
+	 * output — bash") and had no way to open the thing being pointed at, which makes
+	 * the reply meaningless. Mode 1 only: the manager never reads files this way.
+	 */
 	private async saveAttachments(
 		message: Message,
 	): Promise<{ savedFiles: TurnSavedFile[]; errors: string[] }> {
 		if (!this.deps.saveAttachments) return { savedFiles: [], errors: [] };
-		return this.deps
+		const own = await this.deps
 			.saveAttachments(message)
 			.catch(() => ({ savedFiles: [], errors: [] }));
+		const repliedTo = message.reply_to_message;
+		// A topic's root message is not something the owner "replied to" — Telegram
+		// attaches it to every message in the topic.
+		if (!repliedTo || isTopicAnchor(message, repliedTo)) return own;
+		const quoted = await this.deps
+			.saveAttachments(repliedTo as Message)
+			.catch(() => ({ savedFiles: [], errors: [] }));
+		if (quoted.savedFiles.length === 0 && quoted.errors.length === 0)
+			return own;
+		return {
+			savedFiles: [...own.savedFiles, ...quoted.savedFiles],
+			errors: [...own.errors, ...quoted.errors],
+		};
 	}
 
 	/**
@@ -541,11 +574,33 @@ export class ConnectController {
 			.catch(() => {});
 	}
 
-	/** Open a fresh streaming-draft id for the assistant message about to stream. */
+	/**
+	 * Open a streaming-draft id for the assistant message about to stream. An id
+	 * already open — the thinking placeholder of this same turn — is REUSED, so the
+	 * placeholder animates into the streaming text instead of being replaced by a
+	 * second draft (which would read as a flicker). A closed draft gets a fresh id,
+	 * distinct per message, so drafts never animate across replies.
+	 */
 	beginDraft(): void {
-		// Non-zero and distinct per message so drafts never animate across replies.
+		if (this.draftId !== 0) return;
 		this.draftCounter = (this.draftCounter % 1_000_000) + 1;
 		this.draftId = this.draftCounter;
+	}
+
+	/**
+	 * Push the turn's live trace into the draft: finished steps as plain lines, the
+	 * current one animated. This is NOT the model's reasoning — the SDK exposes none;
+	 * it is what the agent is DOING, filling the silence between the prompt and the
+	 * first token, and it disappears with the draft. Best-effort, like
+	 * {@link streamDraft}.
+	 */
+	async streamThinking(html: RichHtml): Promise<void> {
+		if (!html.html.trim()) return;
+		this.beginDraft();
+		await this.flushMirror();
+		await this.deps.outbound
+			.draft(this.target, this.draftId, buildRichHtmlMessage(html))
+			.catch(() => {});
 	}
 
 	/**
@@ -569,16 +624,110 @@ export class ConnectController {
 	}
 
 	/**
+	 * Erase the draft in place with an empty one. A draft only expires ~30s after its
+	 * last update, so a turn that ends while the placeholder is up — an abort (/esc),
+	 * an error, a tool-only run — would otherwise leave "Thinking…" animating long
+	 * after the agent stopped. Best-effort: if the API refuses an empty draft, the
+	 * placeholder still expires on its own.
+	 */
+	async clearDraft(): Promise<void> {
+		if (this.draftId === 0) return;
+		const draftId = this.draftId;
+		this.draftId = 0;
+		await this.deps.outbound
+			.draft(this.target, draftId, { html: "" })
+			.catch(() => {});
+	}
+
+	/**
 	 * Surface an agent tool invocation to the bound chat as a collapsible block
 	 * (tool name + folded parameters) — it belongs with the conversation it serves, so
 	 * you can watch the model work. Best-effort: a formatting/send failure must never
 	 * interrupt the agent's turn.
+	 *
+	 * The card is posted `running` and remembered by `callId`, so
+	 * {@link completeToolActivity} can finish it in place once the tool returns.
 	 */
-	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
+	async sendToolActivity(
+		activity: ToolCallActivity,
+		callId?: string,
+	): Promise<void> {
 		await this.flushMirror();
-		await this.deps.outbound
+		const ids = await this.deps.outbound
 			.sendMessages(this.target, [toolActivityMessage(activity)])
+			.catch(() => [] as number[]);
+		const messageId = ids[0];
+		if (callId === undefined || messageId === undefined) return;
+		this.toolCards.set(callId, { messageId, activity });
+	}
+
+	/**
+	 * Finish the card for a call that has returned: rewrite it with a ✅ or ❌ and its
+	 * output folded in, rather than posting a second message about it. Re-rendered
+	 * from the REMEMBERED activity, because the end event carries no arguments — a
+	 * card rebuilt without them would silently lose the command it ran.
+	 *
+	 * An unknown call id (cards disabled mid-turn, a card that failed to send) is a
+	 * no-op, and so is a failed edit — the running card stays, which is still true.
+	 */
+	async completeToolActivity(
+		callId: string,
+		result: unknown,
+		isError: boolean,
+	): Promise<number | undefined> {
+		const card = this.toolCards.get(callId);
+		if (!card) return undefined;
+		this.toolCards.delete(callId);
+		await this.deps.outbound
+			.editRich(
+				this.target,
+				card.messageId,
+				toolActivityMessage({
+					...card.activity,
+					status: isError ? "error" : "ok",
+					result,
+				}),
+			)
 			.catch(() => {});
+		// The caller may hang the full-output file off this card.
+		return card.messageId;
+	}
+
+	/**
+	 * Attach a tool's own full-output file to the chat — the whole log behind a card
+	 * that had to stop at "… (75 earlier lines)". WHETHER it should be attached is
+	 * decided upstream (was it truncated? is it within the owner's byte cap?); this
+	 * only sends it. Best-effort: a failed upload leaves the card, which still names
+	 * the path.
+	 */
+	async attachToolOutput(
+		path: string,
+		caption: string,
+		replyToMessageId?: number,
+	): Promise<void> {
+		if (!this.deps.uploadFile) return;
+		await this.deps
+			.uploadFile({ path, caption, replyToMessageId })
+			.catch(() => {});
+	}
+
+	/**
+	 * Close out every card still waiting for a result. A call interrupted by /esc
+	 * never fires its end event, so its card would otherwise keep the running state
+	 * forever — claiming work that stopped. Mark them cancelled and forget them.
+	 */
+	async cancelOpenToolCards(): Promise<void> {
+		const open = [...this.toolCards.values()];
+		this.toolCards.clear();
+		for (const card of open) {
+			await this.deps.outbound
+				.editRich(
+					this.target,
+					card.messageId,
+					toolActivityMessage({ ...card.activity, status: "cancelled" }),
+				)
+				.catch(() => {});
+		}
 	}
 
 	/** Pending (not yet dispatched) turn count — for footer/status. */

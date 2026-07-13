@@ -15,6 +15,12 @@ export class FakeFs implements TelegramFs {
 		return this.files.has(path) || this.binary.has(path) || this.dirs.has(path);
 	}
 
+	async size(path: string): Promise<number | undefined> {
+		const text = this.files.get(path);
+		if (text !== undefined) return Buffer.byteLength(text);
+		return this.binary.get(path)?.byteLength;
+	}
+
 	async isDirectory(path: string): Promise<boolean> {
 		return this.dirs.has(path);
 	}

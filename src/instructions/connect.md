@@ -44,3 +44,24 @@ only what the operator types is.
 Telegram limits to keep in mind: the bot can download files up to 20 MB and
 upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 20 MB. A local Bot API server raises these substantially.
+
+## Questions about this bridge itself
+
+If you are asked what this extension is, what bot you are running on, how a mode
+works, or what a setting does — **call `telegram_bot_about`**. Do not answer from
+memory, and do not guess.
+
+The guess is always wrong in the same way: it calls this "a custom bridge, not a
+public product", or says "there is little information about the extension", or
+invents a repository. None of that is true. It is **pi-telegram-manager** — public,
+MIT, published on npm, with a source link the tool will hand you. Guessing
+misinforms the person asking and misrepresents someone else's work.
+
+Two more rules:
+
+- `telegram_bot_about` is THIS extension's tool. Another extension may register an
+  about-style tool of its own (`planner_about`, for one) — that describes different
+  software. Never substitute it. If `telegram_bot_about` is not available to you,
+  say so plainly instead of answering from another tool or from memory.
+- A settings change needs the mode restarted in Pi: editing `settings.json` while a
+  mode runs changes nothing until it is reloaded. Never report a setting as changed.

@@ -6,6 +6,7 @@ import {
 	type ConnectControllerDeps,
 } from "../../../src/modes/connect/controller";
 import { OutboundSender } from "../../../src/telegram/outbound";
+import { RichHtml, thinking } from "../../../src/telegram/rich-builder";
 import {
 	classifyUpdate,
 	type TelegramEvent,
@@ -219,6 +220,101 @@ describe("ConnectController", () => {
 		expect(content).toContain("[attachment errors: huge.zip: too large]");
 	});
 
+	it("saves the file of a message the owner REPLIED to — that is how you point at one", async () => {
+		// Replying to a file (including one the BOT sent, like a tool's full-output log)
+		// is how a person says "this one". Without reading it, the model sees only the
+		// caption and cannot open the thing being pointed at.
+		const saveAttachments = vi.fn(async (message: { document?: unknown }) =>
+			message.document
+				? {
+						savedFiles: [
+							{ path: "/work/bash-1.log", kind: "document", size: "4.7 KB" },
+						],
+						errors: [],
+					}
+				: { savedFiles: [], errors: [] },
+		);
+		const { controller, sendFollowUp } = setup({
+			saveAttachments: saveAttachments as never,
+		});
+
+		const event = classifyUpdate({
+			update_id: 9,
+			message: {
+				message_id: 9,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "what failed here?",
+				reply_to_message: {
+					message_id: 8,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					caption: "📄 full output — bash",
+					document: { file_id: "F1", file_unique_id: "U1" },
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Both the message and the one it replies to are read.
+		expect(saveAttachments).toHaveBeenCalledTimes(2);
+		expect(sendFollowUp.mock.calls[0][0]).toContain("/work/bash-1.log");
+	});
+
+	it("does not treat a topic's root message as a reply worth reading", async () => {
+		const saveAttachments = vi.fn(async () => ({ savedFiles: [], errors: [] }));
+		const { controller } = setup({ saveAttachments });
+		const event = classifyUpdate({
+			update_id: 10,
+			message: {
+				message_id: 10,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "hi",
+				message_thread_id: 4,
+				is_topic_message: true,
+				reply_to_message: {
+					message_id: 4,
+					message_thread_id: 4,
+					is_topic_message: true,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Telegram hangs the topic root off every message in it: not a reply at all.
+		expect(saveAttachments).toHaveBeenCalledTimes(1);
+	});
+
+	it("hangs a tool's full-output file under the card it completes", async () => {
+		const uploadFile = vi.fn(async () => {});
+		const { controller, api } = setup({ uploadFile });
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "find ." },
+			"c1",
+		);
+		const cardId = api.sent[0] ? 1000 : 0;
+
+		const returned = await controller.completeToolActivity("c1", "out", false);
+		expect(returned).toBe(cardId);
+
+		await controller.attachToolOutput(
+			"/tmp/x.log",
+			"📄 full output — bash",
+			returned,
+		);
+		expect(uploadFile).toHaveBeenCalledWith({
+			path: "/tmp/x.log",
+			caption: "📄 full output — bash",
+			replyToMessageId: cardId,
+		});
+	});
+
 	it("sendFile routes to the uploadFile port", async () => {
 		const uploadFile = vi.fn(async () => {});
 		const { controller } = setup({ uploadFile });
@@ -331,6 +427,128 @@ describe("ConnectController", () => {
 		controller.endDraft();
 		await controller.streamDraft("after end"); // no active draft → ignored
 		expect(api.drafts).toHaveLength(2);
+	});
+
+	it("animates the thinking placeholder into the streaming text on ONE draft", async () => {
+		const { controller, api } = setup();
+		// The placeholder opens the draft itself — no beginDraft() beforehand.
+		await controller.streamThinking(thinking("bash — npm test"));
+		expect(api.drafts).toHaveLength(1);
+		expect(api.drafts[0].rich_message.html).toBe(
+			"<tg-thinking>bash — npm test</tg-thinking>",
+		);
+
+		// The reply starts: beginDraft must REUSE the open id, or the text would
+		// arrive as a second draft and read as a flicker.
+		controller.beginDraft();
+		await controller.streamDraft("done");
+		expect(api.drafts).toHaveLength(2);
+		expect(api.drafts[1].draft_id).toBe(api.drafts[0].draft_id);
+		expect(api.drafts[1].rich_message.markdown).toBe("done");
+	});
+
+	it("erases the placeholder on an aborted turn instead of letting it expire", async () => {
+		const { controller, api } = setup();
+		await controller.streamThinking(thinking("Thinking…"));
+		const draftId = api.drafts[0].draft_id;
+
+		await controller.clearDraft();
+		expect(api.drafts).toHaveLength(2);
+		expect(api.drafts[1].draft_id).toBe(draftId);
+		expect(api.drafts[1].rich_message.html).toBe("");
+
+		// The draft is closed: a late refresh cannot resurrect it.
+		await controller.streamDraft("late");
+		expect(api.drafts).toHaveLength(2);
+	});
+
+	it("escapes text in the placeholder and ignores empty markup", async () => {
+		const { controller, api } = setup();
+		await controller.streamThinking(RichHtml.raw("  "));
+		expect(api.drafts).toHaveLength(0);
+
+		await controller.streamThinking(thinking('grep — <b>&"x"'));
+		expect(api.drafts[0].rich_message.html).toBe(
+			'<tg-thinking>grep — &lt;b&gt;&amp;"x"</tg-thinking>',
+		);
+	});
+
+	it("completes a tool card in place instead of posting a second message", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: { command: "npm test" } },
+			"call-1",
+		);
+		expect(api.sent).toHaveLength(1);
+		const cardId = api.sent[0].rich_message ? 1000 : 0; // first id handed out
+		expect(api.sent[0].rich_message.html).not.toContain("✅");
+
+		await controller.completeToolActivity("call-1", "611 passed", false);
+		// The card was edited, not duplicated.
+		expect(api.sent).toHaveLength(1);
+		expect(api.edits).toHaveLength(1);
+		expect(api.edits[0].message_id).toBe(cardId);
+		expect(api.edits[0].rich_message.html).toContain("✅");
+		expect(api.edits[0].rich_message.html).toContain("611 passed");
+		// The arguments survive the edit: the end event does not carry them.
+		expect(api.edits[0].rich_message.html).toContain("npm test");
+	});
+
+	it("marks a failed call with a cross and folds its error in", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "exit 1" },
+			"c",
+		);
+		await controller.completeToolActivity("c", "boom", true);
+		expect(api.edits[0].rich_message.html).toContain("❌");
+		expect(api.edits[0].rich_message.html).toContain("boom");
+	});
+
+	it("ignores a result for a call it has no card for", async () => {
+		const { controller, api } = setup();
+		await controller.completeToolActivity("never-sent", "x", false);
+		expect(api.edits).toHaveLength(0);
+	});
+
+	it("completes each card only once", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity({ toolName: "ls" }, "c");
+		await controller.completeToolActivity("c", "ok", false);
+		await controller.completeToolActivity("c", "ok", false);
+		expect(api.edits).toHaveLength(1);
+	});
+
+	it("closes cards left open by an aborted turn as cancelled", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "sleep 60" },
+			"a",
+		);
+		await controller.sendToolActivity({ toolName: "read", args: "f.ts" }, "b");
+		await controller.completeToolActivity("b", "contents", false);
+
+		// /esc: the turn ends and "a" never returns.
+		await controller.cancelOpenToolCards();
+		expect(api.edits).toHaveLength(2);
+		expect(api.edits[1].rich_message.html).toContain("⏹️");
+		expect(api.edits[1].rich_message.html).toContain("sleep 60");
+
+		// Nothing is left to cancel a second time.
+		await controller.cancelOpenToolCards();
+		expect(api.edits).toHaveLength(2);
+	});
+
+	it("survives an edit the API refuses — the running card simply stands", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity({ toolName: "ls" }, "c");
+		api.failEdit = true;
+		// The edit is refused, but the card id still comes back: the full-output file
+		// is hung off that card either way.
+		await expect(
+			controller.completeToolActivity("c", "ok", false),
+		).resolves.toBe(api.sent[0] ? 1000 : 0);
+		expect(api.edits).toHaveLength(0);
 	});
 
 	it("uses a fresh draft id for the next message", async () => {

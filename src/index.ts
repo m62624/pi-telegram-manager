@@ -16,7 +16,9 @@
  * context; `sendUserMessage` is used from the top-level `pi` for the same
  * reason.
  */
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	BusinessConnection,
 	InlineKeyboardMarkup,
@@ -28,8 +30,14 @@ import {
 	COMPLIANCE_NOTICE,
 	SETUP_GUIDE_URL,
 	TELEGRAM_BOT_COMMANDS,
+	TELEGRAM_PUBLIC_COMMANDS,
 } from "./constants";
 import { AbortRegistry } from "./core/abort";
+import {
+	ABOUT_CALLS_PER_TURN,
+	ABOUT_TOOL_NAMES,
+	createAboutTools,
+} from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
@@ -44,7 +52,14 @@ import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { renderSettingsReport } from "./core/settings-report";
+import {
+	fullOutputPath,
+	planAttachment,
+	toolOutputFileName,
+} from "./core/tool-output-file";
 import type { TurnSavedFile } from "./core/turns";
+import { resolveUserDir } from "./core/user-path";
 import {
 	loadConnectInstructions,
 	loadManagerInstructions,
@@ -68,6 +83,10 @@ import {
 	lastInterlocutorUserId,
 	selectCatchUpChats,
 } from "./modes/manager/catchup";
+import {
+	type ConnectionAlert,
+	connectionAlerts,
+} from "./modes/manager/connection-health";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import {
 	ManagerController,
@@ -160,6 +179,12 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
+import { ThinkingLog } from "./telegram/thinking-log";
+import {
+	DEFAULT_MAX_RESULT_CHARS,
+	toolActivityHint,
+	unwrapToolResult,
+} from "./telegram/tool-activity";
 import {
 	placeOfOwnerMessage,
 	TopicRouter,
@@ -214,6 +239,37 @@ interface ControlApi {
 	}): Promise<unknown>;
 }
 
+/** The `setMyCommands` surface, narrowed to what the menus need. */
+interface CommandMenuApi {
+	setMyCommands(payload: {
+		commands: readonly { command: string; description: string }[];
+		scope?: { type: "chat"; chat_id: number };
+	}): Promise<unknown>;
+}
+
+/**
+ * Publish the two command menus. The owner's chat gets the control commands; the
+ * default scope — everyone else who opens this bot — gets only `/start`.
+ *
+ * This is presentation, not permission: every control command is already refused
+ * to anyone but `allowedUserId`. But an unscoped menu ADVERTISED "Stop the bot
+ * entirely" to strangers, which is both a confusing button and a description of a
+ * machine that is none of their business. Best-effort: a menu that fails to
+ * publish costs nobody anything.
+ */
+function publishCommandMenus(api: unknown, ownerChatId: number): void {
+	const menu = api as CommandMenuApi;
+	void menu
+		.setMyCommands({ commands: TELEGRAM_PUBLIC_COMMANDS })
+		.catch(() => {});
+	void menu
+		.setMyCommands({
+			commands: TELEGRAM_BOT_COMMANDS,
+			scope: { type: "chat", chat_id: ownerChatId },
+		})
+		.catch(() => {});
+}
+
 /**
  * Sent to the owner's DM when the topics could not be set up. Threaded Mode is a
  * setup step, not a nicety: without it the manager feed, the notices and your own
@@ -263,6 +319,32 @@ const REPLY_RIGHT_NOTICE = [
 ].join("\n");
 
 /**
+ * The rights of a live connection are changed in the Telegram app, and Telegram
+ * reports it once. Without these notices the manager just goes quiet: revoking
+ * `can_reply` mid-run leaves it reading every chat and failing every send, which
+ * from the outside is indistinguishable from a bot that decided to say nothing.
+ */
+const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
+	disabled: [
+		"⛔ The Secretary connection to this bot was just switched OFF.",
+		"It no longer receives your chats and cannot answer them.",
+		"",
+		"Turn it back on: Telegram → Settings → Business / Secretary → Chatbots.",
+	].join("\n"),
+	enabled:
+		"✅ The Secretary connection is back on — the manager is listening again.",
+	reply_right_lost: [
+		"⛔ This bot just LOST the right to reply on your behalf.",
+		"It still reads every managed chat and can answer none of them.",
+		"",
+		"Restore it: Telegram → Settings → Business / Secretary → Chatbots →",
+		"this bot → allow it to reply to messages.",
+	].join("\n"),
+	reply_right_restored:
+		"✅ The right to reply is back — the manager can answer again.",
+};
+
+/**
  * Sent when nothing has proved the Secretary connection yet. It cannot be checked
  * on demand: Telegram delivers `business_connection` only when the connection
  * CHANGES, and there is no API to list connections — so a bot connected before its
@@ -286,6 +368,21 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
+/**
+ * The trace is re-sent on this beat. Two clocks demand it: a streaming draft
+ * expires ~30s after its last update (so a long tool would leave the chat blank
+ * exactly when the agent is busiest), and the running step counts its own elapsed
+ * seconds, which would otherwise sit frozen. Re-sending the same draft id animates
+ * in place, so this is invisible — the number just ticks.
+ */
+const THINKING_REFRESH_MS = 3_000;
+/**
+ * How long an UNCHANGED trace may sit before it is re-sent anyway. It only has to
+ * beat the draft's ~30s expiry; until then, repeating identical content is traffic
+ * that buys nothing (Telegram's guidance is one message per second per chat, so
+ * neither rate is anywhere near a limit — this is just not being wasteful).
+ */
+const THINKING_KEEPALIVE_MS = 15_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -300,10 +397,18 @@ const MANAGER_BANNER_KEY = "telegram-manager-banner";
 // Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
 // the consolidation interrogation probes, and the resolve-draft tool (visible only
 // on a revise turn — see the matcher wrapper in startManager).
+/** Bundled `about` pages ship beside the source, like the instruction files. */
+const ABOUT_DOCS_DIR = join(dirname(fileURLToPath(import.meta.url)), "about");
+
 const MANAGER_TOOLS = [
 	...MANAGER_TOOL_NAMES,
 	...INTERROGATION_TOOL_NAMES,
 	MANAGER_RESOLVE_TOOL_NAME,
+	// `about` is safe inside the sandbox: it reads bundled pages by a fixed key, takes
+	// no path, touches no file the model can name — and refuses the owner's live
+	// configuration on a manager turn. A stranger asking "what are you?" deserves a
+	// true answer; a stranger asking "how are you set up?" gets nothing.
+	...ABOUT_TOOL_NAMES,
 ];
 
 // Plain-text /help for the owner DM while the manager/mixed mode is active (the
@@ -340,7 +445,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const abort = new AbortRegistry();
 	const contextReset = new ContextReset();
 	const visibility = createToolVisibility(pi, {
-		connect: TELEGRAM_TOOL_NAMES,
+		connect: [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES],
 		manager: MANAGER_TOOLS,
 	});
 	registerToolVisibility(pi, visibility);
@@ -434,8 +539,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let mirroredThisRun = false;
 	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
 	let toolActivityEnabled = false;
+	// Byte cap for attaching a tool's own full-output file; 0 = never attach.
+	let toolOutputMaxBytes = 0;
+	// Where we write a full output we saved ourselves (owner-configurable).
+	let toolOutputDir = paths.toolOutputDir;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
+	// The turn's live trace — the steps taken so far and the one running — shown in
+	// the draft until the first token of the reply arrives.
+	const thinkingLog = new ThinkingLog();
+	// Whether a trace is currently in the draft (so a finished turn knows to erase it).
+	let thinkingUp = false;
+	let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+	// The last trace actually sent, so an unchanged one is not re-sent every tick.
+	let lastThinkingHtml = "";
+	let lastThinkingAt = 0;
 	let draftText = "";
 	let lastDraftAt = 0;
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
@@ -485,6 +603,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let ownerUserId: number | null = null;
 	// The configured zone, for the clock the mode pin carries. Set on every mode start.
 	let activeTimezone: string | undefined;
+	// The settings the RUNNING mode started with — what `about current_settings`
+	// reports. Not what is in the file: a file edited since then is not what the bot
+	// is doing, and saying otherwise is exactly the confusion `about` exists to end.
+	let activeSettings: TelegramSettings | null = null;
+	// Pages read by `about` in the running turn (see its `claimCall`). Reset per turn.
+	let aboutCallsThisTurn = 0;
 
 	// Mixed mode: the manager runtime coexists with the owner's coding thread in
 	// ONE session. `polarity` says whose turn the shared brain is serving right
@@ -618,8 +742,34 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		updateMixedFooter();
 	};
 
-	const sendFollowUp = async (content: PromptContent): Promise<void> => {
+	/**
+	 * Hand a prompt to the agent — and only ever while the session is REALLY idle.
+	 *
+	 * `sendUserMessage` starts a turn when the agent is idle and QUEUES otherwise. A
+	 * queued message is not safe: on any abort the TUI calls
+	 * `restoreQueuedMessagesToEditor`, which empties the queue into the editor, where
+	 * it sits waiting for a human to press Enter. The manager aborts at the end of
+	 * every turn (to stop the model re-sampling its decision), so anything queued was
+	 * reliably diverted into the editor instead of being answered — which is exactly
+	 * the "it ends up in the editor" we kept seeing.
+	 *
+	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
+	 * still finishing, so a message sent from that handler (the queue pump does exactly
+	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
+	 * we ask it, not ourselves.
+	 *
+	 * The messages themselves are never at risk: they wait in OUR queues (the connect
+	 * MessageQueue, the manager's scheduler) until the agent can actually take one.
+	 */
+	const deliverPrompt = async (content: PromptContent): Promise<void> => {
+		if (activeCtx && !activeCtx.isIdle()) {
+			await activeCtx.waitForIdle().catch(() => {});
+		}
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
+	};
+
+	const sendFollowUp = async (content: PromptContent): Promise<void> => {
+		await deliverPrompt(content);
 	};
 
 	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
@@ -638,6 +788,85 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			void connect?.sendTyping();
 		}, TYPING_REFRESH_MS);
 	};
+
+	/**
+	 * The placeholder rides the streaming draft, which exists only in the owner's own
+	 * chat: personal mode always, mixed mode only on a coding turn. `ownerRun` is
+	 * exactly that distinction — a MANAGER turn never gets one, and could not anyway
+	 * (a draft cannot be sent over a business connection).
+	 */
+	const thinkingAllowed = (): boolean =>
+		connect !== null && draftPreviewsEnabled && ownerRun;
+
+	const stopThinking = (): void => {
+		thinkingUp = false;
+		thinkingLog.clear();
+		lastThinkingHtml = "";
+		lastThinkingAt = 0;
+		if (thinkingTimer) {
+			clearInterval(thinkingTimer);
+			thinkingTimer = null;
+		}
+	};
+
+	/**
+	 * Push the trace into the draft, and keep it alive. Two clocks are at work: a
+	 * draft expires ~30s after its last update, and the running step shows its own
+	 * elapsed seconds — both want a refresh well under half a minute. Re-sending the
+	 * SAME draft id animates in place, so refreshing is invisible: no flicker, and the
+	 * timer simply ticks.
+	 *
+	 * Identical content is NOT re-sent, except to beat the expiry: while the model is
+	 * merely sampling, the trace says the same thing every tick, and repeating it at
+	 * the tick rate is traffic that buys nothing. (Telegram's own limit is one message
+	 * per second per chat — this stays far under it either way.)
+	 */
+	const pushThinking = (): void => {
+		const now = Date.now();
+		const html = thinkingLog.html(now);
+		const unchanged = html.html === lastThinkingHtml;
+		if (unchanged && now - lastThinkingAt < THINKING_KEEPALIVE_MS) return;
+		lastThinkingHtml = html.html;
+		lastThinkingAt = now;
+		void connect?.streamThinking(html);
+	};
+
+	const showThinking = (): void => {
+		if (!thinkingAllowed()) return;
+		thinkingUp = true;
+		pushThinking();
+		if (thinkingTimer) return;
+		thinkingTimer = setInterval(() => {
+			if (!thinkingUp) return;
+			pushThinking();
+		}, THINKING_REFRESH_MS);
+	};
+
+	// The bot's own documentation, readable in every mode. The model picks a topic
+	// from a fixed list — it can never name a file or a path, so nothing anyone writes
+	// to it can steer this at another document.
+	for (const tool of createAboutTools({
+		fs,
+		docsDir: ABOUT_DOCS_DIR,
+		// Budgeted per turn: `about` decides nothing, and a manager turn only ends when
+		// the model calls reply/silent — so an unbudgeted `about` is a way for the model
+		// to spin forever without ever answering anyone.
+		claimCall: () => ++aboutCallsThisTurn <= ABOUT_CALLS_PER_TURN,
+		// A manager turn is answering a stranger. Personal — and mixed while the owner
+		// is coding — is the owner's own chat.
+		isOwnerTurn: () => !managerHoldsSession(mixedActive, polarity) || !manager,
+		settingsReport: () => {
+			if (!activeSettings) return null;
+			const mode = manager
+				? mixedActive
+					? ("mixed" as const)
+					: ("manager" as const)
+				: ("personal" as const);
+			return renderSettingsReport({ settings: activeSettings, mode });
+		},
+	})) {
+		pi.registerTool(tool);
+	}
 
 	// Registered once at load; the visibility gate hides it until a mode is
 	// active, and it routes through whichever ConnectController is live. Mode 1
@@ -679,6 +908,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		stopTyping();
+		stopThinking();
 		disarmWatchdog();
 		if (heartbeat) {
 			clearInterval(heartbeat);
@@ -691,6 +921,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
+		toolOutputMaxBytes = 0;
+		activeSettings = null;
 		contextReset.forget();
 		await lifecycle.deactivate("connect");
 		visibility.setActive("connect", false);
@@ -733,11 +965,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// is already stopped above) — tear it down here, without touching the
 			// `connect` lifecycle record, which mixed never activated.
 			stopTyping();
+			stopThinking();
 			connect = null;
 			connectSystemBlock = null;
 			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
+			toolOutputMaxBytes = 0;
 			contextReset.forget();
 			visibility.setActive("connect", false);
 			activeCtx?.ui.setStatus(STATUS_KEY, undefined);
@@ -790,11 +1024,31 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await learnBusinessConnection(event.connectionId);
 		}
 		if (event.kind === "business_connection") {
+			// Read the stored record BEFORE the update overwrites it: what the owner
+			// needs to hear is the TRANSITION (the right was just taken away), not the
+			// state (it is absent), which the startup check already reports.
+			const previous = await businessStore.get(event.connectionId);
 			await manager.onBusinessConnection({
 				connectionId: event.connectionId,
 				connection: event.connection,
 				isEnabled: event.isEnabled,
 			});
+			const alerts = connectionAlerts(
+				previous
+					? { canReply: previous.canReply, isEnabled: previous.isEnabled }
+					: null,
+				{
+					canReply: event.connection.rights?.can_reply,
+					isEnabled: event.isEnabled,
+				},
+			);
+			for (const alert of alerts) {
+				const good = alert === "enabled" || alert === "reply_right_restored";
+				await notifyOwner(
+					CONNECTION_ALERT_NOTICES[alert],
+					good ? "info" : "warning",
+				);
+			}
 		} else if (event.kind === "business_message") {
 			await manager.onBusinessMessage({
 				connectionId: event.connectionId,
@@ -809,6 +1063,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
 		managerTurnTools = [];
+		aboutCallsThisTurn = 0;
 		// Whose run is this? Personal mode: always the owner's. Mixed: only a coding
 		// turn is. Captured at the START of the run, because a mid-run owner action
 		// flips the polarity — the run itself stays what it was, and a manager run
@@ -820,7 +1075,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// action can abort it immediately: /esc in mode 1, or /switch in either mode
 		// (which must not wait for a long consolidation/reply to finish).
 		abort.set(() => ctx.abort());
-		if (ownerRun) startTyping();
+		if (ownerRun) {
+			startTyping();
+			// Fill the silence between the prompt and the first token: until a tool is
+			// called, the only true thing to say is that the model is sampling.
+			thinkingLog.clear();
+			showThinking();
+		}
 	});
 	// End the manager's agent run as soon as it has made the turn's terminal
 	// decision. A single manager tool does not end the agentic loop (a tool call
@@ -833,6 +1094,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// Only cap a manager turn. In mixed mode's coding polarity the owner is
 		// running the turn — never abort it on the manager's stale decision flag.
 		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
+		// Never abort ON TOP of a queued message. An abort makes the TUI empty the
+		// queue into the terminal editor (`restoreQueuedMessagesToEditor`), where the
+		// message stops being a Telegram turn and becomes text waiting for a human to
+		// press Enter. `deliverPrompt` keeps the queue empty, so this should not
+		// happen — but the cost of being wrong is a conversation silently stranded in
+		// an editor, and the cost of skipping the abort is one extra sample.
+		if (ctx.hasPendingMessages()) return;
 		// Consolidation now walks its whole interrogation in ONE agent run: step the
 		// state machine here (no per-probe abort) and abort only when it asks — live
 		// conversation work is waiting, or the interrogation is already done and the
@@ -851,7 +1119,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// re-arms it in agent_start.
 		abort.clear();
 		stopTyping();
-		connect?.endDraft();
+		// A placeholder still up when the run ends means no reply text ever streamed —
+		// an abort (/esc), an error, or a run that only called tools. Nothing will
+		// overwrite it, so erase it; otherwise it keeps animating until it expires.
+		const placeholderWasUp = thinkingUp;
+		stopThinking();
+		if (placeholderWasUp) {
+			await connect?.clearDraft();
+		} else {
+			connect?.endDraft();
+		}
+		// A card still open here belongs to a call that never returned — the turn was
+		// aborted under it. Nothing will ever complete it, so close it as cancelled
+		// instead of leaving it wearing the running state.
+		await connect?.cancelOpenToolCards();
 		// A manager run in mixed still pumps the connect queue (an owner message may
 		// be waiting behind the aborted moderation turn) but its text is NOT a reply
 		// to the owner — only an owner run delivers to the chat topic.
@@ -901,11 +1182,87 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
+		// The live trace rides the draft, not the cards, so it updates even when the
+		// tool CARDS are switched off — `showThinking` applies its own gate.
+		thinkingLog.start({
+			callId: event.toolCallId,
+			toolName: event.toolName,
+			hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
+			startedAt: Date.now(),
+		});
+		showThinking();
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
-			.sendToolActivity({ toolName: event.toolName, args: event.args })
+			.sendToolActivity(
+				{ toolName: event.toolName, args: event.args },
+				event.toolCallId,
+			)
 			.catch(() => {});
 	});
+
+	// The call returned: finish its card in place with ✅/❌ and the folded output, so
+	// a run of wrenches shows at a glance which step failed — instead of every card
+	// looking identical and having to be expanded to find out.
+	pi.on("tool_execution_end", async (event) => {
+		// Close the step in the live trace first: it ticks (or crosses) even when the
+		// cards are off, and it must stop counting seconds the moment the tool returns.
+		if (thinkingUp) {
+			thinkingLog.finish(event.toolCallId, Date.now(), event.isError);
+			showThinking();
+		}
+		if (!connect || !toolActivityEnabled || !ownerRun) return;
+		const cardId = await connect
+			.completeToolActivity(event.toolCallId, event.result, event.isError)
+			.catch(() => undefined);
+		await attachToolOutputFile(event.result, event.toolName, cardId);
+	});
+
+	/**
+	 * Send the tool's own full-output file when its output was truncated — the log
+	 * behind the card's "… (75 earlier lines)", which otherwise exists only on the
+	 * machine running Pi. WE decide this, not the model: it is a mechanical rule (was
+	 * it truncated, is it small enough), and making the agent spend a turn on it would
+	 * only invite it to get it wrong.
+	 */
+	const attachToolOutputFile = async (
+		result: unknown,
+		toolName: string,
+		cardMessageId?: number,
+	): Promise<void> => {
+		if (!connect || toolOutputMaxBytes <= 0) return;
+		const details = (result as { details?: unknown } | undefined)?.details;
+		const path = fullOutputPath(details);
+		const plan = planAttachment({
+			details,
+			text: unwrapToolResult(result),
+			shownChars: DEFAULT_MAX_RESULT_CHARS,
+			maxBytes: toolOutputMaxBytes,
+			toolFileBytes: path ? await fs.size(path) : undefined,
+		});
+		if (plan.attach === false) return;
+		const caption = `📄 full output — ${toolName}`;
+		if (plan.attach === "file") {
+			await connect.attachToolOutput(plan.path, caption, cardMessageId);
+			return;
+		}
+		// Nobody saved this but us: the tool returned everything and the CARD is what
+		// cut it. Write it out inside the extension dir (never the system temp dir, so
+		// the path is ours on every platform), send it, and delete it — this file has
+		// no life beyond the message it rode in on.
+		const scratch = join(
+			toolOutputDir,
+			toolOutputFileName(toolName, Date.now()),
+		);
+		try {
+			await fs.writeText(scratch, plan.text);
+			await connect.attachToolOutput(scratch, caption, cardMessageId);
+		} catch {
+			// A scratch file we could not write or send is not worth a word to the user:
+			// the card still carries the truncated output.
+		} finally {
+			await fs.removeFile(scratch).catch(() => {});
+		}
+	};
 
 	// Live streaming preview: open a draft when the assistant message starts and
 	// animate it (throttled) as tokens arrive. The draft is ephemeral — it never
@@ -924,6 +1281,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			(event.message as { content?: unknown }).content as never,
 		);
 		if (!text || text === draftText) return;
+		// The reply has started: retire the placeholder BEFORE the first chunk, or its
+		// refresh timer would overwrite the streaming text with "Thinking…" again.
+		stopThinking();
 		draftText = text;
 		const now = Date.now();
 		if (now - lastDraftAt < DRAFT_THROTTLE_MS) return;
@@ -998,6 +1358,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 		activeTimezone = settings.timezone;
+		activeSettings = settings;
 		const token = resolveSecret(settings.botToken);
 		if (!token) {
 			ctx.ui.notify(
@@ -1111,6 +1472,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * this extension rather than a setting nobody flipped. Checked on every manager /
 	 * mixed start; best-effort, never blocks the start.
 	 */
+	/**
+	 * Say something to the owner in their own DM (and in the terminal). Unlike the
+	 * startup check, this fires from live traffic, where there is no Pi command
+	 * context — it rides the manager client and the owner id captured on mode start.
+	 * Best-effort: a diagnostic must never break the update it rode in on.
+	 */
+	const notifyOwner = async (
+		text: string,
+		level: "info" | "warning" = "warning",
+	): Promise<void> => {
+		activeCtx?.ui.notify(text.split("\n")[0] ?? text, level);
+		const api = managerClient?.api as unknown as ControlApi | undefined;
+		if (!api || ownerUserId === null) return;
+		await api
+			.sendMessage({
+				chat_id: ownerUserId,
+				text,
+				link_preview_options: { is_disabled: true },
+			})
+			.catch(() => {});
+	};
+
 	const checkSecretarySetup = async (
 		api: unknown,
 		ownerChatId: number,
@@ -1147,9 +1530,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			// `canReply` is undefined on older connections we stored before the field
-			// existed; only an explicit false is a real problem.
-			if (enabled.every((c) => c.canReply === false)) {
-				await warn(REPLY_RIGHT_NOTICE);
+			// existed; only an explicit false is a real problem. ANY muted connection is
+			// worth saying out loud: with `every`, a second working account silenced the
+			// warning for the broken one, which is precisely the case you cannot see from
+			// the inside.
+			const muted = enabled.filter((c) => c.canReply === false);
+			if (muted.length > 0) {
+				const named =
+					muted.length === enabled.length
+						? REPLY_RIGHT_NOTICE
+						: `${REPLY_RIGHT_NOTICE}\n\nAffected account(s): ${muted
+								.map((c) => c.userName ?? c.userId)
+								.join(", ")}`;
+				await warn(named);
 			}
 		} catch {
 			// A probe failure is not worth blocking a mode start over.
@@ -1411,11 +1804,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		const loadImages = (message: Message) =>
 			loadInlineImages(media, message, settings.files.maxBytes);
-		// Where inbound non-image files land: the configured dir, else the
-		// directory Pi runs in.
-		const downloadDir = settings.files.downloadDir
-			? expandHome(settings.files.downloadDir)
-			: process.cwd();
+		// Where inbound non-image files land — a file you send the bot, or one you
+		// REPLY to: the configured dir, else the directory Pi runs in. Same path parser
+		// as every other configurable location, so `~/x`, `C:\x` and `\\srv\share`
+		// mean the same thing everywhere.
+		const downloadDir = resolveUserDir(
+			settings.files.downloadDir,
+			process.cwd(),
+			homedir(),
+		);
 		// Save every non-image attachment to disk and report its absolute path,
 		// so the model can open it with its normal tools. Per-file errors are
 		// collected and surfaced in the prompt, not swallowed.
@@ -1458,6 +1855,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			path?: string;
 			url?: string;
 			caption?: string;
+			replyToMessageId?: number;
 		}) => {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);
@@ -1526,6 +1924,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
+		toolOutputDir = resolveUserDir(
+			settings.assistant.toolOutputDir,
+			paths.toolOutputDir,
+			homedir(),
+		);
 		visibility.setActive("connect", true);
 		return connect;
 	};
@@ -1590,10 +1994,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await rotatePersonalTopic();
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
-		// Publish the tappable command menu (no manual setup needed by the user).
-		void client.api
-			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
-			.catch(() => {});
+		// Publish the tappable command menus (no manual setup needed by the user).
+		// Two scopes, deliberately: the control commands are refused to everyone but
+		// the owner, so publishing them by default only offered strangers a "Stop the
+		// bot entirely" button that does nothing. They get /start; the owner gets the
+		// bridge.
+		void publishCommandMenus(client.api, allowedUserId);
 		heartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
@@ -1871,7 +2277,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				// Tag every injected Telegram turn in mixed mode so the coding-polarity
 				// context filter can strip it from the owner's thread.
 				const content = mixedActive ? tagTelegramPrompt(prompt) : prompt;
-				pi.sendUserMessage(content, { deliverAs: "followUp" });
+				// Through `deliverPrompt`, so a turn injected while the session is still
+				// settling cannot land in the SDK queue — from which the next abort would
+				// dump it into the terminal editor instead of answering anyone.
+				await deliverPrompt(content);
 			},
 			// Business connections reject the rich-message API, so mode-2 replies go out
 			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
@@ -1972,10 +2381,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			};
 		}
 		void managerClient.start();
-		// Publish the tappable command menu (so /switch is reachable in mode 2 too).
-		void managerClient.api
-			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
-			.catch(() => {});
+		// Publish the tappable command menus (so /switch is reachable in mode 2 too).
+		// Mode 2 is where the scoping earns its keep: this bot is answering strangers,
+		// and its menu is not their business.
+		if (settings.allowedUserId) {
+			void publishCommandMenus(managerClient.api, settings.allowedUserId);
+		}
 		visibility.setExclusive("manager", managerMatcher);
 		// Mixed starts in coding polarity, so the manager sandbox is inactive until
 		// the return timer flips to Telegram; the standalone manager is always active.

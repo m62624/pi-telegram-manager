@@ -53,10 +53,13 @@ export const COMMANDS = {
 } as const;
 
 /**
- * Bot commands published to the Telegram command menu (mode 1) via
- * `setMyCommands`. They render as a tappable list behind the chat's menu
- * button — the user never types them by hand — and map to the bridge's own
- * control handlers, not the agent.
+ * The OWNER's command menu, published with a chat-scoped `setMyCommands`. It
+ * renders as a tappable list behind the chat's menu button — the user never types
+ * these by hand — and maps to the bridge's own control handlers, not the agent.
+ *
+ * Scope matters: every command here is refused to anyone but the owner
+ * (`allowedUserId`), so advertising them to the world only invited strangers to
+ * tap "Stop the bot entirely" and wonder why nothing happened.
  */
 export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 	[
@@ -70,6 +73,16 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },
 	];
+
+/**
+ * What everyone ELSE sees (the default scope). A stranger who opens this bot gets
+ * one command, and it is the one they are entitled to: what the bot is and the
+ * terms it runs under. The control surface is not theirs to see.
+ */
+export const TELEGRAM_PUBLIC_COMMANDS: {
+	command: string;
+	description: string;
+}[] = [{ command: "start", description: "What this bot is — privacy & terms" }];
 
 /**
  * The mutually-exclusive runtime modes. `connect` = personal (mode 1), `manager`

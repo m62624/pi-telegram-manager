@@ -98,7 +98,7 @@ function externalReplyKind(info: ExternalReplyInfo): string {
  * topic-creation service message, so without this every message written in a topic
  * would carry a phantom `[reply to <bot>]: ""` into the model's context.
  */
-function isTopicAnchor(message: Message, replyTo: Message): boolean {
+export function isTopicAnchor(message: Message, replyTo: Message): boolean {
 	if (replyTo.forum_topic_created) return true;
 	return (
 		message.is_topic_message === true &&

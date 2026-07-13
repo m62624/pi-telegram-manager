@@ -17,6 +17,36 @@ export interface TelegramSettings {
 		draftPreviews: boolean;
 		/** Mirror each agent tool call to Telegram as a collapsible block (mode 1). */
 		toolActivity: boolean;
+		/**
+		 * Size cap, in BYTES, for attaching a tool's own full-output file (mode 1).
+		 *
+		 * When a tool truncates its output for the model it saves the whole thing to a
+		 * file; a card that stops at "… (75 earlier lines)" then points at a path on the
+		 * machine running Pi — which is no use to you reading Telegram on a phone. Up to
+		 * this size, that file is attached to the chat; above it, only the path is named.
+		 *
+		 * This is NOT `files.maxBytes` (that governs files YOU send the bot). It exists
+		 * on its own because tool logs arrive unasked and can be large, and the person
+		 * receiving them may be on mobile data. Default 26214400 (25 MB); `0` never
+		 * attaches. Only truncated output is ever attached — a complete result is
+		 * already in the card.
+		 */
+		toolOutputMaxBytes: number;
+		/**
+		 * Where the full-output files are written before being sent (mode 1). Unset →
+		 * the extension's own directory (`<agent>/extensions/pi-telegram-manager/
+		 * tool-output`), never the system temp dir.
+		 *
+		 * POSIX and Windows paths are both accepted, since the same settings file may
+		 * travel between machines: `/var/log/pi`, `~/logs`, `C:\logs`, `D:/logs`,
+		 * `\\server\share`. A leading `~` expands to the home directory. The path is
+		 * used as written — a Windows path on Linux fails as a missing directory rather
+		 * than being silently rewritten into some other one.
+		 *
+		 * Each file is deleted right after it is sent; the directory only ever holds
+		 * files in flight.
+		 */
+		toolOutputDir?: string;
 	};
 	/**
 	 * Background connection watchdog (both modes). While a mode is active the bot
@@ -228,7 +258,12 @@ export interface TelegramSettings {
 }
 
 export const DEFAULT_SETTINGS: TelegramSettings = {
-	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
+	assistant: {
+		rendering: "rich",
+		draftPreviews: true,
+		toolActivity: true,
+		toolOutputMaxBytes: 26_214_400,
+	},
 	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
 	mixed: { returnToTelegramMs: 480_000 },
 	topics: { enabled: true, personalName: "personal", managerName: "manager" },
@@ -423,6 +458,15 @@ export function normalizeSettings(
 				assistant.toolActivity,
 				"assistant.toolActivity",
 				d.assistant.toolActivity,
+			),
+			toolOutputMaxBytes: asNonNegativeInt(
+				assistant.toolOutputMaxBytes,
+				"assistant.toolOutputMaxBytes",
+				d.assistant.toolOutputMaxBytes,
+			),
+			toolOutputDir: asOptionalString(
+				assistant.toolOutputDir,
+				"assistant.toolOutputDir",
 			),
 		},
 		connectionCheck: {

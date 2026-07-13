@@ -17,6 +17,7 @@ import {
 	subscript,
 	superscript,
 	table,
+	thinking,
 } from "../../src/telegram/rich-builder";
 
 describe("escaping", () => {
@@ -157,6 +158,23 @@ describe("RichHtmlDocument", () => {
 		expect(doc.isEmpty()).toBe(true);
 		doc.paragraph("x");
 		expect(doc.isEmpty()).toBe(false);
+	});
+});
+
+describe("thinking", () => {
+	it("wraps escaped text in the animated placeholder tag", () => {
+		expect(thinking("bash — npm test").html).toBe(
+			"<tg-thinking>bash — npm test</tg-thinking>",
+		);
+		expect(thinking("<script>").html).toBe(
+			"<tg-thinking>&lt;script&gt;</tg-thinking>",
+		);
+	});
+
+	it("nests built markup without double-escaping it", () => {
+		expect(thinking(inlineCode("npm test")).html).toBe(
+			"<tg-thinking><code>npm test</code></tg-thinking>",
+		);
 	});
 });
 

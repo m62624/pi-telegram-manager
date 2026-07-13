@@ -13,17 +13,37 @@
  */
 import type { InputRichMessage } from "@grammyjs/types";
 import {
+	bold,
 	buildRichHtmlMessage,
 	details,
+	divider,
 	inlineCode,
+	italic,
 	preformatted,
 	RichHtml,
 } from "./rich-builder";
+
+/**
+ * How the call ended. `running` is the card as first posted; the same card is then
+ * edited in place to `ok` or `error`, so a chat full of wrenches tells you at a
+ * glance which step failed instead of making you expand every one of them.
+ *
+ * `cancelled` is the card of a call that never returned — the turn was aborted
+ * (/esc) under it. Without it, an interrupted card would sit there wearing the
+ * running state forever, claiming work that stopped.
+ */
+export type ToolStatus = "running" | "ok" | "error" | "cancelled";
 
 /** An agent tool invocation to surface in Telegram (structural, SDK-agnostic). */
 export interface ToolCallActivity {
 	toolName: string;
 	args?: unknown;
+	/** Defaults to `running` — the state a card is posted in. */
+	status?: ToolStatus;
+	/** The tool's output, folded into the card once it has one. */
+	result?: unknown;
+	/** The tool's own metadata (bash: `fullOutputPath`, truncation), when it reports any. */
+	details?: unknown;
 }
 
 export interface ToolActivityOptions {
@@ -33,15 +53,83 @@ export interface ToolActivityOptions {
 	maxArgChars?: number;
 	/** Longest single-line hint shown after the tool name in the summary. */
 	maxHintChars?: number;
+	/** Max characters of the folded result before truncation. */
+	maxResultChars?: number;
 	/** Override the summary's primary-argument hint (well-known tools by default). */
 	describeArgs?: (activity: ToolCallActivity) => string | undefined;
 }
 
 const DEFAULT_MAX_ARG_CHARS = 3500;
 const DEFAULT_MAX_HINT_CHARS = 56;
+/**
+ * Results are output, not input: a build log dwarfs its command, so cap it harder.
+ * Exported because whoever decides to ATTACH the full output has to know exactly how
+ * much of it the card is already showing — otherwise the two disagree about whether
+ * anything was hidden at all.
+ */
+export const DEFAULT_MAX_RESULT_CHARS = 2500;
+
+/** The status mark that trails the summary line. `running` carries none — it is the default state. */
+const STATUS_MARK: Record<ToolStatus, string> = {
+	running: "",
+	ok: " ✅",
+	error: " ❌",
+	cancelled: " ⏹️",
+};
 
 /** Tools whose primary string argument is shell source, shown as a `bash` block. */
 const SHELL_TOOLS = new Set(["bash", "shell", "sh", "run"]);
+
+/**
+ * The SDK hands a tool result as `{ content: [{ type: "text", text }, …], details,
+ * isError }`, not as a string. JSON-printing that whole envelope is what turned a
+ * plain `find` listing into `{"content":[{"type":"text","text":".\n./.codex\n…`  —
+ * the output was in there, wearing its own escaping.
+ *
+ * So unwrap it: concatenate the text parts, note any image part rather than
+ * dumping its base64, and fall back to the raw value for anything that is not
+ * shaped like a result envelope (a tool may return a bare string or an object).
+ */
+export function unwrapToolResult(result: unknown): string {
+	if (result === undefined || result === null) return "";
+	if (typeof result === "string") return result;
+	const content = (result as { content?: unknown }).content;
+	if (!Array.isArray(content)) return safeJson(result);
+	const parts: string[] = [];
+	for (const part of content) {
+		if (typeof part === "string") {
+			parts.push(part);
+			continue;
+		}
+		const typed = part as { type?: string; text?: string };
+		if (typed?.type === "text" && typeof typed.text === "string") {
+			parts.push(typed.text);
+		} else if (typed?.type === "image") {
+			parts.push("[image]");
+		}
+	}
+	return parts.join("\n").trim();
+}
+
+/**
+ * Keep the END of a long output and say how much was dropped — a command's verdict
+ * (the error, the summary, the last file) lives at the bottom, so truncating from
+ * the tail is truncating away the answer. Mirrors what Pi shows in the terminal.
+ */
+export function truncateTail(text: string, maxChars: number): string {
+	if (text.length <= maxChars) return text;
+	const kept = text.slice(text.length - maxChars);
+	// Start at a line boundary, so the first visible line is not half a line.
+	const newline = kept.indexOf("\n");
+	const body = newline === -1 ? kept : kept.slice(newline + 1);
+	const hidden = text.length - body.length;
+	const hiddenLines = text.slice(0, hidden).split("\n").length - 1;
+	const label =
+		hiddenLines > 0
+			? `… (${hiddenLines} earlier line${hiddenLines === 1 ? "" : "s"})`
+			: "… (truncated)";
+	return `${label}\n${body}`;
+}
 
 /** JSON-stringify without throwing on cycles/bigints; fall back to `String`. */
 function safeJson(value: unknown): string {
@@ -151,12 +239,89 @@ export function toolActivityHtml(
 			),
 		);
 	}
+	summaryParts.push(RichHtml.raw(STATUS_MARK[activity.status ?? "running"]));
 	const summary = RichHtml.join(summaryParts);
-	const body = renderToolBody(
+	const blocks: RichHtml[] = [
+		renderToolBody(activity, options.maxArgChars ?? DEFAULT_MAX_ARG_CHARS),
+	];
+	const result = renderToolResult(
 		activity,
-		options.maxArgChars ?? DEFAULT_MAX_ARG_CHARS,
+		options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS,
 	);
-	return details(summary, [body], options.open ?? false);
+	if (result) blocks.push(divider(), result);
+	return details(summary, blocks, options.open ?? false);
+}
+
+/**
+ * Render the tool's output under its parameters, inside the SAME folded block —
+ * one card per call, not two messages. The output is UNWRAPPED from the SDK's
+ * result envelope and shown as the plain text it is: a directory listing must read
+ * like a listing, not like the JSON that carried it. `preformatted` escapes it, so
+ * a result full of `<`, `&` or a stray `</details>` cannot break the markup around
+ * it, and an empty result renders nothing at all.
+ */
+function renderToolResult(
+	activity: ToolCallActivity,
+	maxChars: number,
+): RichHtml | null {
+	const text = unwrapToolResult(activity.result);
+	if (!text.trim()) return null;
+	// A tool that answered with a structured value (not the text envelope, not a bare
+	// string) is still JSON, and reads better highlighted as such.
+	const structured =
+		typeof activity.result === "object" &&
+		activity.result !== null &&
+		!Array.isArray((activity.result as { content?: unknown }).content);
+	const blocks: RichHtml[] = [
+		bold(activity.status === "error" ? "Error" : "Result"),
+		preformatted(truncateTail(text, maxChars), structured ? "json" : undefined),
+	];
+	// The agent's own full-output file, when the tool saved one — a truncated log is
+	// only frustrating if it does not say where the rest is. The end event carries no
+	// `details` of its own, so it rides inside the result envelope.
+	const details =
+		activity.details ??
+		(activity.result as { details?: unknown } | undefined)?.details;
+	const fullOutputPath = (details as { fullOutputPath?: unknown } | undefined)
+		?.fullOutputPath;
+	if (text.length > maxChars && typeof fullOutputPath === "string") {
+		// A path on the machine running Pi, not a link: it is here so the rest of the
+		// log can be asked for (`read <path>`), not tapped.
+		blocks.push(
+			RichHtml.join([
+				italic("full output on the Pi machine: "),
+				inlineCode(fullOutputPath),
+			]),
+		);
+	}
+	return RichHtml.join(blocks);
+}
+
+/**
+ * The same call as one plain line — `bash — npm test` — for the streaming-draft
+ * thinking placeholder, which takes text, not blocks. Shares the hint logic with
+ * {@link toolActivityHtml} so the card and the live line never disagree.
+ */
+export function toolActivityLabel(
+	activity: ToolCallActivity,
+	options: ToolActivityOptions = {},
+): string {
+	const hint = toolActivityHint(activity, options);
+	return hint ? `${activity.toolName} — ${hint}` : activity.toolName;
+}
+
+/**
+ * Just the shortened argument — `npm test`, `src/index.ts` — with no tool name.
+ * The thinking log prints the name itself (as code), so it needs the hint alone.
+ */
+export function toolActivityHint(
+	activity: ToolCallActivity,
+	options: ToolActivityOptions = {},
+): string | undefined {
+	const describe = options.describeArgs ?? defaultDescribeArgs;
+	const hint = describe(activity);
+	if (!hint) return undefined;
+	return shortHint(hint, options.maxHintChars ?? DEFAULT_MAX_HINT_CHARS);
 }
 
 /** The tool call as a ready-to-send {@link InputRichMessage}. */

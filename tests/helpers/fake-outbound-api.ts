@@ -20,6 +20,11 @@ export interface SentAction extends TargetArgs {
 	action: ChatAction;
 }
 
+export interface EditedRich extends TargetArgs {
+	message_id: number;
+	rich_message: InputRichMessage;
+}
+
 export interface SentText extends TargetArgs {
 	text: string;
 }
@@ -35,7 +40,10 @@ export class FakeOutboundApi implements OutboundApi {
 	readonly texts: SentText[] = [];
 	readonly drafts: SentDraft[] = [];
 	readonly actions: SentAction[] = [];
+	readonly edits: EditedRich[] = [];
 	failRich = false;
+	/** Simulate an edit being refused (message too old, unsupported, unchanged). */
+	failEdit = false;
 	private nextId: number;
 
 	constructor(firstMessageId = 1000) {
@@ -55,6 +63,12 @@ export class FakeOutboundApi implements OutboundApi {
 
 	async sendRichMessageDraft(args: SentDraft): Promise<unknown> {
 		this.drafts.push(args);
+		return true;
+	}
+
+	async editMessageText(args: EditedRich): Promise<unknown> {
+		if (this.failEdit) throw new Error("400: message is not modified");
+		this.edits.push(args);
 		return true;
 	}
 
