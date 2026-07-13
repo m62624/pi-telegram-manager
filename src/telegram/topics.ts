@@ -2,10 +2,11 @@
  * Forum topics in the owner's private chat with the bot (Bot API 9.3).
  *
  * The owner's DM is one flat stream: personal replies, the manager's debug feed,
- * notices and mode panels all land in it. With topic mode enabled for the bot
- * (@BotFather → Bot Settings → topic mode) the DM can be split into topics, and a
- * bot may create them itself: `createForumTopic` accepts a private chat, and every
- * send method takes a `message_thread_id` there. We keep exactly two:
+ * notices and mode panels all land in it. With Threaded Mode enabled for the bot
+ * (the @BotFather Mini App — it is not in the classic Bot Settings keyboard) the DM
+ * can be split into topics, and a bot may create them itself: `createForumTopic`
+ * accepts a private chat, and every send method takes a `message_thread_id` there
+ * (`getMe` reports the toggle as `has_topics_enabled`). We keep exactly two:
  *
  *  - `chat` — the conversation with the model (personal / mixed continuation);
  *  - `log`  — observability: the manager feed, tool activity, runtime notices.
@@ -107,7 +108,7 @@ export class TopicRouter {
 			const me = await this.deps.api.getMe();
 			if (!me.has_topics_enabled) {
 				this.deps.onFallback?.(
-					"Topic mode is off for this bot — using the plain DM. Enable it in @BotFather (Bot Settings) to get separate chat/log topics.",
+					"Threaded Mode is off for this bot — using the plain DM. Turn it on in the @BotFather Mini App (open @BotFather, tap the menu button, pick this bot) to get separate chat/log topics.",
 				);
 				return false;
 			}
