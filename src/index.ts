@@ -655,6 +655,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	const stopManager = async (): Promise<void> => {
 		disarmWatchdog();
+		if (notConnectedTimer) {
+			clearTimeout(notConnectedTimer);
+			notConnectedTimer = null;
+		}
+		secretaryTrafficSeen = false;
 		if (managerTick) {
 			clearInterval(managerTick);
 			managerTick = null;
@@ -719,6 +724,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!manager) return;
+		// Proof that the Secretary side works — cancels the "not connected" claim.
+		if (
+			event.kind === "business_connection" ||
+			event.kind === "business_message" ||
+			event.kind === "edited_business_message"
+		) {
+			cancelNotConnectedCheck();
+		}
 		if (event.kind === "business_connection") {
 			await manager.onBusinessConnection({
 				connectionId: event.connectionId,
@@ -1010,9 +1023,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			const connections = await store.all();
 			const enabled = connections.filter((c) => c.isEnabled);
 			if (enabled.length === 0) {
-				// A connection can also arrive moments later (the update is inbound), so
-				// this is a hint, not a verdict — hence the softer wording.
-				await warn(NOT_CONNECTED_NOTICE);
+				// "No connection" cannot be judged at startup: Telegram delivers the
+				// business_connection update on CHANGE, so a bot connected long ago has
+				// nothing to redeliver, and traffic is the only proof. Ask again later,
+				// and only if nothing from the Secretary side has arrived by then.
+				armNotConnectedCheck(store, warn);
 				return;
 			}
 			// `canReply` is undefined on older connections we stored before the field
@@ -1022,6 +1037,38 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 		} catch {
 			// A probe failure is not worth blocking a mode start over.
+		}
+	};
+
+	/**
+	 * The grace period before we claim the bot is not connected: any Secretary traffic
+	 * (a connection update, a message from a managed chat) proves it is, and cancels
+	 * the claim.
+	 */
+	const NOT_CONNECTED_GRACE_MS = 60_000;
+	let notConnectedTimer: ReturnType<typeof setTimeout> | null = null;
+	let secretaryTrafficSeen = false;
+
+	const armNotConnectedCheck = (
+		store: BusinessStore,
+		warn: (text: string) => Promise<void>,
+	): void => {
+		if (notConnectedTimer) clearTimeout(notConnectedTimer);
+		notConnectedTimer = setTimeout(() => {
+			notConnectedTimer = null;
+			if (secretaryTrafficSeen || !manager) return;
+			void store.all().then((connections) => {
+				if (connections.some((c) => c.isEnabled)) return;
+				void warn(NOT_CONNECTED_NOTICE);
+			});
+		}, NOT_CONNECTED_GRACE_MS);
+	};
+
+	const cancelNotConnectedCheck = (): void => {
+		secretaryTrafficSeen = true;
+		if (notConnectedTimer) {
+			clearTimeout(notConnectedTimer);
+			notConnectedTimer = null;
 		}
 	};
 
