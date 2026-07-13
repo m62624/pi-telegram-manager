@@ -28,6 +28,7 @@ import {
 	COMPLIANCE_NOTICE,
 	SETUP_GUIDE_URL,
 	TELEGRAM_BOT_COMMANDS,
+	TELEGRAM_PUBLIC_COMMANDS,
 } from "./constants";
 import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
@@ -217,6 +218,37 @@ interface ControlApi {
 		from_chat_id: number;
 		message_id: number;
 	}): Promise<unknown>;
+}
+
+/** The `setMyCommands` surface, narrowed to what the menus need. */
+interface CommandMenuApi {
+	setMyCommands(payload: {
+		commands: readonly { command: string; description: string }[];
+		scope?: { type: "chat"; chat_id: number };
+	}): Promise<unknown>;
+}
+
+/**
+ * Publish the two command menus. The owner's chat gets the control commands; the
+ * default scope — everyone else who opens this bot — gets only `/start`.
+ *
+ * This is presentation, not permission: every control command is already refused
+ * to anyone but `allowedUserId`. But an unscoped menu ADVERTISED "Stop the bot
+ * entirely" to strangers, which is both a confusing button and a description of a
+ * machine that is none of their business. Best-effort: a menu that fails to
+ * publish costs nobody anything.
+ */
+function publishCommandMenus(api: unknown, ownerChatId: number): void {
+	const menu = api as CommandMenuApi;
+	void menu
+		.setMyCommands({ commands: TELEGRAM_PUBLIC_COMMANDS })
+		.catch(() => {});
+	void menu
+		.setMyCommands({
+			commands: TELEGRAM_BOT_COMMANDS,
+			scope: { type: "chat", chat_id: ownerChatId },
+		})
+		.catch(() => {});
 }
 
 /**
@@ -1760,10 +1792,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await rotatePersonalTopic();
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
-		// Publish the tappable command menu (no manual setup needed by the user).
-		void client.api
-			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
-			.catch(() => {});
+		// Publish the tappable command menus (no manual setup needed by the user).
+		// Two scopes, deliberately: the control commands are refused to everyone but
+		// the owner, so publishing them by default only offered strangers a "Stop the
+		// bot entirely" button that does nothing. They get /start; the owner gets the
+		// bridge.
+		void publishCommandMenus(client.api, allowedUserId);
 		heartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
@@ -2142,10 +2176,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			};
 		}
 		void managerClient.start();
-		// Publish the tappable command menu (so /switch is reachable in mode 2 too).
-		void managerClient.api
-			.setMyCommands({ commands: TELEGRAM_BOT_COMMANDS })
-			.catch(() => {});
+		// Publish the tappable command menus (so /switch is reachable in mode 2 too).
+		// Mode 2 is where the scoping earns its keep: this bot is answering strangers,
+		// and its menu is not their business.
+		if (settings.allowedUserId) {
+			void publishCommandMenus(managerClient.api, settings.allowedUserId);
+		}
 		visibility.setExclusive("manager", managerMatcher);
 		// Mixed starts in coding polarity, so the manager sandbox is inactive until
 		// the return timer flips to Telegram; the standalone manager is always active.
