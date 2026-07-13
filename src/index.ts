@@ -17,7 +17,8 @@
  * reason.
  */
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	BusinessConnection,
 	InlineKeyboardMarkup,
@@ -32,6 +33,11 @@ import {
 	TELEGRAM_PUBLIC_COMMANDS,
 } from "./constants";
 import { AbortRegistry } from "./core/abort";
+import {
+	ABOUT_CALLS_PER_TURN,
+	ABOUT_TOOL_NAMES,
+	createAboutTools,
+} from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
@@ -46,6 +52,7 @@ import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { renderSettingsReport } from "./core/settings-report";
 import {
 	fullOutputPath,
 	planAttachment,
@@ -390,10 +397,18 @@ const MANAGER_BANNER_KEY = "telegram-manager-banner";
 // Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
 // the consolidation interrogation probes, and the resolve-draft tool (visible only
 // on a revise turn — see the matcher wrapper in startManager).
+/** Bundled `about` pages ship beside the source, like the instruction files. */
+const ABOUT_DOCS_DIR = join(dirname(fileURLToPath(import.meta.url)), "about");
+
 const MANAGER_TOOLS = [
 	...MANAGER_TOOL_NAMES,
 	...INTERROGATION_TOOL_NAMES,
 	MANAGER_RESOLVE_TOOL_NAME,
+	// `about` is safe inside the sandbox: it reads bundled pages by a fixed key, takes
+	// no path, touches no file the model can name — and refuses the owner's live
+	// configuration on a manager turn. A stranger asking "what are you?" deserves a
+	// true answer; a stranger asking "how are you set up?" gets nothing.
+	...ABOUT_TOOL_NAMES,
 ];
 
 // Plain-text /help for the owner DM while the manager/mixed mode is active (the
@@ -430,7 +445,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const abort = new AbortRegistry();
 	const contextReset = new ContextReset();
 	const visibility = createToolVisibility(pi, {
-		connect: TELEGRAM_TOOL_NAMES,
+		connect: [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES],
 		manager: MANAGER_TOOLS,
 	});
 	registerToolVisibility(pi, visibility);
@@ -588,6 +603,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let ownerUserId: number | null = null;
 	// The configured zone, for the clock the mode pin carries. Set on every mode start.
 	let activeTimezone: string | undefined;
+	// The settings the RUNNING mode started with — what `about current_settings`
+	// reports. Not what is in the file: a file edited since then is not what the bot
+	// is doing, and saying otherwise is exactly the confusion `about` exists to end.
+	let activeSettings: TelegramSettings | null = null;
+	// Pages read by `about` in the running turn (see its `claimCall`). Reset per turn.
+	let aboutCallsThisTurn = 0;
 
 	// Mixed mode: the manager runtime coexists with the owner's coding thread in
 	// ONE session. `polarity` says whose turn the shared brain is serving right
@@ -795,6 +816,32 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, THINKING_REFRESH_MS);
 	};
 
+	// The bot's own documentation, readable in every mode. The model picks a topic
+	// from a fixed list — it can never name a file or a path, so nothing anyone writes
+	// to it can steer this at another document.
+	for (const tool of createAboutTools({
+		fs,
+		docsDir: ABOUT_DOCS_DIR,
+		// Budgeted per turn: `about` decides nothing, and a manager turn only ends when
+		// the model calls reply/silent — so an unbudgeted `about` is a way for the model
+		// to spin forever without ever answering anyone.
+		claimCall: () => ++aboutCallsThisTurn <= ABOUT_CALLS_PER_TURN,
+		// A manager turn is answering a stranger. Personal — and mixed while the owner
+		// is coding — is the owner's own chat.
+		isOwnerTurn: () => !managerHoldsSession(mixedActive, polarity) || !manager,
+		settingsReport: () => {
+			if (!activeSettings) return null;
+			const mode = manager
+				? mixedActive
+					? ("mixed" as const)
+					: ("manager" as const)
+				: ("personal" as const);
+			return renderSettingsReport({ settings: activeSettings, mode });
+		},
+	})) {
+		pi.registerTool(tool);
+	}
+
 	// Registered once at load; the visibility gate hides it until a mode is
 	// active, and it routes through whichever ConnectController is live. Mode 1
 	// mirrors the model's reply text automatically, so only file-sending needs a
@@ -849,6 +896,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		toolOutputMaxBytes = 0;
+		activeSettings = null;
 		contextReset.forget();
 		await lifecycle.deactivate("connect");
 		visibility.setActive("connect", false);
@@ -989,6 +1037,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
 		managerTurnTools = [];
+		aboutCallsThisTurn = 0;
 		// Whose run is this? Personal mode: always the owner's. Mixed: only a coding
 		// turn is. Captured at the START of the run, because a mid-run owner action
 		// flips the polarity — the run itself stays what it was, and a manager run
@@ -1276,6 +1325,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 		activeTimezone = settings.timezone;
+		activeSettings = settings;
 		const token = resolveSecret(settings.botToken);
 		if (!token) {
 			ctx.ui.notify(

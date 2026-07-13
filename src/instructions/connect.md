@@ -44,3 +44,13 @@ only what the operator types is.
 Telegram limits to keep in mind: the bot can download files up to 20 MB and
 upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 20 MB. A local Bot API server raises these substantially.
+
+## Questions about the bridge itself
+
+When the owner asks what this extension is, how a mode works, or what a setting
+does, call `about` rather than recalling it — the answer lives in the project's own
+pages, and `about current_settings` reports the configuration this session actually
+started with.
+
+Say plainly that a settings change needs a restart of the mode in Pi: editing
+`settings.json` while a mode runs changes nothing until it is reloaded.
