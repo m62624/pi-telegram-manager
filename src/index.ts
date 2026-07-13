@@ -904,6 +904,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			telegram.api as unknown as OutboundApi,
 			{
 				onRichFallback: (error) => {
+					// The topic we addressed is gone (deleted mid-session): that is not a
+					// rich-rendering problem — drop to the plain DM so the NEXT send lands,
+					// instead of reporting a misleading formatting warning every message.
+					if (TopicRouter.isMissingThread(error)) {
+						if (topics?.active) {
+							topics.fallBack();
+							ctx.ui.notify(
+								"The personal topic is gone — using the plain DM. It is recreated on the next mode start.",
+								"warning",
+							);
+						}
+						return;
+					}
 					if (richFallbackWarned) return;
 					richFallbackWarned = true;
 					ctx.ui.notify(

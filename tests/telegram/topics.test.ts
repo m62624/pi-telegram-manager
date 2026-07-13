@@ -15,7 +15,6 @@ function fakeApi(overrides: Partial<TopicsApi> = {}) {
 			}),
 		),
 		editForumTopic: vi.fn(async () => ({})),
-		sendChatAction: vi.fn(async () => ({})),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
 }
@@ -70,10 +69,12 @@ describe("TopicRouter", () => {
 	it("recreates a topic the owner deleted while the bot was off", async () => {
 		const fs = new FakeFs();
 		await router(api, fs).router.ensure();
-		// The chat topic is gone: probing it fails, the log topic still answers.
+		// The personal topic is gone: claiming it fails; the manager one still answers.
 		const second = fakeApi({
-			sendChatAction: vi.fn(async (args: { message_thread_id?: number }) => {
-				if (args.message_thread_id === 100) throw new Error("thread not found");
+			editForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
+				if (args.message_thread_id === 100) {
+					throw new Error("Bad Request: message thread not found");
+				}
 				return {};
 			}),
 		});
@@ -151,6 +152,19 @@ describe("TopicRouter", () => {
 		r.fallBack();
 		expect(r.active).toBe(false);
 		expect(r.thread("manager")).toBeUndefined();
+	});
+
+	it("recognises a dead thread from Telegram's error", () => {
+		expect(
+			TopicRouter.isMissingThread(
+				new Error(
+					"GrammyError: Call to 'sendRichMessage' failed! (400: Bad Request: message thread not found)",
+				),
+			),
+		).toBe(true);
+		expect(
+			TopicRouter.isMissingThread(new Error("429: Too Many Requests")),
+		).toBe(false);
 	});
 
 	it("adopts and renames the old chat/log pair instead of creating new topics", async () => {

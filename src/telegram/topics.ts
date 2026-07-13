@@ -15,8 +15,9 @@
  *    i.e. what the bot did for OTHER people.
  *
  * There is no API to LIST a chat's topics, so the two thread ids are persisted and
- * re-verified on start (a cheap `sendChatAction` into the thread): a topic the owner
- * deleted while the bot was off is simply recreated. Everything here is best-effort —
+ * re-verified on start by renaming them to the wanted names (`editForumTopic` fails on
+ * a thread that is gone): a topic the owner deleted while the bot was off is simply
+ * recreated. Everything here is best-effort —
  * Threaded Mode off, an old API server, or any error degrades to `undefined` thread
  * ids, which route every message to the plain DM exactly as before.
  */
@@ -45,11 +46,6 @@ export interface TopicsApi {
 		chat_id: number;
 		message_thread_id: number;
 		name?: string;
-	}): Promise<unknown>;
-	sendChatAction(args: {
-		chat_id: number;
-		message_thread_id?: number;
-		action: "typing";
 	}): Promise<unknown>;
 }
 
@@ -106,6 +102,11 @@ export class TopicRouter {
 	/** Whether a thread id is the manager topic (owner input there is service noise). */
 	isManager(threadId?: number): boolean {
 		return threadId !== undefined && threadId === this.state?.manager;
+	}
+
+	/** Whether an error means the thread we addressed is gone (topic deleted). */
+	static isMissingThread(error: unknown): boolean {
+		return /message thread not found/i.test(String(error));
 	}
 
 	/** Whether topics are live (both threads resolved). */
@@ -165,30 +166,14 @@ export class TopicRouter {
 		this.state = null;
 	}
 
-	/**
-	 * A stored topic that still accepts messages (renamed if its name changed), else a
-	 * freshly created one.
-	 */
+	/** A stored topic that still exists (adopted under the wanted name), else a new one. */
 	private async resolveTopic(
 		kind: TopicKind,
 		name: string,
-		stored: { state: TopicsState; renamed: boolean } | null,
+		stored: TopicsState | null,
 	): Promise<number> {
-		const known = stored?.state[kind];
-		if (known !== undefined && (await this.exists(known))) {
-			// An adopted topic from the old `chat`/`log` layout keeps its thread — and
-			// its history — under the new name.
-			if (stored?.renamed) {
-				await this.deps.api
-					.editForumTopic({
-						chat_id: this.deps.ownerChatId,
-						message_thread_id: known,
-						name,
-					})
-					.catch(() => {});
-			}
-			return known;
-		}
+		const known = stored?.[kind];
+		if (known !== undefined && (await this.adopt(known, name))) return known;
 		const created = await this.deps.api.createForumTopic({
 			chat_id: this.deps.ownerChatId,
 			name,
@@ -197,13 +182,20 @@ export class TopicRouter {
 		return created.message_thread_id;
 	}
 
-	/** Probe a thread with an invisible chat action — the only cheap existence check. */
-	private async exists(threadId: number): Promise<boolean> {
+	/**
+	 * Claim a stored thread: rename it to the wanted name, which doubles as the
+	 * existence check — `editForumTopic` FAILS on a thread that is gone, and it is the
+	 * cheapest call that does. (`sendChatAction` was the old probe and is useless here:
+	 * Telegram accepts it for a thread that no longer exists, so a deleted topic passed
+	 * verification and every later send died with "message thread not found".) It also
+	 * migrates a topic created under the old `chat`/`log` names, keeping its history.
+	 */
+	private async adopt(threadId: number, name: string): Promise<boolean> {
 		try {
-			await this.deps.api.sendChatAction({
+			await this.deps.api.editForumTopic({
 				chat_id: this.deps.ownerChatId,
 				message_thread_id: threadId,
-				action: "typing",
+				name,
 			});
 			return true;
 		} catch {
@@ -211,14 +203,8 @@ export class TopicRouter {
 		}
 	}
 
-	/**
-	 * Persisted ids for THIS owner, in either layout. `renamed` marks the old
-	 * `chat`/`log` pair, whose topics are renamed in place when adopted.
-	 */
-	private async load(): Promise<{
-		state: TopicsState;
-		renamed: boolean;
-	} | null> {
+	/** Persisted ids for THIS owner, in either layout (the old one is adopted). */
+	private async load(): Promise<TopicsState | null> {
 		const stored = await readJsonIfExists<TopicsState & LegacyTopicsState>(
 			this.deps.fs,
 			this.deps.path,
@@ -226,22 +212,16 @@ export class TopicRouter {
 		if (!stored || stored.ownerChatId !== this.deps.ownerChatId) return null;
 		if (stored.personal !== undefined && stored.manager !== undefined) {
 			return {
-				state: {
-					ownerChatId: stored.ownerChatId,
-					personal: stored.personal,
-					manager: stored.manager,
-				},
-				renamed: false,
+				ownerChatId: stored.ownerChatId,
+				personal: stored.personal,
+				manager: stored.manager,
 			};
 		}
 		if (stored.chat !== undefined && stored.log !== undefined) {
 			return {
-				state: {
-					ownerChatId: stored.ownerChatId,
-					personal: stored.chat,
-					manager: stored.log,
-				},
-				renamed: true,
+				ownerChatId: stored.ownerChatId,
+				personal: stored.chat,
+				manager: stored.log,
 			};
 		}
 		return null;
