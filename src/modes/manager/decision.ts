@@ -7,6 +7,9 @@
  *    delivery channel; the model's reasoning never reaches Telegram);
  *  - `manager_silent({ reason })` — deliberately say nothing.
  *
+ * A HELD-DRAFT turn is the exception: reply/silent are hidden and blocked, and
+ * `manager_resolve_draft` (send/refine/drop) is the only tool that ends it.
+ *
  * The tools write into an injected {@link DecisionSink}; the runtime resets the
  * sink each turn and reads it on turn end. Policy: `manager_reply` → send its
  * text; `manager_silent` or no call at all → stay silent (the safe default). No
@@ -255,7 +258,7 @@ export function createManagerTools(
 		name: "manager_reply",
 		label: "Manager Reply",
 		description:
-			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent.",
+			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -301,7 +304,7 @@ export function createManagerTools(
 		name: "manager_silent",
 		label: "Manager Silent",
 		description:
-			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent.",
+			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -424,7 +427,7 @@ export function createDraftResolveTool(
 		name: MANAGER_RESOLVE_TOOL_NAME,
 		label: "Manager Resolve Draft",
 		description:
-			"Resolve the reply you had drafted, now that new messages arrived. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that folds in the new info (put it in `text`), or 'drop' ONLY if the interlocutor explicitly retracted, answered themselves, or it was already answered. A still-open question must be sent or refined, never dropped because of trailing small talk.",
+			"Resolve a reply of yours that is HELD instead of sent — because new messages arrived while you wrote it, or you wrote it as plain text (which never reaches Telegram). Available ONLY on such a turn, where manager_reply and manager_silent are disabled: this tool is the only way to end it. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that starts from the draft and folds in the new info (full final message in `text`), or 'drop' ONLY if the interlocutor retracted the question, answered it themselves, the owner already answered it, or your text was never meant as a message to them. A still-open question must be sent or refined, never dropped because of trailing small talk.",
 		parameters: {
 			type: "object",
 			properties: {

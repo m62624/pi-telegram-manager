@@ -8,5 +8,5 @@ briefly acknowledge what they wrote and **offer to help**: say that, if they'd
 like, you can try to answer their questions on the Owner's behalf.
 
 Keep it short, warm, and human — two or three sentences, no wall of text. Write
-in the **same language the Interlocutor used**. Deliver it with `manager_reply`,
+in the **same language the Interlocutor used**. Deliver it with `manager_reply` (or, if the directive says a draft of it is held, with `manager_resolve_draft`),
 threading `reply_to` to their message.
