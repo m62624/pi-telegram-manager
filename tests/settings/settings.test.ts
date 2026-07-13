@@ -246,3 +246,37 @@ describe("loadSettings", () => {
 		expect(settings.manager.rememberMessages).toBe(5);
 	});
 });
+
+describe("assistant.toolOutputMaxBytes", () => {
+	it("defaults to 25 MB — a truncated tool log is attached up to that size", () => {
+		expect(DEFAULT_SETTINGS.assistant.toolOutputMaxBytes).toBe(26_214_400);
+	});
+
+	it("honours a smaller cap, and 0 to never attach", () => {
+		// The point of the setting: someone on metered data caps it low, or off.
+		expect(
+			normalizeSettings({ assistant: { toolOutputMaxBytes: 1_048_576 } })
+				.assistant.toolOutputMaxBytes,
+		).toBe(1_048_576);
+		expect(
+			normalizeSettings({ assistant: { toolOutputMaxBytes: 0 } }).assistant
+				.toolOutputMaxBytes,
+		).toBe(0);
+	});
+
+	it("rejects a negative or fractional byte count", () => {
+		expect(() =>
+			normalizeSettings({ assistant: { toolOutputMaxBytes: -1 } }),
+		).toThrow(/toolOutputMaxBytes/);
+		expect(() =>
+			normalizeSettings({ assistant: { toolOutputMaxBytes: 1.5 } }),
+		).toThrow(/toolOutputMaxBytes/);
+	});
+
+	it("leaves the other assistant settings alone", () => {
+		const s = normalizeSettings({ assistant: { toolOutputMaxBytes: 10 } });
+		expect(s.assistant.draftPreviews).toBe(true);
+		expect(s.assistant.toolActivity).toBe(true);
+		expect(s.assistant.rendering).toBe("rich");
+	});
+});

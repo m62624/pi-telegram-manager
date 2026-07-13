@@ -45,6 +45,7 @@ import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { decideAttachment, fullOutputPath } from "./core/tool-output-file";
 import type { TurnSavedFile } from "./core/turns";
 import {
 	loadConnectInstructions,
@@ -513,6 +514,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let mirroredThisRun = false;
 	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
 	let toolActivityEnabled = false;
+	// Byte cap for attaching a tool's own full-output file; 0 = never attach.
+	let toolOutputMaxBytes = 0;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
 	// The turn's live trace — the steps taken so far and the one running — shown in
@@ -833,6 +836,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
+		toolOutputMaxBytes = 0;
 		contextReset.forget();
 		await lifecycle.deactivate("connect");
 		visibility.setActive("connect", false);
@@ -881,6 +885,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
+			toolOutputMaxBytes = 0;
 			contextReset.forget();
 			visibility.setActive("connect", false);
 			activeCtx?.ui.setStatus(STATUS_KEY, undefined);
@@ -1115,7 +1120,35 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await connect
 			.completeToolActivity(event.toolCallId, event.result, event.isError)
 			.catch(() => {});
+		await attachToolOutputFile(event.result, event.toolName);
 	});
+
+	/**
+	 * Send the tool's own full-output file when its output was truncated — the log
+	 * behind the card's "… (75 earlier lines)", which otherwise exists only on the
+	 * machine running Pi. WE decide this, not the model: it is a mechanical rule (was
+	 * it truncated, is it small enough), and making the agent spend a turn on it would
+	 * only invite it to get it wrong.
+	 */
+	const attachToolOutputFile = async (
+		result: unknown,
+		toolName: string,
+	): Promise<void> => {
+		if (!connect || toolOutputMaxBytes <= 0) return;
+		const details = (result as { details?: unknown } | undefined)?.details;
+		const path = fullOutputPath(details);
+		if (!path) return;
+		const decision = decideAttachment({
+			details,
+			maxBytes: toolOutputMaxBytes,
+			sizeBytes: await fs.size(path),
+		});
+		if (!decision.attach) return;
+		await connect.attachToolOutput(
+			decision.path,
+			`📄 full output — ${toolName}`,
+		);
+	};
 
 	// Live streaming preview: open a draft when the assistant message starts and
 	// animate it (throttled) as tokens arrive. The draft is ephemeral — it never
@@ -1771,6 +1804,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
 		visibility.setActive("connect", true);
 		return connect;
 	};

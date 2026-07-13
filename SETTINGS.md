@@ -19,8 +19,20 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | --- | --- | --- | --- |
 | `assistant.rendering` | `"rich"` | replaces | `"rich"` (native Bot API rich Markdown) or `"html"`. |
 | `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates, and — before the first word of it exists — show what the agent is doing right now (`Thinking…`, then the tool it is running). The draft is ephemeral: it animates in place and leaves nothing in the chat history. Mixed mode shows it on coding turns only; a manager turn never does (a draft cannot be sent over a business connection). |
-| `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block — turns the bot DM into a live log of the model's work in Personal mode. |
+| `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block — turns the bot DM into a live log of the model's work in Personal mode. The card completes itself when the call returns: ✅ or ❌ (⏹️ if `/esc` caught it mid-flight), with the output folded in. |
+| `assistant.toolOutputMaxBytes` | `26214400` (25 MiB) | replaces | Size cap **in bytes** for attaching a tool's own full-output file. See below. |
 | `connect.instructionFiles` | `[]` | **appended** | Extra instruction files for Personal mode only. |
+
+### The full-output file (`assistant.toolOutputMaxBytes`)
+
+When a tool's output is too big for the model, the tool truncates it **and saves the whole thing to a file** on the machine running Pi. The card then stops at `… (75 earlier lines)` and names a path you cannot open from a phone.
+
+So the extension attaches that file to the chat itself. Two rules, and both are yours:
+
+- **only when the output was actually truncated.** A complete result is already in the card; sending it again as a file would be noise.
+- **only up to `toolOutputMaxBytes`.** Above the cap, the card just names the path. Set it low if you read Telegram on metered mobile data (`1048576` = 1 MiB), or `0` to never attach anything.
+
+This is not `files.maxBytes` — that one governs files **you** send the bot. This one governs logs the bot sends **you**, unasked, which is why it has its own cap. The extension decides this mechanically; the agent is not asked and cannot choose to spam you with logs.
 
 ## `mixed` (mixed mode)
 

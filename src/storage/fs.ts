@@ -20,6 +20,8 @@ import { isNodeError } from "../errors";
  */
 export interface TelegramFs {
 	exists(path: string): Promise<boolean>;
+	/** Size in bytes, or undefined when the path does not exist / cannot be read. */
+	size(path: string): Promise<number | undefined>;
 	isDirectory(path: string): Promise<boolean>;
 	mkdirp(path: string): Promise<void>;
 	/** Move a file or directory; parent of `dst` is created first. */
@@ -39,6 +41,13 @@ export interface TelegramFs {
 
 export function createNodeFs(): TelegramFs {
 	return {
+		async size(path) {
+			try {
+				return (await stat(path)).size;
+			} catch {
+				return undefined;
+			}
+		},
 		async exists(path) {
 			try {
 				await stat(path);

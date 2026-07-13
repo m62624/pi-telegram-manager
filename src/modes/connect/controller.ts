@@ -668,6 +668,18 @@ export class ConnectController {
 	}
 
 	/**
+	 * Attach a tool's own full-output file to the chat — the whole log behind a card
+	 * that had to stop at "… (75 earlier lines)". WHETHER it should be attached is
+	 * decided upstream (was it truncated? is it within the owner's byte cap?); this
+	 * only sends it. Best-effort: a failed upload leaves the card, which still names
+	 * the path.
+	 */
+	async attachToolOutput(path: string, caption: string): Promise<void> {
+		if (!this.deps.uploadFile) return;
+		await this.deps.uploadFile({ path, caption }).catch(() => {});
+	}
+
+	/**
 	 * Close out every card still waiting for a result. A call interrupted by /esc
 	 * never fires its end event, so its card would otherwise keep the running state
 	 * forever — claiming work that stopped. Mark them cancelled and forget them.
