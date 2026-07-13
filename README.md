@@ -161,9 +161,7 @@ Their Telegram side receives messages through a Telegram **Secretary** connectio
 
 > `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Secretary Mode** (formerly **Business Mode**) → **Turn on**
 
-There is no special "secretary bot" type and nothing to pay for on the bot's side — just this toggle. (Personal mode doesn't need it.)
-
-> ℹ️ **Under the hood** (this extension already does it for you): with Secretary Mode on, the bot handles `business_connection` updates when you connect it, receives your chats as `business_message`/`edited_business_message` updates, checks `can_reply`, and sends on your behalf with the `business_connection_id`. When you tap **Manage Bot** in a managed chat, Telegram opens the bot with a `/start bizChat<user_chat_id>` deep link — the bot answers that with its privacy/terms reminder.
+Personal mode does not need it.
 
 > ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected secretary/business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
 
