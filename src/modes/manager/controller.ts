@@ -24,6 +24,13 @@
  */
 import type { BusinessConnection, Message } from "@grammyjs/types";
 import { formatNowLine } from "../../core/datetime";
+import {
+	DEFAULT_FORWARD_POLICY,
+	ForwardBursts,
+	type ForwardPolicy,
+	forwardLimitNote,
+	limitForwardText,
+} from "../../core/forwards";
 import type { Clock } from "../../core/timers";
 import { buildContextLines } from "../../core/turns";
 import {
@@ -268,6 +275,12 @@ export interface ManagerControllerDeps {
 	 */
 	maxCharsPerMessage: number;
 	maxContextChars: number;
+	/**
+	 * Budget for FORWARDED messages, applied when they land — a stranger pasting a
+	 * batch of other people's posts must not be able to fill the context by itself.
+	 * Defaults to {@link DEFAULT_FORWARD_POLICY}.
+	 */
+	forwards?: ForwardPolicy;
 	/** Last-N durable facts kept + injected per contact. */
 	factsLimit: number;
 	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
@@ -478,8 +491,15 @@ export class ManagerController {
 		loop: InterrogationState;
 		interlocutorLines: string[];
 	} | null = null;
+	/** Open forward batches, per chat — the budget for pasted-in content. */
+	private readonly forwards: ForwardBursts;
+
+	private get forwardPolicy(): ForwardPolicy {
+		return this.deps.forwards ?? DEFAULT_FORWARD_POLICY;
+	}
 
 	constructor(private readonly deps: ManagerControllerDeps) {
+		this.forwards = new ForwardBursts(deps.forwards ?? DEFAULT_FORWARD_POLICY);
 		this.scheduler = new ChatScheduler({
 			continueWindowMs: deps.continueWindowMs,
 			clock: deps.clock,
@@ -634,6 +654,23 @@ export class ManagerController {
 		const fromOwnerSide =
 			ownerId !== undefined && String(input.fromId) === ownerId;
 
+		// A batch of forwards is content pasted in from elsewhere, not a message
+		// written here: it gets its own budget (chars per forward, forwards per
+		// batch). Past the batch limit the body is not read at all — one note says so
+		// and the rest of the burst is dropped, before any media is even downloaded.
+		const forward = this.forwards.track(
+			chatId,
+			input.message.forward_origin !== undefined,
+			now,
+		);
+		const forwardDropped = forward?.overLimit === true;
+		const forwardBody = (body: string): string =>
+			forward?.overLimit
+				? forwardLimitNote(this.forwardPolicy.maxMessages)
+				: forward
+					? limitForwardText(body, this.forwardPolicy.maxChars)
+					: body;
+
 		if (fromOwnerSide) {
 			// The owner's side: either the bot's own echo (ignore) or a manual
 			// message (freeze the chat in takeover).
@@ -642,13 +679,20 @@ export class ManagerController {
 				this.deps.sentRegistry,
 			);
 			if (bot) return;
-			await this.deps.chatStore.append(chatId, {
-				author: "owner",
-				text: withMessageContext(input.message, stripBotMarker(text)),
-				timestamp: messageTime,
-				senderId: ownerId,
-				messageId,
-			});
+			// A dropped forward still counts as the owner speaking (the gate below), it
+			// simply leaves no body in the transcript.
+			if (!forwardDropped || forward?.justHitLimit) {
+				await this.deps.chatStore.append(chatId, {
+					author: "owner",
+					text: withMessageContext(
+						input.message,
+						forwardBody(stripBotMarker(text)),
+					),
+					timestamp: messageTime,
+					senderId: ownerId,
+					messageId,
+				});
+			}
 			await this.touchConsolidation(chatId, messageTime);
 			// Observer only: an explicit wake-word from the owner summons the bot even
 			// though it normally never acts on owner messages. In takeover the owner
@@ -680,6 +724,10 @@ export class ManagerController {
 		}
 
 		// The interlocutor.
+		// Past the forward limit their batch stops here: not stored, no media fetched,
+		// no reply cycle opened. The one message that crossed the limit carries the
+		// note (below) so the model can see that something was withheld.
+		if (forwardDropped && !forward?.justHitLimit) return;
 		const from = input.message.from;
 		const contactName = from
 			? extractProfileFromUser(from).displayName
@@ -696,8 +744,10 @@ export class ManagerController {
 				now,
 			);
 		}
-		const media = await this.ingestMedia(chatId, input.message);
-		const baseText = withMessageContext(input.message, text);
+		const media = forwardDropped
+			? { note: "", kind: undefined }
+			: await this.ingestMedia(chatId, input.message);
+		const baseText = withMessageContext(input.message, forwardBody(text));
 		const storedText = media.note
 			? baseText
 				? `${media.note} ${baseText}`

@@ -432,3 +432,114 @@ describe("ConnectController albums", () => {
 		expect(sendFollowUp).toHaveBeenCalledTimes(1);
 	});
 });
+
+/** A message the owner FORWARDED into the bot DM (origin set, own body text). */
+function forwardEvent(messageId: number, text: string): TelegramEvent {
+	return classifyUpdate({
+		update_id: messageId,
+		message: {
+			message_id: messageId,
+			date: 0,
+			chat: { id: ALLOWED, type: "private", first_name: "A" },
+			from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+			forward_origin: {
+				type: "hidden_user",
+				date: 0,
+				sender_user_name: "Someone",
+			},
+			text,
+		},
+	} as Update);
+}
+
+describe("ConnectController forwards", () => {
+	function forwardSetup(overrides: Partial<ConnectControllerDeps> = {}) {
+		const timers: (() => void)[] = [];
+		let counter = 0;
+		let now = 0;
+		const base = setup({
+			forwards: { maxChars: 12, maxMessages: 2, groupWindowMs: 1000 },
+			clock: { now: () => now },
+			setTimer: (fn) => {
+				timers.push(fn);
+				return counter++;
+			},
+			clearTimer: (handle) => {
+				timers[handle as number] = () => {};
+			},
+			...overrides,
+		});
+		return {
+			...base,
+			flush: () => timers.at(-1)?.(),
+			advance: (ms: number) => {
+				now += ms;
+			},
+		};
+	}
+
+	it("folds a batch of forwards into ONE turn, keeping every body", async () => {
+		// Forwarding three posts sends three messages: as separate turns the model
+		// would answer each one alone, which is not what forwarding them meant.
+		const { controller, sendFollowUp, flush, advance } = forwardSetup({
+			forwards: { maxChars: 100, maxMessages: 5, groupWindowMs: 1000 },
+		});
+		await controller.onEvent(forwardEvent(1, "first"));
+		advance(50);
+		await controller.onEvent(forwardEvent(2, "second"));
+		advance(50);
+		await controller.onEvent(forwardEvent(3, "third"));
+		expect(sendFollowUp).not.toHaveBeenCalled();
+
+		flush();
+		await Promise.resolve();
+
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		const text = String(sendFollowUp.mock.calls[0][0]);
+		expect(text).toContain("first");
+		expect(text).toContain("second");
+		expect(text).toContain("third");
+	});
+
+	it("caps one forwarded body and says how much was not read", async () => {
+		const { controller, sendFollowUp, flush } = forwardSetup();
+		await controller.onEvent(forwardEvent(1, "0123456789abcdefgh"));
+		flush();
+		await Promise.resolve();
+		const text = String(sendFollowUp.mock.calls[0][0]);
+		expect(text).toContain("0123456789ab…[+6 chars not read]");
+	});
+
+	it("stops reading past the batch limit, noting it once", async () => {
+		const { controller, sendFollowUp, flush } = forwardSetup();
+		await controller.onEvent(forwardEvent(1, "one"));
+		await controller.onEvent(forwardEvent(2, "two"));
+		await controller.onEvent(forwardEvent(3, "three"));
+		await controller.onEvent(forwardEvent(4, "four"));
+		flush();
+		await Promise.resolve();
+
+		const text = String(sendFollowUp.mock.calls[0][0]);
+		expect(text).toContain("one");
+		expect(text).toContain("two");
+		expect(text).not.toContain("three");
+		expect(text).not.toContain("four");
+		expect(text.match(/forward limit/g)).toHaveLength(1);
+	});
+
+	it("a message you typed yourself is not folded into the batch", async () => {
+		const { controller, sendFollowUp, flush } = forwardSetup();
+		await controller.onEvent(forwardEvent(1, "look at this"));
+		await controller.onEvent(messageEvent("what do you think?", 2));
+		flush();
+		await Promise.resolve();
+
+		// Two turns, not one: your own words are a message, not part of what you pasted.
+		// The batch goes first (it arrived first), your question stays queued behind it.
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		expect(String(sendFollowUp.mock.calls[0][0])).not.toContain(
+			"what do you think?",
+		);
+		expect(controller.pendingCount()).toBe(1);
+	});
+});

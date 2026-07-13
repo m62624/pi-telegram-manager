@@ -1391,3 +1391,92 @@ describe("consolidation pause/resume under live work", () => {
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
 	});
 });
+
+/** A message the interlocutor FORWARDED into the chat (pasted-in content). */
+function forwardedMsg(text: string, messageId: number): Message {
+	return {
+		...interlocutorMsg(text, 5, messageId),
+		forward_origin: {
+			type: "hidden_user",
+			date: 0,
+			sender_user_name: "Somebody",
+		},
+	} as Message;
+}
+
+describe("ManagerController forward budget", () => {
+	async function forwardSetup() {
+		const base = await setup();
+		// A tighter budget than the default, so the test says what it means.
+		const controller = new ManagerController({
+			...base.deps,
+			forwards: { maxChars: 10, maxMessages: 2, groupWindowMs: 3000 },
+		});
+		return { ...base, controller };
+	}
+
+	it("caps the body of one forwarded message", async () => {
+		const { controller, deps } = await forwardSetup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: forwardedMsg("0123456789abcdef", 1),
+		});
+		const [record] = await deps.chatStore.getRecent("42", 10);
+		expect(record.text).toContain("0123456789…[+6 chars not read]");
+	});
+
+	it("stops reading a forward batch past the limit, keeping one note", async () => {
+		// A stranger pasting twenty posts must not be able to fill a small context.
+		const { controller, deps } = await forwardSetup();
+		for (let i = 1; i <= 5; i += 1) {
+			await controller.onBusinessMessage({
+				connectionId: CONN,
+				chatId: "42",
+				fromId: 5,
+				message: forwardedMsg(`post ${i}`, i),
+			});
+		}
+		const records = await deps.chatStore.getRecent("42", 10);
+		// Two read, one note, and nothing else stored.
+		expect(records).toHaveLength(3);
+		expect(records[0].text).toContain("post 1");
+		expect(records[1].text).toContain("post 2");
+		expect(records[2].text).toContain("forward limit");
+		expect(records.some((r) => r.text.includes("post 4"))).toBe(false);
+	});
+
+	it("leaves an ordinary message alone, and it reopens the batch", async () => {
+		const { controller, deps } = await forwardSetup();
+		for (let i = 1; i <= 3; i += 1) {
+			await controller.onBusinessMessage({
+				connectionId: CONN,
+				chatId: "42",
+				fromId: 5,
+				message: forwardedMsg(`post ${i}`, i),
+			});
+		}
+		// They go back to talking: the batch is over, and a long message they WROTE is
+		// not touched by the forward budget.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("what do you think of all that?", 5, 4),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: forwardedMsg("one more", 5),
+		});
+		const records = await deps.chatStore.getRecent("42", 10);
+		const texts = records.map((r) => r.text);
+		expect(
+			texts.some((t) => t.includes("what do you think of all that?")),
+		).toBe(true);
+		// A fresh batch: the next forward is read again rather than refused.
+		expect(texts.some((t) => t.includes("one more"))).toBe(true);
+	});
+});

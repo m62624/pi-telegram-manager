@@ -170,6 +170,18 @@ export class TopicRouter {
 		this.state = null;
 	}
 
+	/**
+	 * Re-check the topics we think we have, recreating whatever is gone. Called when
+	 * the owner writes from somewhere we did not expect: the usual reason is that they
+	 * DELETED the topics and are now typing in the plain DM (or in a thread of their
+	 * own), and a bot that keeps addressing the dead thread would silently swallow
+	 * every message. Returns whether topics are live afterwards.
+	 */
+	async revalidate(): Promise<boolean> {
+		this.state = null;
+		return await this.ensure();
+	}
+
 	/** A stored topic that still exists (adopted under the wanted name), else a new one. */
 	private async resolveTopic(
 		kind: TopicKind,

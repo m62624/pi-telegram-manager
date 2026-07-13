@@ -14,6 +14,13 @@
 import type { Message, User } from "@grammyjs/types";
 import { COMPLIANCE_LINKS, COMPLIANCE_NOTICE } from "../../constants";
 import type { AbortRegistry } from "../../core/abort";
+import {
+	DEFAULT_FORWARD_POLICY,
+	ForwardBursts,
+	type ForwardPolicy,
+	forwardLimitNote,
+	limitForwardText,
+} from "../../core/forwards";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
@@ -89,9 +96,16 @@ export interface ConnectControllerDeps {
 	 * enough that a single photo is not noticeably delayed.
 	 */
 	albumWindowMs?: number;
+	/**
+	 * Budget for FORWARDED messages — how much of a forward is read, and how many of
+	 * one batch. Defaults to {@link DEFAULT_FORWARD_POLICY} when not injected.
+	 */
+	forwards?: ForwardPolicy;
 	/** Timer ports, injected so album batching is testable without real time. */
 	setTimer?: (fn: () => void, ms: number) => unknown;
 	clearTimer?: (handle: unknown) => void;
+	/** Clock port, injected so forward batching is testable without real time. */
+	clock?: { now(): number };
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -113,10 +127,8 @@ export const MIRROR_URL =
 
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
 const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
-	bullet(
-		"/switch",
-		"change mode — observer / takeover / mixed / personal / stop",
-	),
+	bullet("/switch", "change mode — observer / takeover / mixed / personal"),
+	bullet("/stop", "stop the bot entirely"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
 	bullet("/start", "privacy & terms — read before using"),
@@ -139,8 +151,45 @@ export class ConnectController {
 	/** Albums still being collected: media_group_id → the queued turn it folds into. */
 	private readonly albums = new Map<string, string>();
 	private readonly albumTimers = new Map<string, unknown>();
+	/** The open forward batch, so a burst of forwards reaches the model as one turn. */
+	private readonly forwards: ForwardBursts;
 
-	constructor(private readonly deps: ConnectControllerDeps) {}
+	constructor(private readonly deps: ConnectControllerDeps) {
+		this.forwards = new ForwardBursts(this.forwardPolicy);
+	}
+
+	private get forwardPolicy(): ForwardPolicy {
+		return this.deps.forwards ?? DEFAULT_FORWARD_POLICY;
+	}
+
+	private now(): number {
+		return this.deps.clock?.now() ?? Date.now();
+	}
+
+	/** Fold a line into an open batch, or open a new turn with it. */
+	private async appendOrEnqueue(
+		groupId: string,
+		text: string,
+		sourceMessageId: number,
+	): Promise<void> {
+		const open = this.albums.get(groupId);
+		if (
+			open !== undefined &&
+			this.queue.appendToItem(open, { text, sourceMessageId })
+		) {
+			this.armAlbumFlush(groupId);
+			return;
+		}
+		const id = `turn-${this.turnCounter++}`;
+		this.queue.enqueue({
+			id,
+			lane: "default",
+			text,
+			sourceMessageIds: [sourceMessageId],
+		});
+		this.albums.set(groupId, id);
+		this.armAlbumFlush(groupId);
+	}
 
 	private get target(): OutboundTarget {
 		return {
@@ -173,11 +222,38 @@ export class ConnectController {
 		// even starts (there is queue/dispatch latency in between).
 		void this.sendTyping();
 
+		// A FORWARD is a batch, not a message: forwarding five posts sends five
+		// messages, each of any length. They are one act — so they fold into one turn
+		// (like an album), and their bodies are capped by the forward budget, which is
+		// separate from the ordinary message policy on purpose.
+		const forward = this.forwards.track(
+			String(this.deps.allowedUserId),
+			event.message.forward_origin !== undefined,
+			this.now(),
+		);
+		if (forward?.overLimit) {
+			// Past the batch limit: the body is not read. Say so once, then drop the rest
+			// in silence — repeating the note would be the flood the limit exists to stop.
+			if (forward.justHitLimit) {
+				await this.appendOrEnqueue(
+					forward.key,
+					forwardLimitNote(this.forwardPolicy.maxMessages),
+					event.message.message_id,
+				);
+			}
+			return true;
+		}
+
 		// Save non-image files to disk (best-effort) so the model gets real paths;
 		// images ride along inline via loadImages.
 		const intake = await this.saveAttachments(event.message);
+		const input = messageToTurnInput(event.message, this.deps.maxBytes);
 		const turn = buildPromptTurn({
-			...messageToTurnInput(event.message, this.deps.maxBytes),
+			...input,
+			text:
+				forward && input.text
+					? limitForwardText(input.text, this.forwardPolicy.maxChars)
+					: input.text,
 			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
 			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
 		});
@@ -196,8 +272,9 @@ export class ConnectController {
 		// they arrive, five pictures became five turns — the model answering each
 		// picture alone, four of them without your words. So an album is collected into
 		// ONE turn: the first message opens it, the rest fold into it while it is still
-		// queued, and it is dispatched once the group stops growing.
-		const groupId = event.message.media_group_id;
+		// queued, and it is dispatched once the group stops growing. A forward batch is
+		// held open the same way, keyed by its burst instead of a media group.
+		const groupId = event.message.media_group_id ?? forward?.key;
 		if (groupId !== undefined) {
 			const open = this.albums.get(groupId);
 			if (open !== undefined) {
@@ -205,7 +282,12 @@ export class ConnectController {
 					maxImages: this.deps.maxImages,
 					// Only the first message of an album carries your caption; the rest add
 					// nothing but their picture, so their bare "[photo]" header is dropped.
-					text: event.message.caption ? turn : undefined,
+					// Every forwarded message, by contrast, carries its own body — that IS
+					// the content you forwarded, so all of them are kept.
+					text:
+						event.message.media_group_id === undefined || event.message.caption
+							? turn
+							: undefined,
 					images,
 					sourceMessageId: event.message.message_id,
 				});

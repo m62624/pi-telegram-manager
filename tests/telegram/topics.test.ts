@@ -223,3 +223,43 @@ describe("TopicRouter", () => {
 		expect(r.thread("manager")).toBe(12);
 	});
 });
+
+describe("TopicRouter.revalidate", () => {
+	it("recreates the topics the owner deleted, so their message is not swallowed", async () => {
+		// The owner deletes both topics and writes in the plain DM. The router still
+		// pointed at the dead threads, and every send died with "message thread not
+		// found" — the message vanished. Now an unexpected thread re-checks.
+		const fs = new FakeFs();
+		const api = fakeApi();
+		const { router: r } = router(api, fs);
+		expect(await r.ensure()).toBe(true);
+		expect(r.thread("personal")).toBe(100);
+
+		// Both topics are gone: the probe now fails.
+		api.editForumTopic.mockRejectedValue(
+			new Error("400: Bad Request: message thread not found"),
+		);
+		expect(await r.revalidate()).toBe(true);
+		expect(r.thread("personal")).toBe(102);
+		expect(r.thread("manager")).toBe(103);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(4);
+	});
+
+	it("keeps the live topics when they are still there", async () => {
+		const api = fakeApi();
+		const { router: r } = router(api);
+		await r.ensure();
+		expect(await r.revalidate()).toBe(true);
+		expect(r.thread("personal")).toBe(100);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+	});
+
+	it("degrades to the plain DM when topics cannot be restored", async () => {
+		const api = fakeApi();
+		const { router: r } = router(api);
+		await r.ensure();
+		api.getMe.mockResolvedValue({ has_topics_enabled: false });
+		expect(await r.revalidate()).toBe(false);
+		expect(r.thread("personal")).toBeUndefined();
+	});
+});

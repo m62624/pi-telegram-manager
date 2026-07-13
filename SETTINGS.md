@@ -100,6 +100,16 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 - **Matching.** Case-insensitive and **whole-word** (Unicode-aware): `"llm"` matches "Hey LLM!" but not "llms". Surrounding punctuation is ignored (`"llm!?"`, `"(qwen)"` match). A multi-word entry is matched as whole words **in order** with any punctuation between them — `"mini bro"` matches "Mini, bro!" but not "minibro" or "bro mini". Misspellings are not matched; the model can still infer intent from the message itself.
 - **Priority in mixed.** In mixed mode, a wake-word does **not** interrupt your terminal work — it only marks the chat ready and is served after the return timer (`mixed.returnToTelegramMs`) hands the brain back to Telegram. In the standalone manager it takes effect on the next tick.
 
+## `forwards` (forwarded messages, all modes)
+
+A forward is not a message someone wrote to you — it is content pasted in from elsewhere, and Telegram sends a batch of them as **one message each**. Ten forwarded posts of any length can fill a small local context on their own, which is also the cheapest way for a stranger to fill it deliberately. So forwards get their own budget, separate from the ordinary message policy, and a batch reaches the model as **one turn** rather than as N turns it answers one by one. Replies and quotes inside the current chat are not affected.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `forwards.maxChars` | `2000` | replaces | Longest body kept from **one** forwarded message; the rest is cut with a `…[+N chars not read]` marker. `0` = no cap. |
+| `forwards.maxMessages` | `5` | replaces | How many forwards of a single batch are read at all. Past it the bodies are **not read**: one `[forward limit: …]` note says so and the rest of the batch is dropped (no media is downloaded for them either). `0` = no cap. |
+| `forwards.groupWindowMs` | `3000` | replaces | The quiet gap that ends a batch. Forwards arriving back-to-back within it are one batch; a message the sender typed themselves also ends it. |
+
 ## `files`
 
 | Key | Default | Override | What it does |

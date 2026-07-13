@@ -186,6 +186,20 @@ export interface TelegramSettings {
 			instructionFile?: string;
 		};
 	};
+	/**
+	 * FORWARDED messages get their own budget, because they are not what someone
+	 * wrote to you — they are arbitrary text pasted in from elsewhere, delivered as
+	 * one message each. Applies in every mode, to your own forwards and a stranger's
+	 * alike; ordinary replies/quotes of the current chat are untouched by it.
+	 */
+	forwards: {
+		/** Longest body kept from ONE forwarded message; 0 = no cap. */
+		maxChars: number;
+		/** Forwarded messages read per batch; 0 = no cap. The rest are noted, not read. */
+		maxMessages: number;
+		/** Quiet gap that ends a batch of forwards (they arrive back-to-back). */
+		groupWindowMs: number;
+	};
 	files: {
 		maxBytes: number;
 		/**
@@ -236,6 +250,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		observer: {},
 		takeover: {},
 	},
+	forwards: { maxChars: 2000, maxMessages: 5, groupWindowMs: 3000 },
 	files: { maxBytes: 52_428_800, maxImagesPerTurn: 10 },
 };
 
@@ -322,6 +337,7 @@ const KNOWN_TOP_LEVEL = new Set([
 	"instructionFiles",
 	"connect",
 	"manager",
+	"forwards",
 	"files",
 ]);
 
@@ -351,6 +367,7 @@ export function normalizeSettings(
 	const observer = asRecord(manager.observer, "manager.observer");
 	const takeover = asRecord(manager.takeover, "manager.takeover");
 	const media = asRecord(manager.media, "manager.media");
+	const forwards = asRecord(root.forwards, "forwards");
 	const files = asRecord(root.files, "files");
 
 	const allowedUserId =
@@ -557,6 +574,23 @@ export function normalizeSettings(
 					"manager.takeover.instructionFile",
 				),
 			},
+		},
+		forwards: {
+			maxChars: asNonNegativeInt(
+				forwards.maxChars,
+				"forwards.maxChars",
+				d.forwards.maxChars,
+			),
+			maxMessages: asNonNegativeInt(
+				forwards.maxMessages,
+				"forwards.maxMessages",
+				d.forwards.maxMessages,
+			),
+			groupWindowMs: asPositiveInt(
+				forwards.groupWindowMs,
+				"forwards.groupWindowMs",
+				d.forwards.groupWindowMs,
+			),
 		},
 		files: {
 			maxBytes: asPositiveInt(

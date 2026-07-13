@@ -720,7 +720,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			event.fromId === ownerUserId &&
 			event.chatId === ownerUserId
 		) {
-			if (!inPersonalTopic(event)) return;
+			if (!(await acceptAsPersonal(event))) return;
 			await takeSessionForCoding();
 			await connect.onEvent(event);
 			return;
@@ -1084,15 +1084,24 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			: undefined;
 
 	/**
-	 * Whether an owner message belongs to the conversation with the model.
+	 * Whether an owner message belongs to the conversation with the model — and the
+	 * place that repairs the topics when it does not look like it.
 	 *
-	 * With topics live that is the `personal` topic and nothing else: the `manager`
-	 * topic is the bot reporting to itself, and a topic YOU created is yours — notes,
-	 * scratch, whatever — and must not wake the model. Without topics every message in
-	 * the DM is the conversation, as before.
+	 * The `manager` topic is the bot reporting to itself: never a prompt. Everything
+	 * else the owner types in their own DM is a message to their bot, wherever it was
+	 * typed — including the plain DM after they DELETED the topics, which used to be
+	 * swallowed in silence (the router still pointed at a dead thread). So an
+	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
+	 * message is taken as personal: the reply lands in the fresh `personal` topic.
 	 */
-	const inPersonalTopic = (event: TelegramEvent): boolean =>
-		!topics?.active || threadOf(event) === personalThread();
+	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
+		if (!topics?.active) return true;
+		const thread = threadOf(event);
+		if (thread === personalThread()) return true;
+		if (thread === managerThread()) return false;
+		await topics.revalidate();
+		return true;
+	};
 
 	/**
 	 * Make room for the mode about to start: a mode command IS a switch. Running one
@@ -1278,6 +1287,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			},
 			chatThread: personalThread,
+			forwards: settings.forwards,
 			outbound,
 			abort,
 		});
@@ -1329,8 +1339,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			token,
 			onEvent: async (event) => {
 				if (await handleControl(event)) return;
-				// Only the personal topic is the conversation with the model.
-				if (!inPersonalTopic(event)) return;
+				// The manager topic is service output; everything else the owner types is
+				// the conversation (and repairs the topics if they were deleted).
+				if (!(await acceptAsPersonal(event))) return;
 				await connect?.onEvent(event);
 			},
 			onError: (error) =>
@@ -1611,6 +1622,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			rememberMessages: settings.manager.rememberMessages,
 			maxCharsPerMessage: settings.manager.maxCharsPerMessage,
 			maxContextChars: settings.manager.maxContextChars,
+			forwards: settings.forwards,
 			continueWindowMs: settings.manager.continueWindowMs,
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
 			factsLimit: settings.manager.factsLimit,
