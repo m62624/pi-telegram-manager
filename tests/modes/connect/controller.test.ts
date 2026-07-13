@@ -586,23 +586,42 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
 	});
 
-	it("announces the turn's own messages when it starts, not when they arrive", async () => {
-		// The copy of a stray message is made from this hook, so it must fire once the
-		// turn actually begins — a message still waiting for its album or for the agent
-		// to go idle has not been answered yet, and copying it early filled the topic
-		// with forwards before the bot had begun to think.
-		const onTurnStart = vi.fn(async () => {});
+	it("hands over the turn's messages when the bot speaks, not when the turn starts", async () => {
+		// The copy of a stray message is made from this hook. It must fire with the
+		// bot's FIRST word, not when the prompt reaches the agent: a copy that lands
+		// while the model is still thinking sits alone in the topic for seconds.
+		const onTurnVisible = vi.fn(async () => {});
 		const { controller, setIdle } = setup({
 			chatThread: () => PERSONAL,
-			onTurnStart,
+			onTurnVisible,
 		});
 		setIdle(false);
 		await controller.onEvent(threadEvent(11, FOREIGN));
 		await controller.onEvent(threadEvent(12, FOREIGN));
-		expect(onTurnStart).not.toHaveBeenCalled();
 
 		setIdle(true);
 		await controller.dispatch();
-		expect(onTurnStart).toHaveBeenCalledExactlyOnceWith([11]);
+		// The prompt is with the agent, which is still silent — nothing copied yet.
+		expect(onTurnVisible).not.toHaveBeenCalled();
+
+		controller.beginDraft();
+		await controller.streamDraft("thinking…");
+		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
+
+		// The answer that follows is the same turn: it does not copy the prompt again.
+		await controller.deliverAssistant("answer");
+		expect(onTurnVisible).toHaveBeenCalledTimes(1);
+	});
+
+	it("hands them over with the answer when the model never streamed a draft", async () => {
+		const onTurnVisible = vi.fn(async () => {});
+		const { controller } = setup({
+			chatThread: () => PERSONAL,
+			onTurnVisible,
+		});
+		await controller.onEvent(threadEvent(11, FOREIGN));
+		await controller.deliverAssistant("answer");
+
+		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
 	});
 });

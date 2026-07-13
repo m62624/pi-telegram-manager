@@ -1252,22 +1252,39 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	/** Copy the messages this turn answers into `personal`. Best-effort, in order. */
+	/**
+	 * Move the messages this turn answers into `personal`: copy each one there, then
+	 * remove the original from where it was typed.
+	 *
+	 * The removal is what makes it a MOVE rather than a duplicate — "Bots can delete
+	 * incoming messages in private chats" is the one lever Telegram gives us, and
+	 * without it the question stands twice in the chat: once outside the topic, once
+	 * inside it. It happens only after the copy is safely there, so a failed forward
+	 * costs nothing: the message stays where it is and is simply answered from the
+	 * topic, as before. (Telegram refuses to delete anything older than 48 hours; that
+	 * failure is ignored for the same reason.)
+	 */
 	const mirrorStraysIntoPersonal = async (
 		sourceMessageIds: readonly number[],
 	): Promise<void> => {
 		const api = controlApi();
 		const personal = personalThread();
 		if (!api || personal === undefined || ownerUserId === null) return;
+		const owner = ownerUserId;
 		for (const messageId of sourceMessageIds) {
 			if (!strayMessages.delete(messageId)) continue;
-			await api
+			const copied = await api
 				.forwardMessage({
-					chat_id: ownerUserId,
+					chat_id: owner,
 					message_thread_id: personal,
-					from_chat_id: ownerUserId,
+					from_chat_id: owner,
 					message_id: messageId,
 				})
+				.then(() => true)
+				.catch(() => false);
+			if (!copied) continue;
+			await api
+				.deleteMessage({ chat_id: owner, message_id: messageId })
 				.catch(() => {});
 		}
 	};
@@ -1500,7 +1517,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			},
 			chatThread: personalThread,
-			onTurnStart: mirrorStraysIntoPersonal,
+			onTurnVisible: mirrorStraysIntoPersonal,
 			forwards: settings.forwards,
 			outbound,
 			abort,
