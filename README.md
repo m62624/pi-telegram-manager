@@ -150,6 +150,27 @@ With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-
 
 ---
 
+## Security model — what the sandbox is, and what it is not
+
+While the model is answering **other people**, it runs in the **telegram-sandbox**: it has no access to your computer. Be precise about what that means, because the wrong assumption here is expensive.
+
+**It is NOT a container.** No Docker, no VM, no seccomp, no separate user. The Pi process runs with your own rights the whole time — the sandbox is not isolation of the *process*, it is a gate on the *model*.
+
+**What it actually is: tool-call blocking, at two levels.**
+
+- **Visibility** — before every request the model's tool list is rewritten. In the sandbox it sees only its messaging tools (`manager_reply`, `manager_silent`, `manager_remember`, and the memory-pass tools). `read`, `write`, `bash`, `ask_user`, tools of other extensions — none of them exist as far as it can tell.
+- **The runtime guard** — a `tool_call` handler that **blocks** any call outside the allowlist, whatever the model tries. Hiding a tool is not enough: a small model happily invents a tool name it remembers from earlier. So the call is refused and the refusal steers it back to its two real tools.
+
+**What it can still take in.** Images from the interlocutor are downloaded and shown to the model (vision) — that is reading a picture, not reading your disk ([`manager.media.images`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default on). Documents are **refused** by default: it sees `[document not accepted]` and cannot open the file. Even with `manager.media.documents` on, the manager only *names* the file — it has no tool to read it.
+
+**Where you get full tools back.** In your **own** conversation with the model — Personal mode, and mixed's coding polarity (you at the terminal or in the `personal` topic). There the model reads, writes, runs commands and opens the files you send it, because there it is working **for you**, not for a stranger.
+
+**The switch is dynamic, per turn.** In mixed, the polarity decides it: you type → coding → full tools; you go quiet for 8 minutes → Telegram → sandbox. Everything derives from one predicate (`managerHoldsSession`), so the tool gate, the runtime guard and the context source can never drift apart and leave a hole.
+
+**The hole you can open yourself.** [`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) adds tools to the sandbox by regex. Whatever you put there, a stranger's message can eventually reach — the model in that chat is being steered by *them*. Empty is the default, and it is the setting to think twice about.
+
+**And the honest limit.** This gate governs what the model can *do*, not what it can be *talked into saying*. A local model can be argued with; it can be led. That is why the owner-reply window, the freeze and the chatter guard exist — and why you should read the `manager` topic for a day before trusting takeover with anything that matters.
+
 ## Getting started
 
 ### 1. Create the bot (BotFather)
