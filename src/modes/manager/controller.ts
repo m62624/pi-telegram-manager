@@ -662,6 +662,7 @@ export class ManagerController {
 			chatId,
 			input.message.forward_origin !== undefined,
 			now,
+			input.message.media_group_id,
 		);
 		const forwardDropped = forward?.overLimit === true;
 		const forwardBody = (body: string): string =>

@@ -107,7 +107,7 @@ A forward is not a message someone wrote to you — it is content pasted in from
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
 | `forwards.maxChars` | `2000` | replaces | Longest body kept from **one** forwarded message; the rest is cut with a `…[+N chars not read]` marker. `0` = no cap. |
-| `forwards.maxMessages` | `5` | replaces | How many forwards of a single batch are read at all. Past it the bodies are **not read**: one `[forward limit: …]` note says so and the rest of the batch is dropped (no media is downloaded for them either). `0` = no cap. |
+| `forwards.maxMessages` | `5` | replaces | How many forwards of a single batch are read at all. Past it the bodies are **not read**: one `[forward limit: …]` note says so and the rest of the batch is dropped (no media is downloaded for them either). A forwarded **album** counts as **one** forward, not one per photo. `0` = no cap. |
 | `forwards.groupWindowMs` | `3000` | replaces | The quiet gap that ends a batch. Forwards arriving back-to-back within it are one batch; a message the sender typed themselves also ends it. |
 
 ## `files`

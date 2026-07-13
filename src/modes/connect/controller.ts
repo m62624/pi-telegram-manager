@@ -230,13 +230,16 @@ export class ConnectController {
 			String(this.deps.allowedUserId),
 			event.message.forward_origin !== undefined,
 			this.now(),
+			event.message.media_group_id,
 		);
 		if (forward?.overLimit) {
 			// Past the batch limit: the body is not read. Say so once, then drop the rest
 			// in silence — repeating the note would be the flood the limit exists to stop.
+			// The note joins the batch's own turn (its album, when it is one), so it is
+			// read next to what WAS forwarded rather than as a turn of its own.
 			if (forward.justHitLimit) {
 				await this.appendOrEnqueue(
-					forward.key,
+					event.message.media_group_id ?? forward.key,
 					forwardLimitNote(this.forwardPolicy.maxMessages),
 					event.message.message_id,
 				);

@@ -58,7 +58,7 @@ export interface ForwardSlot {
 export class ForwardBursts {
 	private readonly open = new Map<
 		string,
-		{ key: string; count: number; lastAt: number }
+		{ key: string; count: number; lastAt: number; mediaGroupId?: string }
 	>();
 	private counter = 0;
 
@@ -67,8 +67,18 @@ export class ForwardBursts {
 	/**
 	 * Place a message in the current batch. `null` for anything that is not a
 	 * forward — which also closes the open batch for that scope.
+	 *
+	 * `mediaGroupId` keeps an ALBUM honest: Telegram sends it as one message per
+	 * photo, but forwarding it was ONE act, so the whole album counts as a single
+	 * forward against `maxMessages` — otherwise a ten-photo album would eat the
+	 * batch budget by itself and half its pictures would be refused.
 	 */
-	track(scope: string, isForward: boolean, now: number): ForwardSlot | null {
+	track(
+		scope: string,
+		isForward: boolean,
+		now: number,
+		mediaGroupId?: string,
+	): ForwardSlot | null {
 		if (!isForward) {
 			this.open.delete(scope);
 			return null;
@@ -78,8 +88,11 @@ export class ForwardBursts {
 			current && now - current.lastAt <= this.policy.groupWindowMs
 				? current
 				: { key: `fwd-${this.counter++}`, count: 0, lastAt: now };
-		burst.count += 1;
+		const sameAlbum =
+			mediaGroupId !== undefined && burst.mediaGroupId === mediaGroupId;
+		if (!sameAlbum) burst.count += 1;
 		burst.lastAt = now;
+		burst.mediaGroupId = mediaGroupId;
 		this.open.set(scope, burst);
 		const max = this.policy.maxMessages;
 		const overLimit = max > 0 && burst.count > max;
@@ -87,7 +100,9 @@ export class ForwardBursts {
 			key: burst.key,
 			index: burst.count,
 			overLimit,
-			justHitLimit: overLimit && burst.count === max + 1,
+			// Only the message that pushes the batch past the limit says so — and never
+			// a later photo of an album already counted.
+			justHitLimit: overLimit && burst.count === max + 1 && !sameAlbum,
 		};
 	}
 

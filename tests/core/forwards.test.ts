@@ -71,6 +71,39 @@ describe("ForwardBursts", () => {
 		}
 	});
 
+	it("counts a forwarded ALBUM as one forward, not one per photo", () => {
+		// Telegram sends an album as one message per photo. Forwarding it was one act,
+		// so a ten-photo album must not eat the whole batch budget by itself.
+		const bursts = new ForwardBursts(POLICY);
+		const first = bursts.track("chat", true, 0, "album-1");
+		const second = bursts.track("chat", true, 10, "album-1");
+		const third = bursts.track("chat", true, 20, "album-1");
+		expect(first?.index).toBe(1);
+		expect(second?.index).toBe(1);
+		expect(third?.index).toBe(1);
+		expect(third?.overLimit).toBe(false);
+
+		// A different album is a different forward.
+		const other = bursts.track("chat", true, 30, "album-2");
+		expect(other?.index).toBe(2);
+		expect(other?.overLimit).toBe(false);
+		// And the next one crosses the limit of 2.
+		const beyond = bursts.track("chat", true, 40, "album-3");
+		expect(beyond?.overLimit).toBe(true);
+		expect(beyond?.justHitLimit).toBe(true);
+	});
+
+	it("never repeats the limit note for the photos of one refused album", () => {
+		const bursts = new ForwardBursts(POLICY);
+		bursts.track("chat", true, 0);
+		bursts.track("chat", true, 1);
+		const first = bursts.track("chat", true, 2, "album-x");
+		const second = bursts.track("chat", true, 3, "album-x");
+		expect(first?.justHitLimit).toBe(true);
+		expect(second?.overLimit).toBe(true);
+		expect(second?.justHitLimit).toBe(false);
+	});
+
 	it("forgets a scope on request", () => {
 		const bursts = new ForwardBursts(POLICY);
 		const first = bursts.track("chat", true, 0);
