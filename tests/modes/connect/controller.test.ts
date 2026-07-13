@@ -353,3 +353,82 @@ describe("ConnectController", () => {
 		expect(abort.isArmed()).toBe(false);
 	});
 });
+
+/** One message of a Telegram album: a photo, a shared media_group_id, caption on #1. */
+function albumEvent(
+	messageId: number,
+	groupId: string,
+	caption?: string,
+): TelegramEvent {
+	return classifyUpdate({
+		update_id: messageId,
+		message: {
+			message_id: messageId,
+			date: 0,
+			chat: { id: ALLOWED, type: "private", first_name: "A" },
+			from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+			media_group_id: groupId,
+			caption,
+			photo: [
+				{
+					file_id: `p${messageId}`,
+					file_unique_id: `u${messageId}`,
+					width: 10,
+					height: 10,
+				},
+			],
+		},
+	} as Update);
+}
+
+describe("ConnectController albums", () => {
+	function albumSetup() {
+		const timers: (() => void)[] = [];
+		let counter = 0;
+		const base = setup({
+			// Telegram delivers an album as separate messages; each carries one photo.
+			loadImages: async (message) => [
+				{ data: `img-${message.message_id}`, mimeType: "image/jpeg" },
+			],
+			setTimer: (fn) => {
+				timers.push(fn);
+				return counter++;
+			},
+			clearTimer: (handle) => {
+				timers[handle as number] = () => {};
+			},
+		});
+		return { ...base, flush: () => timers.at(-1)?.() };
+	}
+
+	it("collects an album into ONE turn: every photo, the caption once", async () => {
+		// Regression: five photos became five turns — the model answering each picture
+		// alone, four of them without the words that came with the first.
+		const { controller, sendFollowUp, flush } = albumSetup();
+		await controller.onEvent(albumEvent(1, "g1", "what do you make of these?"));
+		await controller.onEvent(albumEvent(2, "g1"));
+		await controller.onEvent(albumEvent(3, "g1"));
+		// Held while the group is still growing.
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(controller.pendingCount()).toBe(1);
+
+		flush();
+		await Promise.resolve();
+
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		const content = sendFollowUp.mock.calls[0][0] as Array<{
+			type: string;
+			data?: string;
+			text?: string;
+		}>;
+		expect(content.filter((part) => part.type === "image")).toHaveLength(3);
+		const text = content.find((part) => part.type === "text")?.text ?? "";
+		expect(text).toContain("what do you make of these?");
+	});
+
+	it("does not delay a lone photo behind the album window", async () => {
+		const { controller, sendFollowUp } = albumSetup();
+		await controller.onEvent(messageEvent("just a question", 9));
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+	});
+});

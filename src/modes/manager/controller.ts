@@ -170,6 +170,12 @@ export const MENTION_HINT =
 	"direct question or request addressed to you; if the word is just mentioned in " +
 	"passing (describing something, not asking you), stay silent.]";
 
+/**
+ * How many images one turn may carry. Telegram caps an album at 10; we keep the
+ * newest few, since a small local model's context is the scarce resource here.
+ */
+const MAX_TURN_IMAGES = 6;
+
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -413,7 +419,13 @@ export class ManagerController {
 	private readonly chats = new Map<string, ChatMeta>();
 	/** Chats with an interlocutor message the model has not answered yet. */
 	private readonly unserved = new Set<string>();
-	/** Freshest downloaded images per chat (in-memory, newest turn only). */
+	/**
+	 * Downloaded images awaiting the chat's next turn (in-memory, dropped once the
+	 * turn runs). Telegram delivers an ALBUM as separate messages — one photo each —
+	 * so they accumulate here and the model sees the whole album in one turn, not just
+	 * whichever picture happened to land last. Capped, because a batch of pictures is
+	 * the fastest way to blow a small local context.
+	 */
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
 	/**
 	 * Chats that received a new interlocutor message WHILE their turn was already
@@ -748,7 +760,13 @@ export class ManagerController {
 			if (this.deps.media.images) {
 				parts.push("[image]");
 				const loaded = (await this.deps.loadImages?.(message)) ?? [];
-				if (loaded.length > 0) this.latestImages.set(chatId, loaded);
+				if (loaded.length > 0) {
+					const pending = this.latestImages.get(chatId) ?? [];
+					this.latestImages.set(
+						chatId,
+						[...pending, ...loaded].slice(-MAX_TURN_IMAGES),
+					);
+				}
 			} else {
 				parts.push("[image not shown]");
 			}

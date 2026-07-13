@@ -71,6 +71,39 @@ export class MessageQueue {
 		return true;
 	}
 
+	/**
+	 * Fold another Telegram message into a queued turn: append its text (when it adds
+	 * anything), its images, and its message id. Used for an ALBUM, which Telegram
+	 * delivers as one message per photo — they belong to a single turn. Returns false
+	 * when that turn is already gone (dispatched), so the caller can enqueue instead.
+	 */
+	appendToItem(
+		id: string,
+		part: {
+			text?: string;
+			images?: Array<{ data: string; mimeType: string }>;
+			sourceMessageId: number;
+		},
+	): boolean {
+		const item = this.findById(id);
+		if (!item) return false;
+		const text = part.text?.trim();
+		if (text) item.text = item.text ? `${item.text}\n\n${text}` : text;
+		if (part.images && part.images.length > 0) {
+			item.images = [...(item.images ?? []), ...part.images];
+		}
+		item.sourceMessageIds.push(part.sourceMessageId);
+		return true;
+	}
+
+	private findById(id: string): QueueItem | undefined {
+		for (const lane of LANE_ORDER) {
+			const item = this.lanes[lane].find((entry) => entry.id === id);
+			if (item) return item;
+		}
+		return undefined;
+	}
+
 	/** Remove the first queued turn built from `messageId`. Returns true if removed. */
 	removeBySource(messageId: number): boolean {
 		for (const lane of LANE_ORDER) {

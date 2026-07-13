@@ -78,9 +78,21 @@ export interface ConnectControllerDeps {
 	 * plain DM, i.e. the pre-topics behaviour.
 	 */
 	chatThread?: () => number | undefined;
+	/**
+	 * Quiet window that closes an album (Telegram delivers one message per photo, a
+	 * few tens of ms apart). Default 1500 ms — long enough for a slow group, short
+	 * enough that a single photo is not noticeably delayed.
+	 */
+	albumWindowMs?: number;
+	/** Timer ports, injected so album batching is testable without real time. */
+	setTimer?: (fn: () => void, ms: number) => unknown;
+	clearTimer?: (handle: unknown) => void;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
+
+/** See {@link ConnectControllerDeps.albumWindowMs}. */
+export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 
 // Telegram bot commands the bridge handles itself instead of forwarding to the
 // agent. Everything else (including /start) falls through as an ordinary prompt.
@@ -119,6 +131,9 @@ export class ConnectController {
 	private draftId = 0;
 	/** Monotonic source of draft ids, so each message animates as its own draft. */
 	private draftCounter = 0;
+	/** Albums still being collected: media_group_id → the queued turn it folds into. */
+	private readonly albums = new Map<string, string>();
+	private readonly albumTimers = new Map<string, unknown>();
 
 	constructor(private readonly deps: ConnectControllerDeps) {}
 
@@ -170,15 +185,70 @@ export class ConnectController {
 		}
 
 		const images = await this.loadImages(event.message);
+
+		// An ALBUM is not one message: Telegram splits it into one message per photo
+		// (sharing a media_group_id), with your caption only on the first. Enqueued as
+		// they arrive, five pictures became five turns — the model answering each
+		// picture alone, four of them without your words. So an album is collected into
+		// ONE turn: the first message opens it, the rest fold into it while it is still
+		// queued, and it is dispatched once the group stops growing.
+		const groupId = event.message.media_group_id;
+		if (groupId !== undefined) {
+			const open = this.albums.get(groupId);
+			if (open !== undefined) {
+				const folded = this.queue.appendToItem(open, {
+					// Only the first message of an album carries your caption; the rest add
+					// nothing but their picture, so their bare "[photo]" header is dropped.
+					text: event.message.caption ? turn : undefined,
+					images,
+					sourceMessageId: event.message.message_id,
+				});
+				if (folded) {
+					this.armAlbumFlush(groupId);
+					return true;
+				}
+				this.albums.delete(groupId);
+			}
+		}
+
+		const id = `turn-${this.turnCounter++}`;
 		this.queue.enqueue({
-			id: `turn-${this.turnCounter++}`,
+			id,
 			lane: "default",
 			text: turn,
 			images: images.length > 0 ? images : undefined,
 			sourceMessageIds: [event.message.message_id],
 		});
+		if (groupId !== undefined) {
+			// Hold the album open: dispatch waits until no further photo has arrived for
+			// `albumWindowMs`, so the whole group reaches the model in one turn.
+			this.albums.set(groupId, id);
+			this.armAlbumFlush(groupId);
+			return true;
+		}
 		await this.dispatch();
 		return true;
+	}
+
+	/** (Re)start the quiet window that closes an album and releases it to the agent. */
+	private armAlbumFlush(groupId: string): void {
+		const setTimer =
+			this.deps.setTimer ??
+			((fn: () => void, ms: number) => setTimeout(fn, ms) as unknown);
+		const clearTimer =
+			this.deps.clearTimer ??
+			((handle: unknown) =>
+				clearTimeout(handle as ReturnType<typeof setTimeout>));
+		const previous = this.albumTimers.get(groupId);
+		if (previous !== undefined) clearTimer(previous);
+		this.albumTimers.set(
+			groupId,
+			setTimer(() => {
+				this.albums.delete(groupId);
+				this.albumTimers.delete(groupId);
+				void this.dispatch();
+			}, this.deps.albumWindowMs ?? DEFAULT_ALBUM_WINDOW_MS),
+		);
 	}
 
 	/**
@@ -257,9 +327,19 @@ export class ConnectController {
 	/** Release the next queued turn to the agent, but only while it is idle. */
 	async dispatch(): Promise<void> {
 		if (!this.deps.isIdle()) return;
+		const next = this.queue.peek();
+		if (!next) return;
+		// An album still collecting its photos is not ready: releasing it now would
+		// send the model the first picture and orphan the rest.
+		if (this.isOpenAlbum(next.id)) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
 		await this.deps.sendFollowUp(this.toContent(item));
+	}
+
+	private isOpenAlbum(itemId: string): boolean {
+		for (const id of this.albums.values()) if (id === itemId) return true;
+		return false;
 	}
 
 	/** Arm interruption for the turn that just started. */
