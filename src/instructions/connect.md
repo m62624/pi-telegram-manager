@@ -48,7 +48,7 @@ upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 ## Questions about the bridge itself
 
 When the owner asks what this extension is, how a mode works, or what a setting
-does, call `about` rather than recalling it — the answer lives in the project's own
+does, call `telegram_bot_about` rather than recalling it — the answer lives in the project's own
 pages, and `about current_settings` reports the configuration this session actually
 started with.
 

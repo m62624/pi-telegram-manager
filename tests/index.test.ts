@@ -41,7 +41,7 @@ describe("piTelegramManagerExtension (composition root)", () => {
 		expect(tools.map((t) => t.name)).toEqual([
 			// Registered first, and available in every mode: it is how the model answers
 			// "what are you?" from the project's own pages instead of improvising.
-			"about",
+			"telegram_bot_about",
 			"telegram_attach",
 			"manager_reply",
 			"manager_silent",

@@ -121,8 +121,8 @@ describe("about tool", () => {
 	});
 
 	it("stops a turn that keeps reading instead of answering", async () => {
-		// `about` decides nothing, and a manager turn only ends when the model calls
-		// reply/silent — so an unbudgeted `about` is a way to spin forever.
+		// `telegram_bot_about` decides nothing, and a manager turn only ends when the model calls
+		// reply/silent — so an unbudgeted `telegram_bot_about` is a way to spin forever.
 		let spent = 0;
 		const { call } = await setup({
 			claimCall: () => ++spent <= ABOUT_CALLS_PER_TURN,
