@@ -1149,8 +1149,12 @@ export class ManagerController {
 				.typing({ connectionId: meta.connectionId, chatId: active })
 				.catch(() => {});
 		}
+		// A revise turn names the only tool that can end it: reply/silent are hidden
+		// and blocked while a draft is held, so prompting for them wastes the turn.
 		await this.deps.triggerAgent(
-			"Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
+			this.pendingReply.has(active)
+				? "A drafted reply is held for review in the active Telegram chat. Resolve it by calling manager_resolve_draft."
+				: "Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
 		);
 		return true;
 	}

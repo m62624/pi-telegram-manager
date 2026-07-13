@@ -96,7 +96,10 @@ import { selectManagerSubMode } from "./modes/manager/submode-picker";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
-import { registerToolGuard } from "./pi/tool-guard";
+import {
+	RESOLVE_DRAFT_END_TURN_HINT,
+	registerToolGuard,
+} from "./pi/tool-guard";
 import {
 	createToolVisibility,
 	registerToolVisibility,
@@ -246,6 +249,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// mixed mode's coding polarity, where the owner is coding and needs full tools.
 		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
+		// On a revise turn the decision tools are blocked, so the steer must point at
+		// the one tool that can end it — otherwise a blocked manager_reply answers
+		// "call manager_reply", and the model spins until the turn is wasted.
+		endTurnHint: () =>
+			manager?.isReviseTurn() ? RESOLVE_DRAFT_END_TURN_HINT : undefined,
 	});
 
 	// Rebuild the LLM context per mode: the manager replaces it with the active

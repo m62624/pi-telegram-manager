@@ -321,7 +321,7 @@ describe("ManagerController", () => {
 		// dropped the answer. Now the prose is held and routed through the resolve gate:
 		// it is a REVISE turn (resolve_draft only), and a sent draft reads as a considered
 		// reply (category question), so the chatter guard never fires on it.
-		const { controller, sendReply, clock } = await setup();
+		const { controller, sendReply, triggerAgent, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -337,6 +337,10 @@ describe("ManagerController", () => {
 		);
 		expect(sendReply).not.toHaveBeenCalled();
 		expect(controller.isReviseTurn()).toBe(true);
+		// The revise turn must not be prompted for the tools it has disabled.
+		const revisePrompt = triggerAgent.mock.calls.at(-1)?.[0] as string;
+		expect(revisePrompt).toContain("manager_resolve_draft");
+		expect(revisePrompt).not.toContain("manager_reply");
 		const ctx = await controller.buildContextForActive();
 		expect(ctx?.at(-1)?.content).toContain("plain text");
 		expect(ctx?.at(-1)?.content).toContain("manager_resolve_draft");
