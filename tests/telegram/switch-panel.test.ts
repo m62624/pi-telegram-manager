@@ -9,40 +9,32 @@ import {
 	switchPanelText,
 } from "../../src/telegram/switch-panel";
 
-const PANEL_TARGETS: SwitchTarget[] = [
-	"observer",
-	"takeover",
-	"mixed-observer",
-	"mixed-takeover",
-	"personal",
-];
+const PANEL_TARGETS: SwitchTarget[] = ["manager", "mixed", "personal"];
 
 describe("buildSwitchKeyboard", () => {
-	it("renders the five selectable modes with their switch:<target> callback data", () => {
-		const keyboard = buildSwitchKeyboard("observer");
+	it("renders the three selectable modes with their switch:<target> callback data", () => {
+		const keyboard = buildSwitchKeyboard("manager");
 		const buttons = keyboard.inline_keyboard.flat();
 		expect(buttons.map((b) => b.callback_data)).toEqual([
-			"switch:observer",
-			"switch:takeover",
-			"switch:mixed-observer",
-			"switch:mixed-takeover",
+			"switch:manager",
+			"switch:mixed",
 			"switch:personal",
 		]);
 	});
 
 	it("offers no stop button — stopping is the explicit /stop command", () => {
-		const buttons = buildSwitchKeyboard("takeover").inline_keyboard.flat();
+		const buttons = buildSwitchKeyboard("manager").inline_keyboard.flat();
 		expect(buttons.some((b) => b.callback_data === "switch:stop")).toBe(false);
 	});
 
 	it("lays the buttons out two per row", () => {
 		const keyboard = buildSwitchKeyboard("stop");
-		expect(keyboard.inline_keyboard).toHaveLength(3);
-		for (const row of keyboard.inline_keyboard.slice(0, 2))
-			expect(row).toHaveLength(2);
+		expect(keyboard.inline_keyboard).toHaveLength(2);
+		expect(keyboard.inline_keyboard[0]).toHaveLength(2);
+		expect(keyboard.inline_keyboard[1]).toHaveLength(1);
 	});
 
-	it("marks only the active mode with a check (incl. mixed sub-modes)", () => {
+	it("marks only the active mode with a check", () => {
 		for (const active of PANEL_TARGETS) {
 			const buttons = buildSwitchKeyboard(active).inline_keyboard.flat();
 			const checked = buttons.filter((b) => b.text.startsWith("✅"));
@@ -59,28 +51,18 @@ describe("buildSwitchKeyboard", () => {
 
 describe("switchPanelText / switchLabel", () => {
 	it("names the active mode in the caption", () => {
-		expect(switchPanelText("takeover")).toContain("🎛️ Takeover");
+		expect(switchPanelText("manager")).toContain("🎛️ Manager");
 		expect(switchPanelText("personal")).toContain("🤖 Personal");
 	});
 
 	it("points at /stop, which no button offers", () => {
-		expect(switchPanelText("takeover")).toContain("/stop");
+		expect(switchPanelText("manager")).toContain("/stop");
 	});
 
 	it("labels every target with an emoji", () => {
-		expect(switchLabel("observer")).toBe("👁️ Observer");
+		expect(switchLabel("manager")).toBe("🎛️ Manager");
+		expect(switchLabel("mixed")).toBe("🔀 Mixed");
 		expect(switchLabel("stop")).toBe("⏹️ Stop");
-	});
-
-	it("labels and checks the mixed sub-mode targets", () => {
-		expect(switchLabel("mixed-observer")).toBe("🔀 Mixed · Observer");
-		expect(switchLabel("mixed-takeover")).toBe("🔀 Mixed · Takeover");
-		expect(switchPanelText("mixed-observer")).toContain("🔀 Mixed · Observer");
-		const buttons =
-			buildSwitchKeyboard("mixed-takeover").inline_keyboard.flat();
-		const checked = buttons.filter((b) => b.text.startsWith("✅"));
-		expect(checked).toHaveLength(1);
-		expect(checked[0].callback_data).toBe("switch:mixed-takeover");
 	});
 });
 
@@ -116,8 +98,8 @@ describe("isStopCommand", () => {
 
 describe("parseSwitchData", () => {
 	it("parses a valid switch:<target> payload", () => {
-		expect(parseSwitchData("switch:observer")).toBe("observer");
-		expect(parseSwitchData("switch:mixed-takeover")).toBe("mixed-takeover");
+		expect(parseSwitchData("switch:manager")).toBe("manager");
+		expect(parseSwitchData("switch:mixed")).toBe("mixed");
 	});
 
 	it("ignores switch:stop — an old panel's stop button must not kill the bot", () => {
@@ -127,7 +109,7 @@ describe("parseSwitchData", () => {
 	it("returns null for missing, foreign, or unknown-target data", () => {
 		expect(parseSwitchData(undefined)).toBeNull();
 		expect(parseSwitchData("")).toBeNull();
-		expect(parseSwitchData("other:observer")).toBeNull();
+		expect(parseSwitchData("other:manager")).toBeNull();
 		expect(parseSwitchData("switch:bogus")).toBeNull();
 		expect(parseSwitchData("switch:")).toBeNull();
 	});

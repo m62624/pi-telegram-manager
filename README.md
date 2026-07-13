@@ -59,29 +59,20 @@ Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc`
 
 ### 🕵️ Secretary manager — answer other people on your behalf
 
-Through a Telegram **Secretary** connection (formerly called **Business**), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat, in one of two sub-modes. In one sentence:
+Through a Telegram **Secretary** connection (formerly called **Business**), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat. In one sentence:
 
-> 👁️ **Observer stays silent until it is called.**  🎛️ **Takeover keeps talking until it is thrown out.**
+> 🎛️ **It answers for you when you don't — and gets out of the way the moment you do.**
 
-That is the whole difference, and everything below is just the detail of it.
+The rules are few, and the important ones are enforced in **code**, not by asking the model nicely:
 
-**First, what is the SAME in both** — most of the behaviour, in fact:
+- **It never replies immediately.** An incoming message is held for the owner-reply window ([`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **5 min**): **you** get first crack, always. Answer inside it and the bot drops that batch and never repeats you. Only if the window runs out in your silence is the chat handed to the model. Want it to answer for you more eagerly? Shorten that window. Want it to hardly ever beat you to it? Lengthen it.
+- **It never answers *you*.** Your messages are context, never a task: no message of yours can open a turn at all. So writing "did you buy the bread?" to someone cannot make the bot answer "yes" — there is nothing unanswered for it to wake up for.
+- **Writing in a chat does not switch the bot off in it.** You simply took that batch. If the person writes again and you let it hang, the window runs out and the bot answers — it keeps watching for whatever nobody answered.
+- **Call it and it comes.** A wake-word ([`manager.mentionWords`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)) or its own name skips the window entirely — from the interlocutor, and from **you**: "hey qwen, what did I forward to them?" is answered in that chat. It is the one case where a message of yours reaches the model.
+- **It stays quiet when nothing is being asked.** "ok", "nice", a sticker, small talk between other people — that judgement is the model's, and [`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) drops an over-eager reply it itself tagged as chatter.
+- **If you answer while it is writing, its reply is not sent blind.** The draft is held and reconsidered against what you just said: it sends, refines, or drops it — it never talks over you.
 
-- **Neither ever replies immediately.** An incoming message is held for the owner-reply window ([`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **5 min**): **you** get first crack, always. Answer inside it and the bot drops that batch and never repeats you. Only if the window runs out in your silence is the chat handed to the model.
-- Neither answers small talk between other people, reactions, or acknowledgements — and neither ever replies to *you* (your messages are context, not prompts).
-- Same memory, same per-chat isolation, same scheduler. In mixed, both lose their tools while serving other people (the sandbox).
-
-**Now the three things that actually differ:**
-
-| | 👁️ **Observer** | 🎛️ **Takeover** |
-| --- | --- | --- |
-| **What it treats as its business** once the chat reaches it | Only what is **addressed to it** — by name, as an AI / LLM / bot, or an explicit "answer this" from you or the interlocutor. An ordinary unanswered question is **not** enough: the co-pilot does not put words in your mouth. | **The conversation itself.** Whenever the interlocutor needs an answer and you have stayed silent, it answers as you would and keeps the thread moving. |
-| **What YOUR message does** in that chat | **Calls it in.** Nothing is frozen; put a wake-word in your own message and the bot steps into that chat for you. | **Throws it out.** The chat is **frozen**: you have taken the wheel, so the bot stays out of it entirely — until you have been quiet for one window, which releases the freeze. |
-| **A wake-word from the interlocutor** | Always reaches it — that is exactly what it waits for. | Reaches it **unless the chat is frozen**: while you hold that chat, not even being called by name pulls the bot back in. Those messages are served once the freeze lifts — deferred, not lost. |
-
-**Pick by where you are.** Around and answering yourself → **observer**: it covers what is aimed at it and stays out of the rest. **The safe default — start here.** Away and want the conversation carried, not merely watched → **takeover**; the moment you come back and write, it steps aside.
-
-Start it with `/telegram-manager`; it asks for the sub-mode. Mixed uses the same two.
+Start it with `/telegram-manager`. Mixed runs the same manager.
 
 ### 🔀 Mixed — Personal **and** manager, in one session
 
@@ -93,17 +84,17 @@ Mixed is not a third behaviour. It is the two modes above **running at once on o
 - even a wake-word does **not** pull the model off your work — it only marks that chat as ready to be answered later;
 - you keep your **full tools** (`read`/`write`/`bash`), because the sandbox only applies while the model is moderating.
 
-**When you stop, it goes back to Telegram.** The clock starts *after the model's inference finishes* — not while it is thinking. If nothing new comes from **you** and nothing more comes from **the model** for [`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode) (default **8 minutes**), the brain switches to Telegram and answers whoever needs an answer, in the sub-mode you picked (observer or takeover). Any message from you cancels the countdown.
+**When you stop, it goes back to Telegram.** The clock starts *after the model's inference finishes* — not while it is thinking. If nothing new comes from **you** and nothing more comes from **the model** for [`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode) (default **8 minutes**), the brain switches to Telegram and answers whoever needs an answer. Any message from you cancels the countdown.
 
 **When you come back, you take the brain immediately.** A prompt from you — terminal or personal topic — aborts a moderation turn in flight, so you never wait on it. Nothing is lost: an unanswered chat is picked up again next time, and an interrupted memory pass resumes where it stopped.
 
-Moderation never leaks into your side: what the bot writes to other people goes to them, and the account of what it did lands in the **manager** topic. Your TUI stays clean — one footer line (`mixed · observer · coding`) tells you who holds the brain right now.
+Moderation never leaks into your side: what the bot writes to other people goes to them, and the account of what it did lands in the **manager** topic. Your TUI stays clean — one footer line (`mixed · coding`) tells you who holds the brain right now.
 
-Start it with `/telegram-mixed` (it asks for observer or takeover).
+Start it with `/telegram-mixed`.
 
 ### ⏹️ Switching modes
 
-Run **`/telegram-switch`** in Pi to pick a mode in the terminal — **Personal / Observer / Takeover / Mixed·Observer / Mixed·Takeover / Stop**, with the live one marked. Or send **`/switch`** in your DM with the bot to flip between the same modes from an inline keyboard, no terminal needed (the terminal picker can also push that keyboard to your phone while the bot is running).
+In the terminal, the mode commands **are** the switcher: `/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop` — starting one stops whatever else was running. Away from the terminal, send **`/switch`** in your DM with the bot and pick **Manager / Mixed / Personal** from an inline keyboard. Stopping is deliberately not a button there — it is the explicit `/stop` command, so a stray tap cannot kill a long-lived Secretary connection.
 
 The inline keyboard has **no Stop button** — a Secretary connection is a long-lived thing, and a mistap while picking a mode should not end it. Stopping the bot from Telegram is its own command: **`/stop`**.
 
@@ -122,13 +113,13 @@ Messages from many people arrive at once; the model handles **one chat per turn*
 1. **never-replied chats first** — someone who has not heard back yet outranks an ongoing conversation;
 2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **1:30**) — right after replying, that chat keeps priority, so a live back-and-forth is not interrupted by an older one.
 
-### The owner-reply window — your first chance (in BOTH sub-modes)
+### The owner-reply window — your first chance
 
-A message is **held** for [`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **5 min**) before the bot may touch it — in observer *and* in takeover. If **you** answer in that time, the bot drops that batch silently and never repeats you.
+A message is **held** for [`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **5 min**) before the bot may touch it. If **you** answer in that time, the bot drops that batch silently and never repeats you.
 
-Takeover does not skip this wait. What it adds is the **freeze**: your manual message means you have taken the chat over, so the bot stays out of it completely — even a wake-word from the interlocutor does not pull it back in. The freeze lifts when you have been quiet for one window, and the messages that arrived meanwhile are then served: deferred, not lost. Observer never freezes — there you are *expected* to be answering, and the bot is expected to stay quiet anyway.
+Answering does not switch the bot off in that chat — it only means you took that batch. The next message from that person arms a fresh window, and if you let it hang, the bot answers it. So the bot is never "frozen out" of a conversation you are half-following; it just never gets ahead of you.
 
-Two things skip the wait: a **wake-word** (see below), and a chat that is already the active one — a follow-up in a live back-and-forth continues immediately rather than waiting five minutes again.
+Two things skip the wait: a **wake-word** (see below), and a chat that is already the active one — a follow-up in a live back-and-forth continues immediately rather than waiting five minutes again. That fast lane closes the moment **you** write in the chat: you are there, so the bot goes back to letting you answer first.
 
 ### Wake-words — how the bot knows it is being addressed
 
@@ -153,7 +144,7 @@ Two things skip the wait: a **wake-word** (see below), and a chat that is alread
 
 ### What you see
 
-With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), every turn is mirrored to the **manager** topic of your bot DM: which chat, the model's thinking, the tools it called, the decision it made and why it stayed silent. That is your audit trail — read it for a day before trusting takeover.
+With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), every turn is mirrored to the **manager** topic of your bot DM: which chat, the model's thinking, the tools it called, the decision it made and why it stayed silent. That is your audit trail — read it for a day before trusting the bot with your chats.
 
 ---
 
@@ -242,9 +233,8 @@ Then open Pi and start a mode.
 | Command | Purpose |
 | --- | --- |
 | `/telegram-personal` | Start **Personal** mode (bind this session to your DM) |
-| `/telegram-manager` | Start the **secretary manager** (asks for observer / takeover) |
-| `/telegram-mixed` | Start **mixed** mode — terminal + Telegram (asks for observer / takeover) |
-| `/telegram-switch` | Pick the mode in the terminal (or send the switcher keyboard to your bot DM) |
+| `/telegram-manager` | Start the **secretary manager** (answer other people for you) |
+| `/telegram-mixed` | Start **mixed** mode — terminal + Telegram in one session |
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 

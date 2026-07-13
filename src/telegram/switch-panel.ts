@@ -10,18 +10,11 @@
 import type { InlineKeyboardMarkup } from "@grammyjs/types";
 
 /**
- * A mode the owner can switch to with a tap. `observer`/`takeover` are the two
- * mode-2 (business manager) sub-modes; `mixed-observer`/`mixed-takeover` run mixed
- * mode (coding + Telegram moderation in one session) in the chosen sub-mode;
- * `personal` is mode 1 (terminal continuation); `stop` tears everything down.
+ * A mode the owner can switch to with a tap. `manager` is the business manager
+ * (mode 2); `mixed` runs coding + Telegram moderation in one session; `personal`
+ * is mode 1 (terminal continuation); `stop` tears everything down.
  */
-export type SwitchTarget =
-	| "observer"
-	| "takeover"
-	| "mixed-observer"
-	| "mixed-takeover"
-	| "personal"
-	| "stop";
+export type SwitchTarget = "manager" | "mixed" | "personal" | "stop";
 
 /**
  * The runtime's current mode for display/pin purposes. Every mode — including
@@ -41,10 +34,8 @@ interface SwitchOption {
  * stopped bot too, even though no button offers it).
  */
 const SWITCH_OPTIONS: readonly SwitchOption[] = [
-	{ target: "observer", emoji: "👁️", label: "Observer" },
-	{ target: "takeover", emoji: "🎛️", label: "Takeover" },
-	{ target: "mixed-observer", emoji: "🔀", label: "Mixed · Observer" },
-	{ target: "mixed-takeover", emoji: "🔀", label: "Mixed · Takeover" },
+	{ target: "manager", emoji: "🎛️", label: "Manager" },
+	{ target: "mixed", emoji: "🔀", label: "Mixed" },
 	{ target: "personal", emoji: "🤖", label: "Personal" },
 	{ target: "stop", emoji: "⏹️", label: "Stop" },
 ];
@@ -67,7 +58,7 @@ const CALLBACK_PREFIX = "switch:";
  */
 const TARGETS = new Set<string>(PANEL_OPTIONS.map((option) => option.target));
 
-/** Human label for a mode, e.g. `👁️ Observer` / `🔀 Mixed · Observer` — for acks/status. */
+/** Human label for a mode, e.g. `🎛️ Manager` / `🔀 Mixed` — for acks/status. */
 export function switchLabel(target: PanelMode): string {
 	const option = SWITCH_OPTIONS.find((o) => o.target === target);
 	return option ? `${option.emoji} ${option.label}` : target;

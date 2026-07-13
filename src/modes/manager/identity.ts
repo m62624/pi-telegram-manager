@@ -3,7 +3,7 @@
  *
  * In business mode the bot replies *on behalf of the owner* via
  * `business_connection_id`, so its own outgoing messages come back as updates
- * indistinguishable from the owner typing. The `takeover` sub-mode must not let
+ * indistinguishable from the owner typing. The reply gate must not let
  * the bot's own messages freeze the chat, so every outgoing message carries two
  * bot signals:
  *

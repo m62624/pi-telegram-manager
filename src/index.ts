@@ -91,14 +91,12 @@ import {
 	stripTelegramTurns,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
-import { selectMode } from "./modes/manager/mode-picker";
 import {
 	managerGuardActive,
 	managerHoldsSession,
 	mixedContextSource,
 } from "./modes/manager/polarity";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
-import { selectManagerSubMode } from "./modes/manager/submode-picker";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -128,7 +126,6 @@ import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateMemory } from "./storage/memory-migration";
 import { createSentRegistry } from "./storage/sent-registry";
-import type { ManagerSubMode } from "./storage/singleton-store";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -288,7 +285,7 @@ const MANAGER_TOOLS = [
 const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
-	"/switch — change mode (observer / takeover / mixed / personal)",
+	"/switch — change mode (manager / personal / mixed)",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
 	"",
@@ -457,11 +454,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// `/switch` control state. `activeCtx` is the most recent command context —
 	// needed so a Telegram button press (which has no Pi ctx) can still notify and
 	// restart a mode; captured on every mode start. `ownerUserId` gates control to
-	// the owner; `activeSubMode` tracks the running manager sub-mode so the panel
-	// can highlight the current mode.
+	// the owner.
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
-	let activeSubMode: ManagerSubMode | null = null;
 
 	// Mixed mode: the manager runtime coexists with the owner's coding thread in
 	// ONE session. `polarity` says whose turn the shared brain is serving right
@@ -543,16 +538,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	// Mixed mode's only persistent TUI chrome: a one-line status showing the mode,
-	// sub-mode, and which polarity the shared brain is serving right now.
+	// which polarity the shared brain is serving right now.
 	const updateMixedFooter = (): void => {
 		if (!mixedActive) return;
 		const where = polarity === "telegram" ? "in Telegram" : "coding";
 		activeCtx?.ui.setStatus(
 			STATUS_KEY,
-			fitLine(
-				`mixed · ${activeSubMode ?? "observer"} · ${where}`,
-				terminalWidth(),
-			),
+			fitLine(`mixed · ${where}`, terminalWidth()),
 		);
 	};
 
@@ -684,7 +676,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await managerClient?.stop().catch(() => {});
 		managerClient = null;
 		manager = null;
-		activeSubMode = null;
 		deliverManagerFeed = null;
 		mirrorManagerNotice = null;
 		visibility.setActive("manager", false);
@@ -1465,26 +1456,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	// Shared launcher for both manager sub-modes, and for mixed mode (`mixed:
-	// true`), which runs the same manager runtime alongside the owner's coding
-	// thread in one session. The sub-mode comes from the command's picker, not from
-	// settings.
+	// Shared launcher for the manager and for mixed mode (`mixed: true`), which runs
+	// the same manager runtime alongside the owner's coding thread in one session.
 	const startManager = async (
 		ctx: ExtensionCommandContext,
-		subMode: ManagerSubMode,
 		options: { mixed?: boolean } = {},
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
-		const wanted: PanelMode = mixed
-			? (`mixed-${subMode}` as PanelMode)
-			: subMode;
+		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
 		const { settings, token } = loaded;
 		ownerUserId = settings.allowedUserId ?? null;
-		activeSubMode = subMode;
 		// Prime mixed-mode state before anything reads it (context handler, isIdle):
 		// the owner is at the keyboard when they launch it, so start in the coding
 		// polarity with the return timer disarmed until the first coding turn ends.
@@ -1497,7 +1482,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const activation = await lifecycle.activate({
 			mode: mixed ? "mixed" : "manager",
 			workdir: mixed ? ctx.cwd : paths.managerWorkspaceDir,
-			subMode,
 		});
 		if (!activation.ok) {
 			mixedActive = false;
@@ -1508,17 +1492,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
-		// Assemble the manager's system instructions: the bundled defaults for this
-		// sub-mode plus any user override files (global + manager + sub-mode).
+		// Assemble the manager's system instructions: the bundled defaults plus any
+		// user override files (global + manager).
 		const overrideFiles = [
 			...settings.instructionFiles,
 			...settings.manager.instructionFiles,
-			...(subMode === "takeover"
-				? [settings.manager.takeover.instructionFile]
-				: [
-						settings.manager.observer.interlocutorInstructionFile,
-						settings.manager.observer.ownerInstructionFile,
-					]),
 		].filter((file): file is string => Boolean(file));
 		const override = await readInstructionFiles(fs, overrideFiles);
 		for (const file of override.missing) {
@@ -1544,7 +1522,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		const instructions = await loadManagerInstructions({
 			fs,
-			subMode,
 			labeler: settings.manager.labeler,
 			mentionWords: effectiveMentionWords,
 			overrideText: override.text,
@@ -1688,7 +1665,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		);
 		manager = new ManagerController({
-			subMode,
 			instructions,
 			labeler: settings.manager.labeler,
 			rememberMessages: settings.manager.rememberMessages,
@@ -1813,7 +1789,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await sendOwnerFeed(
 					buildManagerFeed({
 						log,
-						subMode,
 						nowLine: formatNowLine(Date.now(), settings.timezone),
 						thinking: thinking || undefined,
 						tools,
@@ -1864,11 +1839,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// owner hands the brain to Telegram on its own.
 			updateMixedFooter();
 			armMixedReturnTimer();
-			ctx.ui.notify(`Telegram mixed: active (${subMode}).`);
-			await updateModePin(`mixed-${subMode}` as PanelMode);
+			ctx.ui.notify("Telegram mixed: active.");
+			await updateModePin("mixed");
 		} else {
-			ctx.ui.notify(`Telegram manager: active (${subMode}).`);
-			await updateModePin(subMode);
+			ctx.ui.notify("Telegram manager: active.");
+			await updateModePin("manager");
 		}
 	};
 
@@ -1878,24 +1853,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			"Bind this terminal session to a Telegram chat (personal mode).",
 		handler: (_args, ctx) => startConnect(ctx),
 	});
-	// Business manager: pick a sub-mode, then run the manager.
+	// Business manager: answer other people on the owner's behalf.
 	pi.registerCommand(COMMANDS.manager, {
-		description:
-			"Start the Telegram business manager (pick observer or takeover).",
+		description: "Start the Telegram business manager (answer for you).",
 		handler: async (_args, ctx) => {
-			const subMode = await selectManagerSubMode(ctx.ui);
-			if (!subMode) return;
-			await startManager(ctx, subMode);
+			await startManager(ctx);
 		},
 	});
-	// Mixed: coding + Telegram moderation share one session (pick a sub-mode).
+	// Mixed: coding + Telegram moderation share one session.
 	pi.registerCommand(COMMANDS.mixed, {
-		description:
-			"Run coding and Telegram moderation together (pick observer or takeover).",
+		description: "Run coding and Telegram moderation together.",
 		handler: async (_args, ctx) => {
-			const subMode = await selectManagerSubMode(ctx.ui, "Mixed mode sub-mode");
-			if (!subMode) return;
-			await startManager(ctx, subMode, { mixed: true });
+			await startManager(ctx, { mixed: true });
 		},
 	});
 	// Stop whichever Telegram mode is currently active.
@@ -1933,13 +1902,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
 
 	// The mode currently running, for the panel caption / pin ("stop" when idle).
-	// Mixed reports as its own target (mixed-observer / mixed-takeover) so the right
-	// button is checked and a tap on a different one switches as expected.
 	const activeTarget = (): PanelMode => {
-		if (manager) {
-			const sub = activeSubMode ?? "observer";
-			return mixedActive ? (`mixed-${sub}` as PanelMode) : sub;
-		}
+		if (manager) return mixedActive ? "mixed" : "manager";
 		if (connect) return "personal";
 		return "stop";
 	};
@@ -1955,12 +1919,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		target: SwitchTarget,
 		ctx: ExtensionCommandContext,
 	): Promise<void> => {
-		if (target === "observer" || target === "takeover") {
-			await startManager(ctx, target);
-		} else if (target === "mixed-observer") {
-			await startManager(ctx, "observer", { mixed: true });
-		} else if (target === "mixed-takeover") {
-			await startManager(ctx, "takeover", { mixed: true });
+		if (target === "manager") {
+			await startManager(ctx);
+		} else if (target === "mixed") {
+			await startManager(ctx, { mixed: true });
 		} else if (target === "personal") {
 			await startConnect(ctx);
 		}
@@ -2179,39 +2141,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		return false;
 	};
-
-	pi.registerCommand(COMMANDS.switch, {
-		description:
-			"Switch the Telegram mode (or send the switcher to your bot DM).",
-		handler: async (_args, ctx) => {
-			activeCtx = ctx;
-			const api = controlApi();
-			const botRunning = api !== null && ownerUserId !== null;
-			// Pick right here in the terminal. Pushing the inline keyboard to Telegram is
-			// just one of the options, and only when a bot is polling to receive it — the
-			// switcher used to be Telegram-only, so with the bot off it could not start
-			// the very modes it exists to start.
-			const choice = await selectMode(ctx.ui, activeTarget(), botRunning);
-			if (choice === null) return;
-			if (choice === "panel") {
-				if (!api) return;
-				await sendSwitchPanel(api);
-				ctx.ui.notify("Telegram switcher: sent to your bot DM.");
-				return;
-			}
-			if (choice === "stop") {
-				if (!botRunning && activeTarget() === "stop") {
-					ctx.ui.notify("No Telegram mode is active.", "warning");
-					return;
-				}
-				await updateModePin("stop");
-				await stopAll();
-				ctx.ui.notify("Telegram: stopped.");
-				return;
-			}
-			await startMode(choice, ctx);
-		},
-	});
 
 	// ─── Connection watchdog ─────────────────────────────────────────────────
 	// A silent liveness probe on whichever client is polling; after too many

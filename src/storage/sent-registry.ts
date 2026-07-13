@@ -7,7 +7,7 @@ import { readJsonIfExists, writeJson } from "./json";
  * bot's own outgoing messages come back as updates "from the owner" and are
  * otherwise indistinguishable from the owner typing manually. The identity
  * layer consults this (plus a hidden marker) to tell bot-sent from owner-manual
- * so a manual owner message can freeze the chat (takeover) while the bot's own
+ * so a manual owner message stands the bot down for that batch while the bot's own
  * replies do not. Bounded per chat to avoid unbounded growth across a restart.
  */
 export interface SentRegistry {

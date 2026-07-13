@@ -32,10 +32,12 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"telegram-mixed",
 			"telegram-stop",
 			"telegram-status",
-			"telegram-switch",
 		]) {
 			expect(commands.has(command)).toBe(true);
 		}
+		// The terminal switcher is gone: the four mode commands above ARE the switcher,
+		// and /switch in Telegram covers the phone.
+		expect(commands.has("telegram-switch")).toBe(false);
 		expect(tools.map((t) => t.name)).toEqual([
 			"telegram_attach",
 			"manager_reply",

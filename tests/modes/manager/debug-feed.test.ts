@@ -14,7 +14,6 @@ function feed(
 ) {
 	return buildManagerFeed({
 		log,
-		subMode: "observer",
 		nowLine: NOW,
 		tools: [],
 		...extra,
@@ -39,7 +38,6 @@ describe("buildManagerFeed", () => {
 		);
 		expect(html).toContain("Alice");
 		expect(html).toContain("#42");
-		expect(html).toContain("observer");
 		expect(html).toContain("Replied");
 		expect(html).toContain("question");
 		// The reply target is named (the interlocutor), not a bare message id.

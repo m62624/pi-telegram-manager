@@ -50,7 +50,6 @@ import type {
 	FactKind,
 } from "../../storage/contact-store";
 import type { SentRegistry } from "../../storage/sent-registry";
-import type { ManagerSubMode } from "../../storage/singleton-store";
 import { describeAttachments, isImage } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
@@ -80,8 +79,8 @@ import {
 	ProbeState,
 } from "./interrogation";
 import { matchesMention } from "./mention";
+import { ReplyGate } from "./reply-gate";
 import { ChatScheduler } from "./scheduler";
-import { ReplyGate } from "./submode";
 
 /** A classified inbound business message (already extracted from the update). */
 export interface BusinessMessageInput {
@@ -128,8 +127,9 @@ export const MANAGER_TURN_DONE =
  */
 export function reviseDirective(draft: string): string {
 	return (
-		`[HELD-DRAFT TURN. You drafted this reply: «${draft}». Since then the ` +
-		"interlocutor sent new message(s), shown above, so it was NOT sent yet.\n" +
+		`[HELD-DRAFT TURN. You drafted this reply: «${draft}». Since then new message(s) ` +
+		"landed — from the interlocutor, or the Owner answering themselves — so it was " +
+		"NOT sent yet. Read them above before you decide.\n" +
 		"manager_reply and manager_silent are DISABLED this turn — calling either " +
 		"fails and wastes the turn. The ONE tool that ends this turn is " +
 		"manager_resolve_draft (it IS available, whatever you assume about your tool " +
@@ -138,9 +138,10 @@ export function reviseDirective(draft: string): string {
 		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
 		"deliver a rewrite that starts from the draft and folds in the new info;\n" +
 		'  manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
-		"question, answered it themselves, or it was already answered.\n" +
+		"question, answered it themselves, or the Owner has now answered it (or your " +
+		"draft merely repeats what the Owner said).\n" +
 		"A still-open question must be sent or refined — never dropped just because a " +
-		"trailing message is small talk.]"
+		"trailing message is small talk, and never merely because the Owner appeared.]"
 	);
 }
 
@@ -262,7 +263,6 @@ export interface ManagerTurnLog {
 }
 
 export interface ManagerControllerDeps {
-	subMode: ManagerSubMode;
 	/** Assembled system-instruction blocks injected at the top of the context. */
 	instructions: ManagerInstructions;
 	labeler: string;
@@ -462,8 +462,8 @@ export class ManagerController {
 	 */
 	private readonly dirtyDuringTurn = new Set<string>();
 	/**
-	 * Chats the OWNER summoned the bot into with a wake-word (observer only), and
-	 * whose turn has not run yet. Until it does, further owner messages are part of
+	 * Chats the OWNER summoned the bot into with a wake-word, and whose turn has not
+	 * run yet. Until it does, further owner messages are part of
 	 * the request being assembled — not the owner handling the chat themselves — so
 	 * they must not cancel it. Cleared when the turn settles.
 	 */
@@ -526,7 +526,6 @@ export class ManagerController {
 			clock: deps.clock,
 		});
 		this.gate = new ReplyGate({
-			subMode: deps.subMode,
 			ownerReplyWindowMs: deps.ownerReplyWindowMs,
 			clock: deps.clock,
 		});
@@ -672,7 +671,7 @@ export class ManagerController {
 		const messageTime = input.message.date ? input.message.date * 1000 : now;
 		const connection = await this.deps.businessStore.get(input.connectionId);
 		// Who the owner is decides EVERYTHING about a message: their own messages are
-		// context (and, in takeover, the freeze), an interlocutor's are the job. The
+		// context, an interlocutor's are the job. The
 		// stored connection is the authority — but it can be missing (Telegram only
 		// sends `business_connection` on change, so a bot connected before its first
 		// run has none until traffic teaches us), and without a fallback every owner
@@ -702,8 +701,8 @@ export class ManagerController {
 					: body;
 
 		if (fromOwnerSide) {
-			// The owner's side: either the bot's own echo (ignore) or a manual
-			// message (freeze the chat in takeover).
+			// The owner's side: either the bot's own echo (ignore) or a manual message,
+			// which stands the bot down for this batch.
 			const bot = await isBotMessage(
 				{ chatId, messageId, text },
 				this.deps.sentRegistry,
@@ -723,13 +722,11 @@ export class ManagerController {
 				});
 			}
 			await this.touchConsolidation(chatId, messageTime);
-			// Observer only: an explicit wake-word from the owner summons the bot even
-			// though it normally never acts on owner messages. In takeover the owner
-			// being present always freezes the chat (they are at the wheel), so the
-			// wake-word is ignored for the owner there. A stale/backlog message never
-			// wakes.
+			// An explicit wake-word from the owner summons the bot, even though it never
+			// acts on owner messages otherwise. This is the ONE way an owner message
+			// opens a turn — and the only way the model may answer the owner at all.
+			// A stale/backlog message never wakes.
 			if (
-				this.deps.subMode === "observer" &&
 				now - messageTime <= this.deps.liveFreshnessMs &&
 				matchesMention(text, this.deps.mentionWords)
 			) {
@@ -756,10 +753,25 @@ export class ManagerController {
 				}
 				return;
 			}
-			// The owner answered inside the window — cancel this chat's pending batch
-			// (takeover also freezes). The bot never replies to owner messages, and
-			// the chat is no longer waiting on us.
+			// The owner wrote while the model was still generating a reply for this very
+			// chat. The draft is now stale — the owner may have answered the question
+			// themselves — so it must NOT be sent blind: flag the turn dirty and leave
+			// the chat unserved, which is what makes turn end HOLD the draft and give the
+			// model a revise turn (`manager_resolve_draft`: send / refine / drop). Note
+			// the chat deliberately stays unserved: `triggerTurn` needs it to run that
+			// revise turn, and clearing it here would strand the draft forever.
+			if (this.scheduler.activeChat() === chatId && !this.deps.isIdle()) {
+				this.dirtyDuringTurn.add(chatId);
+				return;
+			}
+			// The owner answered inside the window: this batch is theirs, the bot stays
+			// out of it. Only this batch — the chat is not switched off, and the
+			// interlocutor's next message arms a fresh window (no freeze).
 			this.gate.onOwnerMessage(chatId);
+			// The owner is present, so the fast lane closes too: the bot's continuation
+			// window must not let the interlocutor's next message skip the owner's turn
+			// to answer.
+			this.scheduler.dropContinuation(chatId);
 			this.unserved.delete(chatId);
 			this.latestImages.delete(chatId);
 			return;
@@ -814,15 +826,6 @@ export class ManagerController {
 		// (selectCatchUpChats), which reasons off true timestamps, decides which
 		// stale chats are still worth answering.
 		if (now - messageTime > this.deps.liveFreshnessMs) return;
-		// TAKEOVER only: the owner stepped into this chat, so they are at the wheel and
-		// the bot stays out of it — not even a wake-word pulls it back in. The window is
-		// still armed, because its expiry (the owner going quiet again) is exactly what
-		// releases the freeze. Observer never freezes: there the owner is expected to be
-		// answering, and the bot's whole job is to stay quiet unless spoken to.
-		if (this.gate.isFrozen(chatId)) {
-			this.gate.onInterlocutorMessage(chatId);
-			return;
-		}
 		this.unserved.add(chatId);
 		// Landed while this chat's turn was mid-flight: flag it so turn end reconsiders
 		// against this newer message instead of sending a now-stale reply blind.
@@ -1113,9 +1116,8 @@ export class ManagerController {
 	 */
 	async onTick(): Promise<void> {
 		for (const chatId of this.gate.onTick()) {
-			// A chat released by the window (or by a takeover freeze lapsing) has an
-			// unanswered message by definition — the gate only returns chats with a
-			// pending batch.
+			// A chat released by the window has an unanswered message by definition —
+			// the gate only returns chats with a pending batch.
 			this.unserved.add(chatId);
 			this.scheduler.onMessage(chatId);
 		}
@@ -1251,14 +1253,12 @@ export class ManagerController {
 
 	/** Status for the banner/footer. */
 	status(): {
-		subMode: ManagerSubMode;
 		activeChat?: string;
 		queued: number;
 		holding: number;
 	} {
 		const active = this.scheduler.activeChat();
 		return {
-			subMode: this.deps.subMode,
 			activeChat: active ?? undefined,
 			queued: this.scheduler.pending().length,
 			// Chats held in the owner-reply (5-min) window — waiting, not yet queued.
@@ -1288,6 +1288,7 @@ export class ManagerController {
 		}
 		const active = this.scheduler.activeChat();
 		if (active === null || !this.unserved.has(active)) return false;
+		if (!(await this.hasSomethingToAnswer(active))) return false;
 		this.decision.reset();
 		this.resolve.reset();
 		this.facts.reset();
@@ -1308,6 +1309,37 @@ export class ManagerController {
 				: "Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
 		);
 		return true;
+	}
+
+	/**
+	 * The invariant that keeps the bot out of the owner's mouth: a turn may start
+	 * ONLY for something that is actually waiting on us.
+	 *
+	 * Three cases qualify, and nothing else:
+	 *  - an interlocutor message nobody has answered (`analyzeChat`);
+	 *  - a chat the owner summoned with a wake-word — the one case where the model
+	 *    may answer the owner at all;
+	 *  - a held draft awaiting `manager_resolve_draft`.
+	 *
+	 * `unserved` already implies this, but only by construction: every path that
+	 * sets it would have to stay correct forever. Checking the transcript makes it
+	 * structural. Concretely it is what stops the case the owner hit live — writing
+	 * "did you buy bread?" to the interlocutor and having the BOT answer "yes":
+	 * after an owner message nothing is unanswered, so there is no turn to run.
+	 */
+	private async hasSomethingToAnswer(chatId: string): Promise<boolean> {
+		if (this.ownerSummoned.has(chatId) || this.pendingReply.has(chatId)) {
+			return true;
+		}
+		const records = await this.deps.chatStore.getRecent(
+			chatId,
+			this.deps.rememberMessages,
+		);
+		// Who spoke LAST, by transcript order — not by timestamp: Telegram dates are
+		// whole seconds, so an owner message and an interlocutor's in the same second
+		// compare as equal, and a timestamp test would call the chat answered while the
+		// interlocutor is in fact still waiting.
+		return analyzeChat(records).interlocutorWaiting;
 	}
 
 	/**

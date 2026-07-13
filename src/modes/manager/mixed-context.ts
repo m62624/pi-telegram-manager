@@ -26,7 +26,7 @@
  * manager injects while mixed mode is active. Built from invisible-separator /
  * zero-width-space code points so it renders as nothing and is exceedingly
  * unlikely to occur in a human- or model-authored coding prompt. Distinct from
- * `submode.ts`'s `BOT_MARKER` (which tags outgoing Telegram messages) so the two
+ * `identity.ts`'s `BOT_MARKER` (which tags outgoing Telegram messages) so the two
  * concerns never alias.
  */
 export const MIXED_TELEGRAM_MARKER = "\u2063\u2063\u200b\u2063\u2063";
