@@ -24,6 +24,8 @@ export interface TelegramPaths {
 	consolidationQueuePath: string;
 	/** Marker of the applied contact-fact schema version (one-off migrations). */
 	memoryVersionPath: string;
+	/** Thread ids of the chat/log topics in the owner's bot DM. */
+	topicsPath: string;
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
 	/** Per-contact profile + important-facts directory (both modes). */
@@ -49,6 +51,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		sentRegistryPath: join(extensionDir, "sent-registry.json"),
 		consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
 		memoryVersionPath: join(extensionDir, "memory-version.json"),
+		topicsPath: join(extensionDir, "topics.json"),
 		chatsDir,
 		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),
