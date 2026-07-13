@@ -280,6 +280,13 @@ const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
+
+/**
+ * How many un-answered messages typed outside the personal topic are remembered. A
+ * turn claims its own, so this only bounds the ones no turn ever came for (a message
+ * sent while the bot was busy elsewhere, an aborted turn).
+ */
+const MAX_STRAY_MESSAGES = 50;
 const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
 // Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
@@ -1186,46 +1193,83 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!topics?.active) return true;
 		const thread = threadOf(event);
 		reportTopicRouting(event);
-		if (thread === personalThread()) return true;
 		if (thread === managerThread()) return false;
-		// Somewhere else: the "All" view, a topic the owner made, the plain DM after
-		// they deleted ours. The topics may also be gone entirely, so re-check them
-		// (recreating whatever is missing) before bringing the message over.
-		if (thread !== undefined) await topics.revalidate();
-		await mirrorIntoPersonal(event);
+		if (isOutsidePersonal(event)) {
+			// A topic we do not know may be one the owner made — or ours, deleted and
+			// replaced. Re-check them (recreating whatever is gone) before answering.
+			if (thread !== undefined) await topics.revalidate();
+			noteStray(event);
+		}
 		return true;
 	};
 
 	/**
-	 * Forward a message the owner typed outside the personal topic into it.
+	 * Whether an owner message was typed OUTSIDE the personal topic — on evidence, not
+	 * on absence.
 	 *
-	 * Telegram cannot MOVE a message between topics, so the question stays where it
-	 * was typed while the answer goes to `personal` — leaving the topic reading as if
-	 * the bot talked to itself. Quoting the far message was tried and abandoned: the
-	 * clients do not agree on cross-topic replies (phone, desktop and web each showed
-	 * it differently), so the message is copied over instead. A forward is plain and
-	 * works everywhere: `personal` then holds the question and its answer, in order.
-	 *
-	 * Only a real prompt is copied: an edit would arrive as a second copy of a message
-	 * already there, and a command (/clear, /help) is an instruction to the bridge, not
-	 * something the conversation needs a record of.
-	 *
-	 * Best-effort — a failed forward must never swallow the prompt itself.
+	 * A message written in a topic carries that topic (`message_thread_id`) and
+	 * `is_topic_message`. So a different thread means elsewhere, and no thread at all
+	 * means the "All" view, where Telegram itself labels the input box "message outside
+	 * a topic". The `is_topic_message` check is the safety catch: should Telegram ever
+	 * mark a message as a topic message without saying which topic, it is NOT treated
+	 * as an outsider — copying the owner's every word into their own topic is a far
+	 * worse failure than missing one stray.
 	 */
-	const mirrorIntoPersonal = async (event: TelegramEvent): Promise<void> => {
+	const isOutsidePersonal = (event: TelegramEvent): boolean => {
+		if (event.kind !== "message") return false;
+		const thread = threadOf(event);
+		if (thread !== undefined) return thread !== personalThread();
+		return event.message.is_topic_message !== true;
+	};
+
+	/**
+	 * Messages typed outside the personal topic, waiting for the turn that answers them.
+	 *
+	 * Telegram cannot MOVE a message between topics, so the question stays where it was
+	 * typed while the answer goes to `personal` — leaving the topic reading as if the
+	 * bot talked to itself. Quoting the far message across topics was tried and
+	 * abandoned (no two clients agreed on what the quote meant), so a COPY is forwarded
+	 * into `personal` instead.
+	 *
+	 * The copy is made when the turn STARTS, not when the message lands: a message may
+	 * still be waiting for an album to close, be folded into a burst of forwards, or be
+	 * followed by three more sentences — copying each on arrival filled the topic with
+	 * forwards before the bot had even begun to think. One turn, one copy of what it
+	 * actually answers, right as the answer starts being written.
+	 */
+	const strayMessages = new Set<number>();
+
+	const noteStray = (event: TelegramEvent): void => {
 		if (event.kind !== "message") return;
+		// A command (/clear, /help) is an instruction to the bridge, not a line of the
+		// conversation — the topic needs no record of it.
 		if ((event.message.text ?? "").startsWith("/")) return;
+		strayMessages.add(event.message.message_id);
+		// Bound it: turns claim their own, so this only holds the ones no turn came for.
+		if (strayMessages.size > MAX_STRAY_MESSAGES) {
+			const oldest = strayMessages.values().next();
+			if (!oldest.done) strayMessages.delete(oldest.value);
+		}
+	};
+
+	/** Copy the messages this turn answers into `personal`. Best-effort, in order. */
+	const mirrorStraysIntoPersonal = async (
+		sourceMessageIds: readonly number[],
+	): Promise<void> => {
 		const api = controlApi();
 		const personal = personalThread();
-		if (!api || personal === undefined) return;
-		await api
-			.forwardMessage({
-				chat_id: event.chatId,
-				message_thread_id: personal,
-				from_chat_id: event.chatId,
-				message_id: event.message.message_id,
-			})
-			.catch(() => {});
+		if (!api || personal === undefined || ownerUserId === null) return;
+		for (const messageId of sourceMessageIds) {
+			if (!strayMessages.delete(messageId)) continue;
+			await api
+				.forwardMessage({
+					chat_id: ownerUserId,
+					message_thread_id: personal,
+					from_chat_id: ownerUserId,
+					message_id: messageId,
+				})
+				.catch(() => {});
+		}
 	};
 
 	/**
@@ -1456,6 +1500,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			},
 			chatThread: personalThread,
+			onTurnStart: mirrorStraysIntoPersonal,
 			forwards: settings.forwards,
 			outbound,
 			abort,

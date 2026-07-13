@@ -585,4 +585,24 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
 		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
 	});
+
+	it("announces the turn's own messages when it starts, not when they arrive", async () => {
+		// The copy of a stray message is made from this hook, so it must fire once the
+		// turn actually begins — a message still waiting for its album or for the agent
+		// to go idle has not been answered yet, and copying it early filled the topic
+		// with forwards before the bot had begun to think.
+		const onTurnStart = vi.fn(async () => {});
+		const { controller, setIdle } = setup({
+			chatThread: () => PERSONAL,
+			onTurnStart,
+		});
+		setIdle(false);
+		await controller.onEvent(threadEvent(11, FOREIGN));
+		await controller.onEvent(threadEvent(12, FOREIGN));
+		expect(onTurnStart).not.toHaveBeenCalled();
+
+		setIdle(true);
+		await controller.dispatch();
+		expect(onTurnStart).toHaveBeenCalledExactlyOnceWith([11]);
+	});
 });

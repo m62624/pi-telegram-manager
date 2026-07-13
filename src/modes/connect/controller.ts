@@ -51,6 +51,12 @@ export interface ConnectControllerDeps {
 	isIdle: () => boolean;
 	/** Deliver a prompt turn to the agent as a follow-up (no interruption). */
 	sendFollowUp: (content: PromptContent) => Promise<void>;
+	/**
+	 * The turn about to run, by the messages it answers — the moment the bot starts
+	 * working on them, and the only moment a message typed outside the personal topic
+	 * is worth copying into it (see the topic router's `mirrorIntoPersonal`).
+	 */
+	onTurnStart?: (sourceMessageIds: readonly number[]) => Promise<void>;
 	/** Download an inbound message's image attachments as base64 (best-effort). */
 	loadImages?: (message: Message) => Promise<InboundImage[]>;
 	/**
@@ -439,6 +445,7 @@ export class ConnectController {
 		if (this.isOpenAlbum(next.id)) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
+		await this.deps.onTurnStart?.(item.sourceMessageIds);
 		await this.deps.sendFollowUp(this.toContent(item));
 	}
 
