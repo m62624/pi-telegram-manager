@@ -65,8 +65,8 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 | --- | --- | --- | --- |
 | `manager.ownerName` | — | replaces | Your display name, so the bot can introduce itself as "{name}'s assistant" on first contact. |
 | `manager.ownerReplyWindowMs` | `300000` (5 min) | replaces | How long a first message from someone is held so **you** can answer before the bot may. |
-| `manager.continueWindowMs` | `120000` (2:00) | replaces | After the bot replies, how long the chat stays "live" (a new message keeps it active instead of re-queuing). Also governs when things are quiet enough to resume memory consolidation. |
-| `manager.liveFreshnessMs` | `120000` (2 min) | replaces | A message older than this (by its true send time) is recorded for context but does **not** wake a live reply cycle — so a redelivered old backlog never "wakes" the bot. |
+| `manager.continueWindowMs` | `120000` (2 min) | replaces | After the bot replies, how long that chat keeps the fast lane: a message inside the window is served at once, skipping the owner window and the queue. When it expires the chat is released and the next one is promoted. Writing in the chat yourself closes the lane immediately. |
+| `manager.liveFreshnessMs` | `600000` (10 min) | replaces | **How late a message may arrive and still count as live.** Telegram redelivers what the bot missed (reconnect, network blip, restart), and age is measured by the message's *true send time*. Older than this → backlog: kept for context and memory, but it starts no reply cycle, so a conversation that ended yesterday cannot wake the bot on reconnect. Keep it **above** `ownerReplyWindowMs`: a message younger than the owner window has not even had its turn yet. Too low is the dangerous side — a live message delayed in transit would be filed as history and answered by nobody. |
 | `manager.catchUpWindowMs` | `36000000` (10 h) | replaces | On activation, the bot may answer for you in a waiting chat only if its last message is newer than this. |
 | `manager.reopenAfterMs` | `86400000` (24 h) | replaces | A chat resuming after this much silence is re-greeted. `0` disables re-greeting. |
 | `manager.rememberMessages` | `20` | replaces | Last-N messages per chat the model reads each turn. Also bounds the transcript kept on disk (old messages are pruned to ~2× this). |
@@ -139,9 +139,14 @@ Tuned for a **local model** answering over minutes, not milliseconds. Slower har
 | --- | --- | --- |
 | Owner-reply | 5 min | you get first crack at a new message |
 | Continuation | 2 min | how long a chat stays "live" after a reply |
-| Live freshness | 2 min | older messages are backlog, not a live trigger |
+| Live freshness | 10 min | how late a message may arrive and still wake the bot (reconnect/backlog guard) |
 | Consolidation quiet | 30 min | idle wait before updating memory about a chat |
 | Mixed return | 8 min | idle after a terminal turn before the brain returns to Telegram |
 | Re-greet after | 24 h | silence before a resuming chat is welcomed back |
 | Catch-up window | 10 h | oldest waiting message still worth answering on start |
 | Connection check | 10 min | silent liveness probe interval |
+
+**They are not independent — two relations matter if you retune them.**
+
+- **Live freshness > owner-reply.** Freshness decides whether a message may wake the bot at all; the owner window then holds it so you can answer first. Set freshness *below* the owner window and you declare messages too old to wake the bot before they have even had their turn — a message delayed in transit is then filed as history and answered by nobody. Keep a wide margin (10 min vs 5 min).
+- **Continuation is a priority, not a deadline.** It only says how long a chat keeps the fast lane after a reply. Miss it and nothing is lost: the next message re-enters the normal path — the owner window, then the queue — so the person is still answered, just not instantly. Raise it if your contacts take their time replying; lower it if one chatty conversation keeps the model from the others (the queue promotes never-answered chats first regardless).

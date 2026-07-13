@@ -116,10 +116,25 @@ export interface TelegramSettings {
 		 */
 		verifyLimit: number;
 		/**
-		 * A newly-arrived interlocutor message older than this (by its true send
-		 * time) is treated as backlog: recorded for context but not engaged as a live
-		 * reply cycle, so a redelivered old conversation never "wakes". Default
-		 * 120000 (2 min).
+		 * How late a message may arrive and still be treated as live.
+		 *
+		 * Telegram redelivers what the bot missed — after a reconnect, a network
+		 * blip, a restart — and the age of a message is measured by its TRUE send
+		 * time, not by when it landed. Anything older than this is backlog: kept for
+		 * context and memory, but it does not open a reply cycle, so a conversation
+		 * that ended yesterday cannot "wake" the manager on reconnect.
+		 *
+		 * Set it too low and the failure is silent and one-sided: a live message
+		 * delayed in transit is filed as history and answered by nobody (only
+		 * catch-up on activation reconsiders such chats). Set it high and the worst
+		 * case is a reply to a ten-minute-old message — which is fine, since nothing
+		 * is answered faster than `ownerReplyWindowMs` (5 min) anyway, and genuinely
+		 * stale traffic is caught by `catchUpWindowMs` and by the model's own "too
+		 * late to answer" judgement. So it must comfortably exceed the owner window:
+		 * a message younger than that has not even had its turn yet.
+		 *
+		 * Default 600000 (10 min) — covers a reconnect and a slow delivery, and is
+		 * far below any real backlog.
 		 */
 		liveFreshnessMs: number;
 		/** Prefix prepended to each outgoing business message ("" = none, and no banner). */
@@ -231,7 +246,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
 		verifyLimit: 8,
-		liveFreshnessMs: 120_000,
+		liveFreshnessMs: 600_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
 		log: true,
