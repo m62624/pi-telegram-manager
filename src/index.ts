@@ -1299,6 +1299,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		};
 		// Upload a local file or URL back to the bound chat (the telegram_attach
 		// tool). Validate a local path up front so the model gets a clear error.
+		//
+		// The file belongs in the `personal` topic, like every other half of this
+		// conversation: sent thread-less it landed in the DM's catch-all instead, so
+		// the model announced a file that was nowhere to be seen in the topic the
+		// owner was reading. A dead thread is repaired and retried once, exactly as
+		// the text sends do — a failed send is the only proof a topic was deleted.
 		const uploadFile = async (input: {
 			path?: string;
 			url?: string;
@@ -1307,7 +1313,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);
 			}
-			await telegram.sendDocument({ chatId: allowedUserId, ...input });
+			const send = (threadId: number | undefined) =>
+				telegram.sendDocument({
+					chatId: allowedUserId,
+					threadId,
+					...input,
+				});
+			try {
+				await send(personalThread());
+			} catch (error) {
+				if (!topics?.active || !TopicRouter.isMissingThread(error)) throw error;
+				await send(await topics.recreate("personal"));
+			}
 		};
 		connect = new ConnectController({
 			allowedUserId,
