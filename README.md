@@ -18,7 +18,7 @@ One bot account, one mode at a time. Each mode is a different job for the same m
 
 ### 🔀 Mixed — terminal + Telegram in one brain
 
-One Pi session runs two threads: your **terminal session** and Telegram moderation, with the **terminal always the priority**. While you are at the terminal, Telegram is deferred and nothing from it enters your session — no tokens, no confusion, and even a wake-word only queues, it never pulls the model off your work. Once your inference has been idle for `mixed.returnToTelegramMs` (default **8 min**), the brain moderates Telegram in the sub-mode you chose; the moment you type again it drops Telegram, aborts any in-flight reply, and restores your full tools. Your TUI stays clean — just a footer (`mixed · observer · coding`); enable `manager.debugFeed` for a log of what it did while you were away.
+One Pi session runs two threads: your **terminal session** and Telegram moderation, with the **terminal always the priority**. While you are at the terminal, Telegram is deferred and nothing from it enters your session — no tokens, no confusion, and even a wake-word only queues, it never pulls the model off your work. Once your inference has been idle for `mixed.returnToTelegramMs` (default **8 min**), the brain moderates Telegram in the sub-mode you chose; the moment you type again it drops Telegram, aborts any in-flight reply, and restores your full tools. Your TUI stays clean — just a footer (`mixed · observer · coding`); the log of what it did while you were away lands in the **log** topic of your bot DM.
 
 Start it with `/telegram-mixed` (it asks for observer or takeover — see below).
 
@@ -72,17 +72,25 @@ There is no special "secretary bot" type and nothing to pay for on the bot's sid
 
 > ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected secretary/business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
 
-### 3. Find your Telegram user id
+### 3. Enable topic mode — recommended
+
+Your DM with the bot works better as two topics: **chat** (the conversation with the model) and **log** (the moderation feed, notices, tool activity). The bot creates both itself — it only needs the toggle:
+
+> `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **topic mode** → **Turn on**
+
+Without it everything still works: the bot falls back to one flat DM (and you may want `manager.log: false` there, since the feed is chatty). Mute the **log** topic by hand if you don't want its notifications — Telegram gives bots no API for that. Rename the topics with `topics.chatName` / `topics.logName`, or turn the whole thing off with `topics.enabled: false`.
+
+### 4. Find your Telegram user id
 
 `allowedUserId` is your **numeric** user id (not your @username) — the only account the bot obeys. Get it from a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot).
 
-### 4. Install
+### 5. Install
 
 ```bash
 pi install git:github.com/m62624/pi-telegram-manager
 ```
 
-### 5. Configure
+### 6. Configure
 
 Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically `~/.pi/agent/extensions/pi-telegram-manager/settings.json`):
 
@@ -96,7 +104,7 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 
 `botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment. Every other key is optional — see **[SETTINGS.md](https://github.com/m62624/pi-telegram-manager/blob/main/SETTINGS.md)**.
 
-### 6. (Manager / mixed only) Connect the bot to your account
+### 7. (Manager / mixed only) Connect the bot to your account
 
 Open Telegram **Settings → Telegram Business / Secretary → Chatbots** (Telegram is rolling out the *Secretary* label), enter your bot's username, and choose which chats it may access.
 

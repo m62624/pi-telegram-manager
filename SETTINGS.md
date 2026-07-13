@@ -30,7 +30,7 @@ Mixed runs the manager alongside your terminal session in one Pi session, with t
 | --- | --- | --- | --- |
 | `mixed.returnToTelegramMs` | `480000` (8 min) | replaces | After your terminal inference **finishes** (or an abort settles), how long the brain stays idle before it returns to Telegram moderation. The countdown starts when the turn **ends**, not while it runs; any new terminal prompt cancels it. |
 
-**Priority & algorithm.** While you are at the terminal (the `coding` polarity) the manager may not run a turn: incoming Telegram messages are stored and deferred, and **even a wake-word does not preempt you** — it only marks the chat ready. Nothing from Telegram enters your terminal context or costs you tokens. When your inference has been idle for `mixed.returnToTelegramMs`, the brain flips to the `telegram` polarity and moderates the ready chats in the sub-mode you picked. The instant you type again it flips back, aborts any in-flight moderation, and restores your full tools. In the `telegram` polarity the model runs in the sandbox (messaging tools only — no `read`/`write`/`bash`); your full tools exist only while you hold the terminal. Turn on `manager.debugFeed` for a log of what it did while you were away.
+**Priority & algorithm.** While you are at the terminal (the `coding` polarity) the manager may not run a turn: incoming Telegram messages are stored and deferred, and **even a wake-word does not preempt you** — it only marks the chat ready. Nothing from Telegram enters your terminal context or costs you tokens. When your inference has been idle for `mixed.returnToTelegramMs`, the brain flips to the `telegram` polarity and moderates the ready chats in the sub-mode you picked. The instant you type again it flips back, aborts any in-flight moderation, and restores your full tools. In the `telegram` polarity the model runs in the sandbox (messaging tools only — no `read`/`write`/`bash`); your full tools exist only while you hold the terminal. The log of what it did while you were away lands in the **log** topic of your bot DM (`manager.log`, on by default).
 
 ## `connectionCheck` (connection watchdog, all modes)
 
@@ -41,6 +41,21 @@ A silent timer probes the bot connection while a mode is active; after too many 
 | `connectionCheck.enabled` | `true` | replaces | Run the watchdog while a mode is active. |
 | `connectionCheck.intervalMs` | `600000` (10 min) | replaces | Probe interval. `0` also disables it. |
 | `connectionCheck.maxRetries` | `3` | replaces | Consecutive failed probes tolerated before auto-disconnect. |
+
+
+## `topics` (owner DM layout)
+
+Bot API 9.3 lets a bot create forum topics **inside a private chat**, so your DM with the bot is split in two: **chat** — the conversation with the model (Personal, and the mixed continuation) — and **log** — the manager feed, runtime notices and Personal-mode tool activity. The conversation topic stays free of logs.
+
+It needs topic mode on the bot: **@BotFather → /mybots → your bot → Bot Settings → topic mode → Turn on**. Without it (or on any error) everything degrades to the single plain DM exactly as before — nothing to configure, nothing breaks.
+
+The two thread ids are remembered on disk (`topics.json`); a topic you delete while the bot is off is simply recreated on the next start.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `topics.enabled` | `true` | replaces | Use topics when the bot supports them. `false` keeps one flat DM. |
+| `topics.chatName` | `"chat"` | replaces | Name of the conversation topic. |
+| `topics.logName` | `"log"` | replaces | Name of the observability topic. |
 
 ## `manager` (business manager, and the Telegram side of mixed)
 
@@ -63,7 +78,7 @@ A silent timer probes the bot connection while a mode is active; after too many 
 | `manager.mentionWords` | `["llm", "manager"]` | **replaces list** (+ labeler) | Wake-words — see [Wake-words](#wake-words) below. |
 | `manager.labeler` | `"LLM agent 🤖:"` | replaces | The banner prefixed to each outgoing business reply, rendered as a blockquote so it stands apart from a message you typed. `""` removes the banner entirely (and the rule line with it). |
 | `manager.labelerRule` | `"────────────"` | replaces | A second line under the labeler, inside the same blockquote — a horizontal rule that makes the banner taller and easier to spot. You control its look and length by the string itself; `""` removes just the rule line (the labeler stays). Ignored when `labeler` is `""`. |
-| `manager.debugFeed` | `false` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. Chatty in Observer — opt-in. |
+| `manager.log` | `true` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. With `topics` on it goes to its own **log** topic, so it never buries the conversation; without topics it shares the single DM and is chatty in Observer (turn it off there). Renamed from `manager.debugFeed`, which is still read when this key is unset. |
 | `manager.media.images` | `true` | replaces | Let the model see interlocutor images (vision). |
 | `manager.media.documents` | `false` | replaces | Accept non-image documents (otherwise refused). |
 | `manager.allowedTools` | `[]` | **adds to base** | Regex names of extra tools the model may call, on top of the built-in messaging tools. Empty = telegram-sandbox (messaging tools only, no computer access). |
