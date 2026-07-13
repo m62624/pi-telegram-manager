@@ -1669,3 +1669,98 @@ describe("ManagerController — whose words are whose", () => {
 		expect(line?.content).not.toContain('Alice]: "');
 	});
 });
+
+describe("ManagerController — the owner summons the bot (observer)", () => {
+	const forwardMsg = (text: string, messageId: number): Message =>
+		({
+			message_id: messageId,
+			date: 0,
+			chat: { id: 42, type: "private", first_name: "Alice" },
+			from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+			text,
+			forward_origin: {
+				type: "channel",
+				date: 0,
+				chat: { id: -100, type: "channel", title: "News" },
+				message_id: 7,
+			},
+		}) as Message;
+
+	it("keeps the summons alive while the owner is still adding to their question", async () => {
+		const { controller, triggerAgent } = await setup("observer", ["qwen"]);
+		// The owner asks the bot something...
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("hey qwen, which messages did I forward?", 100),
+		});
+		// ...and a second later pastes in the material the question is about. The tick
+		// that starts the turn has not run yet: these follow-ups used to clear the
+		// chat's pending work, so the question was silently dropped.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: forwardMsg("a long forwarded post", 101),
+		});
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		expect(controller.status().activeChat).toBe("42");
+	});
+
+	it("still stands down when the owner just answers the chat themselves", async () => {
+		const { controller, triggerAgent, clock } = await setup("observer", [
+			"qwen",
+		]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you coming?"),
+		});
+		// No wake-word: the owner handled it, so the bot must not step in.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("yes, on my way", 100),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+	});
+
+	it("forgets the summons once the turn has run", async () => {
+		const { controller, triggerAgent, clock } = await setup("observer", [
+			"qwen",
+		]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("qwen, summarise this chat", 100),
+		});
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "silent", reason: "done" });
+		await controller.onAgentEnd();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+
+		// A later owner message is an ordinary one again — it stands the bot down.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("still there?", 5, 2),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("yes, sorry", 101),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+});

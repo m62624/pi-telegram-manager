@@ -462,6 +462,13 @@ export class ManagerController {
 	 */
 	private readonly dirtyDuringTurn = new Set<string>();
 	/**
+	 * Chats the OWNER summoned the bot into with a wake-word (observer only), and
+	 * whose turn has not run yet. Until it does, further owner messages are part of
+	 * the request being assembled — not the owner handling the chat themselves — so
+	 * they must not cancel it. Cleared when the turn settles.
+	 */
+	private readonly ownerSummoned = new Set<string>();
+	/**
 	 * A reply the model drafted but that we held back because new messages landed
 	 * mid-turn. Surfaced to the model next turn so it can resend as-is or revise.
 	 */
@@ -732,8 +739,21 @@ export class ManagerController {
 					contactName: existing?.contactName ?? chatId,
 					userId: existing?.userId,
 				});
+				this.ownerSummoned.add(chatId);
 				this.unserved.add(chatId);
 				this.scheduler.onMessage(chatId);
+				return;
+			}
+			// The owner called the bot moments ago and is still assembling the request —
+			// a screenshot, the forwards they were asking about, a second sentence. Those
+			// follow-ups must NOT cancel the summons: the question was put to the BOT, so
+			// the chat stays unserved until the turn actually runs (the tick that starts
+			// it can be seconds away). Without this, every message the owner added to
+			// their own question erased it.
+			if (this.ownerSummoned.has(chatId)) {
+				if (this.scheduler.activeChat() === chatId && !this.deps.isIdle()) {
+					this.dirtyDuringTurn.add(chatId);
+				}
 				return;
 			}
 			// The owner answered inside the window — cancel this chat's pending batch
@@ -1004,6 +1024,7 @@ export class ManagerController {
 		}
 		// The turn settled — this chat is served, whatever the model decided.
 		this.unserved.delete(active);
+		this.ownerSummoned.delete(active);
 		this.latestImages.delete(active);
 		this.pendingReply.delete(active);
 		this.reviseCount.delete(active);
