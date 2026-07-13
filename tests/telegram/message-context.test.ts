@@ -89,6 +89,48 @@ describe("extractMessageContext", () => {
 		expect(ctx.reply?.text).toBe("<photo>");
 	});
 
+	it("ignores the topic root a message in a forum topic is anchored to", () => {
+		// Regression: inside a topic every message carries reply_to_message = the
+		// topic-creation service message, which rendered as a phantom `[reply to
+		// <bot>]: ""` in front of everything the owner typed in the chat topic.
+		const ctx = extractMessageContext(
+			msg({
+				text: "are you there?",
+				is_topic_message: true,
+				message_thread_id: 2,
+				reply_to_message: {
+					message_id: 2,
+					date: 0,
+					chat: base.chat,
+					from: { id: 9, is_bot: true, first_name: "Pi Agent" },
+					forum_topic_created: { name: "chat", icon_color: 7322096 },
+				},
+			}),
+		);
+		expect(ctx.reply).toBeUndefined();
+	});
+
+	it("keeps a real reply inside a topic", () => {
+		const ctx = extractMessageContext(
+			msg({
+				text: "yes",
+				is_topic_message: true,
+				message_thread_id: 2,
+				reply_to_message: {
+					message_id: 5,
+					date: 0,
+					chat: base.chat,
+					from: { id: 9, is_bot: true, first_name: "Pi Agent" },
+					text: "shall I run the tests?",
+				},
+			}),
+		);
+		expect(ctx.reply).toEqual({
+			author: "Pi Agent",
+			text: "shall I run the tests?",
+		});
+	});
+
 	it("captures a partial quote", () => {
 		const ctx = extractMessageContext(
 			msg({

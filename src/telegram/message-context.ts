@@ -92,6 +92,21 @@ function externalReplyKind(info: ExternalReplyInfo): string {
 	return "a message";
 }
 
+/**
+ * Whether a `reply_to_message` is just the topic's root rather than something the
+ * sender chose to answer. Inside a forum topic Telegram anchors messages to the
+ * topic-creation service message, so without this every message written in a topic
+ * would carry a phantom `[reply to <bot>]: ""` into the model's context.
+ */
+function isTopicAnchor(message: Message, replyTo: Message): boolean {
+	if (replyTo.forum_topic_created) return true;
+	return (
+		message.is_topic_message === true &&
+		message.message_thread_id !== undefined &&
+		replyTo.message_id === message.message_thread_id
+	);
+}
+
 /** Extract the cross-message context the model should see, mode-independent. */
 export function extractMessageContext(message: Message): MessageContext {
 	const context: MessageContext = {};
@@ -101,7 +116,7 @@ export function extractMessageContext(message: Message): MessageContext {
 	}
 
 	const replyTo = message.reply_to_message;
-	if (replyTo) {
+	if (replyTo && !isTopicAnchor(message, replyTo)) {
 		context.reply = {
 			author: replyTo.from
 				? extractProfileFromUser(replyTo.from as User).displayName
