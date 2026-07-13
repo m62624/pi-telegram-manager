@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { selectCatchUpChats } from "../../../src/modes/manager/catchup";
+import {
+	lastInterlocutorUserId,
+	selectCatchUpChats,
+} from "../../../src/modes/manager/catchup";
 import type {
 	ChatAuthor,
 	ChatMessageRecord,
@@ -56,5 +59,37 @@ describe("selectCatchUpChats", () => {
 			chat("older", [rec("interlocutor", NOW - 900_000)]),
 		];
 		expect(selectCatchUpChats(chats, NOW, OPTS)).toEqual(["older", "newer"]);
+	});
+});
+
+// Who the chat is WITH decides where facts are stored — and a chat that looks like the
+// owner talking to themselves is dropped from consolidation entirely. So reading the
+// owner's own id back out of a transcript is not a cosmetic slip: it silently costs a
+// contact their memory. Seen live: a friend's chat sat in the queue under the owner's
+// user id, and that friend accumulated no facts at all.
+describe("lastInterlocutorUserId", () => {
+	const owner = "1";
+
+	it("reads the interlocutor's id from their own message", () => {
+		const records = [
+			rec("owner", 1),
+			{ ...rec("interlocutor", 2), senderId: "42" },
+		];
+		expect(lastInterlocutorUserId(records, owner)).toBe("42");
+	});
+
+	it("never returns the owner's id, however the transcript files their message", () => {
+		// Early transcripts hold the owner's own messages as `interlocutor`: they were
+		// stored before the bot learned which Secretary account it speaks for.
+		const records = [
+			{ ...rec("interlocutor", 1), senderId: "42" },
+			{ ...rec("interlocutor", 2), senderId: owner },
+		];
+		expect(lastInterlocutorUserId(records, owner)).toBe("42");
+	});
+
+	it("is undefined when the chat has no interlocutor but the owner", () => {
+		const records = [{ ...rec("interlocutor", 1), senderId: owner }];
+		expect(lastInterlocutorUserId(records, owner)).toBeUndefined();
 	});
 });

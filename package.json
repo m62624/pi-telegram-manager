@@ -20,6 +20,8 @@
 	"main": "src/index.ts",
 	"files": [
 		"assets/*.webp",
+		"assets/*.jpg",
+		"assets/*.gif",
 		"src/**/*.ts",
 		"!src/**/*.test.ts",
 		"src/**/*.md",

@@ -30,6 +30,39 @@ export interface CatchUpOptions {
 	catchUpWindowMs: number;
 }
 
+/** The display name of the most recent interlocutor message, if any. */
+export function lastInterlocutorName(
+	records: readonly ChatMessageRecord[],
+): string | undefined {
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		if (records[i].author === "interlocutor") return records[i].senderName;
+	}
+	return undefined;
+}
+
+/**
+ * The interlocutor's user id from a stored transcript — never the owner's.
+ *
+ * `ownerId` is not a nicety: an early transcript can hold the OWNER's own messages
+ * filed as `interlocutor` (they were written before the bot learned which Secretary
+ * account it speaks for, and who authored a message is decided by that id). Reading one
+ * of those back made the chat look like a self-chat — and consolidation DROPS a
+ * self-chat, so a real contact was silently never remembered. Seen live: the queue held
+ * the owner's own id for a friend's chat, and that friend accumulated no facts at all.
+ */
+export function lastInterlocutorUserId(
+	records: readonly ChatMessageRecord[],
+	ownerId?: string,
+): string | undefined {
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		const record = records[i];
+		if (record.author !== "interlocutor" || !record.senderId) continue;
+		if (record.senderId === ownerId) continue;
+		return record.senderId;
+	}
+	return undefined;
+}
+
 /** Last interlocutor message text (already the newest, since it spoke last). */
 function lastInterlocutorText(
 	records: readonly ChatMessageRecord[],
