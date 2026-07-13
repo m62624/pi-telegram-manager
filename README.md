@@ -100,6 +100,8 @@ Start it with `/telegram-mixed` (it asks for observer or takeover).
 
 Run **`/telegram-switch`** in Pi to pick a mode in the terminal — **Personal / Observer / Takeover / Mixed·Observer / Mixed·Takeover / Stop**, with the live one marked. Or send **`/switch`** in your DM with the bot to flip between the same modes from an inline keyboard, no terminal needed (the terminal picker can also push that keyboard to your phone while the bot is running).
 
+The inline keyboard has **no Stop button** — a Secretary connection is a long-lived thing, and a mistap while picking a mode should not end it. Stopping the bot from Telegram is its own command: **`/stop`**.
+
 Every mode command is itself a switch: starting one while another runs stops that one first — you never have to stop by hand. Switching is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and takes effect at once. A **pinned message** in the `personal` topic always shows the active mode.
 
 ---
@@ -241,7 +243,7 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/help`; in Personal mode also `/clear`, `/esc`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/stop` (stop the bot — owner), `/help`; in Personal mode also `/clear`, `/esc`.
 
 ---
 

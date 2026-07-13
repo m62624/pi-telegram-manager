@@ -143,6 +143,7 @@ import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
 import {
 	buildSwitchKeyboard,
+	isStopCommand,
 	isSwitchCommand,
 	type PanelMode,
 	parseSwitchData,
@@ -276,7 +277,8 @@ const MANAGER_TOOLS = [
 const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
-	"/switch — change mode (observer / takeover / mixed / personal / stop)",
+	"/switch — change mode (observer / takeover / mixed / personal)",
+	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
 	"",
 	"⚠️ Privacy & terms — read and follow these before using the bot:",
@@ -2010,6 +2012,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await sendSwitchPanel(api, threadOf(event) ?? personalThread());
 				return true;
 			}
+			// Stopping is a command, never a button: the Secretary connection is the
+			// whole point of the bot, and a mistap while switching modes must not end it.
+			if (isStopCommand(text)) {
+				const stopped = activeTarget() === "stop";
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: stopped
+							? "The bot is already stopped. /switch starts a mode."
+							: "⏹️ Stopping. /switch starts a mode again.",
+					})
+					.catch(() => {});
+				if (!stopped) scheduleSwitch("stop");
+				return true;
+			}
 			// /help works in the owner DM in every mode. Personal mode renders its own
 			// rich help (ConnectController), so only answer here when it is inactive
 			// (manager / mixed) — a plain message whose raw URLs Telegram auto-links.
@@ -2040,9 +2058,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					callback_query_id: event.query.id,
 					text: already
 						? `Already ${switchLabel(target)}`
-						: target === "stop"
-							? "Stopping…"
-							: `Switching to ${switchLabel(target)}…`,
+						: `Switching to ${switchLabel(target)}…`,
 				})
 				.catch(() => {});
 			if (!already) {

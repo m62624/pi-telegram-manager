@@ -36,7 +36,10 @@ interface SwitchOption {
 	label: string;
 }
 
-/** The buttons, in display order (2 columns). */
+/**
+ * Every mode's label, incl. `stop` (the panel caption and the pin render a
+ * stopped bot too, even though no button offers it).
+ */
 const SWITCH_OPTIONS: readonly SwitchOption[] = [
 	{ target: "observer", emoji: "👁️", label: "Observer" },
 	{ target: "takeover", emoji: "🎛️", label: "Takeover" },
@@ -46,11 +49,23 @@ const SWITCH_OPTIONS: readonly SwitchOption[] = [
 	{ target: "stop", emoji: "⏹️", label: "Stop" },
 ];
 
+/**
+ * The buttons, in display order (2 columns). `stop` is deliberately NOT among
+ * them: a Secretary connection is a long-lived thing, and a stray tap while
+ * picking a mode used to kill it. Stopping is its own explicit `/stop` command.
+ */
+const PANEL_OPTIONS: readonly SwitchOption[] = SWITCH_OPTIONS.filter(
+	(option) => option.target !== "stop",
+);
+
 /** The `callback_data` namespace so a press is unambiguously ours. */
 const CALLBACK_PREFIX = "switch:";
 
-/** The set of valid targets, for fast membership checks. */
-const TARGETS = new Set<string>(SWITCH_OPTIONS.map((option) => option.target));
+/**
+ * Targets a button press may select — the panel's, so `switch:stop` from an old
+ * panel still sitting in the chat parses as "not ours" and is ignored.
+ */
+const TARGETS = new Set<string>(PANEL_OPTIONS.map((option) => option.target));
 
 /** Human label for a mode, e.g. `👁️ Observer` / `🔀 Mixed · Observer` — for acks/status. */
 export function switchLabel(target: PanelMode): string {
@@ -64,7 +79,7 @@ export function switchLabel(target: PanelMode): string {
  * `switch:<target>` as its `callback_data`.
  */
 export function buildSwitchKeyboard(active: PanelMode): InlineKeyboardMarkup {
-	const buttons = SWITCH_OPTIONS.map((option) => ({
+	const buttons = PANEL_OPTIONS.map((option) => ({
 		text:
 			option.target === active
 				? `✅ ${option.emoji} ${option.label}`
@@ -79,12 +94,20 @@ export function buildSwitchKeyboard(active: PanelMode): InlineKeyboardMarkup {
 
 /** The panel's caption, naming the currently active mode above the buttons. */
 export function switchPanelText(active: PanelMode): string {
-	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}`;
+	return `Bot mode — choose below.\nCurrent: ${switchLabel(active)}\nTo stop the bot entirely: /stop`;
 }
 
 /** Whether a plain message is the `/switch` command (bare or `/switch@bot`). */
 export function isSwitchCommand(text: string): boolean {
 	return /^\/switch(@\w+)?$/i.test(text.trim());
+}
+
+/**
+ * Whether a plain message is the `/stop` command — the only way to stop the bot
+ * from Telegram, kept off the panel so it cannot be hit by accident.
+ */
+export function isStopCommand(text: string): boolean {
+	return /^\/stop(@\w+)?$/i.test(text.trim());
 }
 
 /**

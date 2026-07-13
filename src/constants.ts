@@ -67,9 +67,9 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "clear", description: "Clear the conversation history" },
 		{
 			command: "switch",
-			description:
-				"Switch bot mode (observer / takeover / mixed / personal / stop)",
+			description: "Switch bot mode (observer / takeover / mixed / personal)",
 		},
+		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },
 	];
 
