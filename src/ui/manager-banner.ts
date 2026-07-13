@@ -29,6 +29,6 @@ export function managerBannerLines(status: ManagerBannerStatus): string[] {
 	return [
 		"⚠️ Telegram MANAGER is running in this session.",
 		`mode: ${status.subMode} · ${active}${holding} · queued: ${status.queued}`,
-		"Stop it (/telegram-manager-stop) and start a new session to use Pi normally.",
+		"Stop it (/telegram-stop) and start a new session to use Pi normally.",
 	];
 }

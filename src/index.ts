@@ -150,6 +150,7 @@ import {
 } from "./telegram/switch-panel";
 import { TopicRouter, type TopicsApi } from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
+import { fitLine, fitLines, terminalWidth } from "./ui/fit";
 import { managerBannerLines } from "./ui/manager-banner";
 
 /**
@@ -419,9 +420,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// board would be noise.
 		if (!manager || !managerUi || mixedActive) return;
 		try {
+			// Clip to the terminal: an over-long widget line desyncs Pi's fixed-width
+			// layout, so a narrow window would break the frame.
 			managerUi.setWidget(
 				MANAGER_BANNER_KEY,
-				managerBannerLines(manager.status()),
+				fitLines(managerBannerLines(manager.status()), terminalWidth()),
 			);
 		} catch {
 			// A captured UI handle may go stale across a session reload; the banner
@@ -436,7 +439,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const where = polarity === "telegram" ? "in Telegram" : "coding";
 		activeCtx?.ui.setStatus(
 			STATUS_KEY,
-			`mixed · ${activeSubMode ?? "observer"} · ${where}`,
+			fitLine(
+				`mixed · ${activeSubMode ?? "observer"} · ${where}`,
+				terminalWidth(),
+			),
 		);
 	};
 
@@ -1128,7 +1134,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
-		ctx.ui.setStatus(STATUS_KEY, `Telegram: connected (chat ${allowedUserId})`);
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			fitLine(`Telegram: connected (chat ${allowedUserId})`, terminalWidth()),
+		);
 		// Route through the Markdown pipeline (sendToChat), not notify(): notify
 		// HTML-escapes its string, so any `*`/`_` markup would show up literally.
 		await bridge

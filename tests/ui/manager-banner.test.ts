@@ -12,7 +12,7 @@ describe("managerBannerLines", () => {
 		expect(lines[1]).toContain("takeover");
 		expect(lines[1]).toContain("active: 42");
 		expect(lines[1]).toContain("queued: 3");
-		expect(lines[2]).toContain("/telegram-manager-stop");
+		expect(lines[2]).toContain("/telegram-stop");
 	});
 
 	it("shows idle when no chat is active", () => {
