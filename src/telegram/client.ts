@@ -114,6 +114,8 @@ export class TelegramClient {
 		path?: string;
 		url?: string;
 		caption?: string;
+		/** Thread it under the message it belongs to (e.g. the tool card it completes). */
+		replyToMessageId?: number;
 	}): Promise<void> {
 		const document = input.path ? new InputFile(input.path) : input.url;
 		if (!document) {
@@ -123,6 +125,9 @@ export class TelegramClient {
 			...(input.caption ? { caption: input.caption } : {}),
 			...(input.threadId !== undefined
 				? { message_thread_id: input.threadId }
+				: {}),
+			...(input.replyToMessageId !== undefined
+				? { reply_parameters: { message_id: input.replyToMessageId } }
 				: {}),
 		});
 	}

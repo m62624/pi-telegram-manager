@@ -1129,10 +1129,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			showThinking();
 		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
-		await connect
+		const cardId = await connect
 			.completeToolActivity(event.toolCallId, event.result, event.isError)
-			.catch(() => {});
-		await attachToolOutputFile(event.result, event.toolName);
+			.catch(() => undefined);
+		await attachToolOutputFile(event.result, event.toolName, cardId);
 	});
 
 	/**
@@ -1145,6 +1145,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const attachToolOutputFile = async (
 		result: unknown,
 		toolName: string,
+		cardMessageId?: number,
 	): Promise<void> => {
 		if (!connect || toolOutputMaxBytes <= 0) return;
 		const details = (result as { details?: unknown } | undefined)?.details;
@@ -1159,7 +1160,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (plan.attach === false) return;
 		const caption = `📄 full output — ${toolName}`;
 		if (plan.attach === "file") {
-			await connect.attachToolOutput(plan.path, caption);
+			await connect.attachToolOutput(plan.path, caption, cardMessageId);
 			return;
 		}
 		// Nobody saved this but us: the tool returned everything and the CARD is what
@@ -1172,7 +1173,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		try {
 			await fs.writeText(scratch, plan.text);
-			await connect.attachToolOutput(scratch, caption);
+			await connect.attachToolOutput(scratch, caption, cardMessageId);
 		} catch {
 			// A scratch file we could not write or send is not worth a word to the user:
 			// the card still carries the truncated output.
@@ -1767,6 +1768,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			path?: string;
 			url?: string;
 			caption?: string;
+			replyToMessageId?: number;
 		}) => {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);

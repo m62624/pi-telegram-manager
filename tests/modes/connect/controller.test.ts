@@ -220,6 +220,101 @@ describe("ConnectController", () => {
 		expect(content).toContain("[attachment errors: huge.zip: too large]");
 	});
 
+	it("saves the file of a message the owner REPLIED to — that is how you point at one", async () => {
+		// Replying to a file (including one the BOT sent, like a tool's full-output log)
+		// is how a person says "this one". Without reading it, the model sees only the
+		// caption and cannot open the thing being pointed at.
+		const saveAttachments = vi.fn(async (message: { document?: unknown }) =>
+			message.document
+				? {
+						savedFiles: [
+							{ path: "/work/bash-1.log", kind: "document", size: "4.7 KB" },
+						],
+						errors: [],
+					}
+				: { savedFiles: [], errors: [] },
+		);
+		const { controller, sendFollowUp } = setup({
+			saveAttachments: saveAttachments as never,
+		});
+
+		const event = classifyUpdate({
+			update_id: 9,
+			message: {
+				message_id: 9,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "what failed here?",
+				reply_to_message: {
+					message_id: 8,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					caption: "📄 full output — bash",
+					document: { file_id: "F1", file_unique_id: "U1" },
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Both the message and the one it replies to are read.
+		expect(saveAttachments).toHaveBeenCalledTimes(2);
+		expect(sendFollowUp.mock.calls[0][0]).toContain("/work/bash-1.log");
+	});
+
+	it("does not treat a topic's root message as a reply worth reading", async () => {
+		const saveAttachments = vi.fn(async () => ({ savedFiles: [], errors: [] }));
+		const { controller } = setup({ saveAttachments });
+		const event = classifyUpdate({
+			update_id: 10,
+			message: {
+				message_id: 10,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "hi",
+				message_thread_id: 4,
+				is_topic_message: true,
+				reply_to_message: {
+					message_id: 4,
+					message_thread_id: 4,
+					is_topic_message: true,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Telegram hangs the topic root off every message in it: not a reply at all.
+		expect(saveAttachments).toHaveBeenCalledTimes(1);
+	});
+
+	it("hangs a tool's full-output file under the card it completes", async () => {
+		const uploadFile = vi.fn(async () => {});
+		const { controller, api } = setup({ uploadFile });
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "find ." },
+			"c1",
+		);
+		const cardId = api.sent[0] ? 1000 : 0;
+
+		const returned = await controller.completeToolActivity("c1", "out", false);
+		expect(returned).toBe(cardId);
+
+		await controller.attachToolOutput(
+			"/tmp/x.log",
+			"📄 full output — bash",
+			returned,
+		);
+		expect(uploadFile).toHaveBeenCalledWith({
+			path: "/tmp/x.log",
+			caption: "📄 full output — bash",
+			replyToMessageId: cardId,
+		});
+	});
+
 	it("sendFile routes to the uploadFile port", async () => {
 		const uploadFile = vi.fn(async () => {});
 		const { controller } = setup({ uploadFile });
@@ -448,9 +543,11 @@ describe("ConnectController", () => {
 		const { controller, api } = setup();
 		await controller.sendToolActivity({ toolName: "ls" }, "c");
 		api.failEdit = true;
+		// The edit is refused, but the card id still comes back: the full-output file
+		// is hung off that card either way.
 		await expect(
 			controller.completeToolActivity("c", "ok", false),
-		).resolves.toBeUndefined();
+		).resolves.toBe(api.sent[0] ? 1000 : 0);
 		expect(api.edits).toHaveLength(0);
 	});
 

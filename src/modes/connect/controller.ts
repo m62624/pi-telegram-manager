@@ -25,6 +25,7 @@ import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
+import { isTopicAnchor } from "../../telegram/message-context";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
 import {
 	buildRichHtmlMessage,
@@ -83,6 +84,8 @@ export interface ConnectControllerDeps {
 		path?: string;
 		url?: string;
 		caption?: string;
+		/** Thread the upload under an existing message (the tool card it completes). */
+		replyToMessageId?: number;
 	}) => Promise<void>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
@@ -430,14 +433,35 @@ export class ConnectController {
 		return this.deps.loadImages(message).catch(() => []);
 	}
 
-	/** Save non-image attachments to disk, swallowing a wholesale failure. */
+	/**
+	 * Save non-image attachments to disk, swallowing a wholesale failure.
+	 *
+	 * A REPLIED-TO message's files are saved too. Replying to a file is how a person
+	 * says "this one" — including to a file the BOT sent, like the full-output log of
+	 * a tool call. Without this the model only ever saw the reply's caption ("📄 full
+	 * output — bash") and had no way to open the thing being pointed at, which makes
+	 * the reply meaningless. Mode 1 only: the manager never reads files this way.
+	 */
 	private async saveAttachments(
 		message: Message,
 	): Promise<{ savedFiles: TurnSavedFile[]; errors: string[] }> {
 		if (!this.deps.saveAttachments) return { savedFiles: [], errors: [] };
-		return this.deps
+		const own = await this.deps
 			.saveAttachments(message)
 			.catch(() => ({ savedFiles: [], errors: [] }));
+		const repliedTo = message.reply_to_message;
+		// A topic's root message is not something the owner "replied to" — Telegram
+		// attaches it to every message in the topic.
+		if (!repliedTo || isTopicAnchor(message, repliedTo)) return own;
+		const quoted = await this.deps
+			.saveAttachments(repliedTo as Message)
+			.catch(() => ({ savedFiles: [], errors: [] }));
+		if (quoted.savedFiles.length === 0 && quoted.errors.length === 0)
+			return own;
+		return {
+			savedFiles: [...own.savedFiles, ...quoted.savedFiles],
+			errors: [...own.errors, ...quoted.errors],
+		};
 	}
 
 	/**
@@ -650,9 +674,9 @@ export class ConnectController {
 		callId: string,
 		result: unknown,
 		isError: boolean,
-	): Promise<void> {
+	): Promise<number | undefined> {
 		const card = this.toolCards.get(callId);
-		if (!card) return;
+		if (!card) return undefined;
 		this.toolCards.delete(callId);
 		await this.deps.outbound
 			.editRich(
@@ -665,6 +689,8 @@ export class ConnectController {
 				}),
 			)
 			.catch(() => {});
+		// The caller may hang the full-output file off this card.
+		return card.messageId;
 	}
 
 	/**
@@ -674,9 +700,15 @@ export class ConnectController {
 	 * only sends it. Best-effort: a failed upload leaves the card, which still names
 	 * the path.
 	 */
-	async attachToolOutput(path: string, caption: string): Promise<void> {
+	async attachToolOutput(
+		path: string,
+		caption: string,
+		replyToMessageId?: number,
+	): Promise<void> {
 		if (!this.deps.uploadFile) return;
-		await this.deps.uploadFile({ path, caption }).catch(() => {});
+		await this.deps
+			.uploadFile({ path, caption, replyToMessageId })
+			.catch(() => {});
 	}
 
 	/**
