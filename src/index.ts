@@ -193,6 +193,10 @@ interface ControlApi {
 		message_id: number;
 		disable_notification?: boolean;
 	}): Promise<unknown>;
+	/** Used to see whether the mode pin is still the chat's pinned message. */
+	getChat(payload: {
+		chat_id: number;
+	}): Promise<{ pinned_message?: { message_id: number } }>;
 }
 
 /**
@@ -1991,42 +1995,91 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
 	};
 
+	/**
+	 * Bring the mode pin up to date: the message says the right mode, and it is
+	 * actually PINNED.
+	 *
+	 * The owner's DM is theirs, so the pin is not ours to assume: they may unpin it,
+	 * or delete the message outright, and the bot has to cope with both without
+	 * littering the chat with a second pin. Hence three separate checks rather than
+	 * a single edit:
+	 *
+	 *  - the TEXT is only rewritten when the mode actually changed (an edit with the
+	 *    same text fails with "message is not modified", which we must not mistake
+	 *    for a dead message);
+	 *  - a dead message ("message to edit not found") is re-created on the spot, not
+	 *    at some later switch, so the pin comes back right away;
+	 *  - the PIN itself is re-asserted from what the chat reports, so unpinning it by
+	 *    hand simply gets it pinned again on the next mode start — and an already-
+	 *    pinned message is left alone, which is what keeps the chat from collecting a
+	 *    "pinned a message" service line every time.
+	 */
 	const updateModePin = async (target: PanelMode): Promise<void> => {
 		if (ownerUserId === null) return;
 		await loadModePin(ownerUserId);
-		if (modePinTarget === target) return;
 		const api = controlApi();
 		if (!api) return;
+		const owner = ownerUserId;
 		const text = modePinText(target);
+
+		const create = async (): Promise<void> => {
+			const sent = await api.sendMessage({
+				chat_id: owner,
+				message_thread_id: personalThread(),
+				text,
+			});
+			modePinMessageId = sent.message_id;
+			await api
+				.pinChatMessage({
+					chat_id: owner,
+					message_id: sent.message_id,
+					disable_notification: true,
+				})
+				.catch(() => {});
+			await saveModePin(owner, sent.message_id);
+		};
+
 		try {
-			if (modePinMessageId !== null) {
-				// Always EDIT the pin that is already there — a new mode is not a new
-				// message. A pin per switch is what buried the chat under numbered pins.
-				await api.editMessageText({
-					chat_id: ownerUserId,
-					message_id: modePinMessageId,
-					text,
-				});
+			if (modePinMessageId !== null && modePinTarget !== target) {
+				// Edit the pin that is already there — a new mode is not a new message. A
+				// pin per switch is what once buried the chat under numbered pins.
+				try {
+					await api.editMessageText({
+						chat_id: owner,
+						message_id: modePinMessageId,
+						text,
+					});
+				} catch (error) {
+					// Same text already: nothing to do. Anything else means the message is
+					// gone, and a fresh one takes its place.
+					if (!/message is not modified/i.test(String(error))) {
+						modePinMessageId = null;
+						await fs.removeFile(paths.modePinPath).catch(() => {});
+					}
+				}
+			}
+			if (modePinMessageId === null) {
+				await create();
 			} else {
-				const sent = await api.sendMessage({
-					chat_id: ownerUserId,
-					message_thread_id: personalThread(),
-					text,
-				});
-				modePinMessageId = sent.message_id;
-				await api
-					.pinChatMessage({
-						chat_id: ownerUserId,
-						message_id: sent.message_id,
-						disable_notification: true,
-					})
-					.catch(() => {});
-				await saveModePin(ownerUserId, sent.message_id);
+				// Still there — but is it still PINNED? The owner may have unpinned it.
+				const pinned = await api
+					.getChat({ chat_id: owner })
+					.then((chat) => chat.pinned_message?.message_id)
+					.catch(() => modePinMessageId);
+				if (pinned !== modePinMessageId) {
+					await api
+						.pinChatMessage({
+							chat_id: owner,
+							message_id: modePinMessageId,
+							disable_notification: true,
+						})
+						.catch(() => {});
+				}
 			}
 			modePinTarget = target;
 		} catch {
-			// The pinned message was deleted (or is unreachable): forget it so the next
-			// update re-creates and re-pins from scratch, and drop the stale id on disk.
+			// Unreachable chat: forget the pin so the next update rebuilds it from
+			// scratch rather than editing an id that may no longer mean anything.
 			modePinMessageId = null;
 			modePinTarget = null;
 			await fs.removeFile(paths.modePinPath).catch(() => {});
