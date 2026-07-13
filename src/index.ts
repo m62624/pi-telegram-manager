@@ -63,7 +63,11 @@ import {
 	type PromptContent,
 	parseSlashCommand,
 } from "./modes/connect/messages";
-import { selectCatchUpChats } from "./modes/manager/catchup";
+import {
+	lastInterlocutorName,
+	lastInterlocutorUserId,
+	selectCatchUpChats,
+} from "./modes/manager/catchup";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import {
 	ManagerController,
@@ -2426,28 +2430,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 }
 
-/** The display name of the most recent interlocutor message, if any. */
-function lastInterlocutorName(
-	records: readonly ChatMessageRecord[],
-): string | undefined {
-	for (let i = records.length - 1; i >= 0; i -= 1) {
-		if (records[i].author === "interlocutor") return records[i].senderName;
-	}
-	return undefined;
-}
-
-/** The userId (stored `senderId`) of the most recent interlocutor message, if any. */
-function lastInterlocutorUserId(
-	records: readonly ChatMessageRecord[],
-): string | undefined {
-	for (let i = records.length - 1; i >= 0; i -= 1) {
-		if (records[i].author === "interlocutor" && records[i].senderId) {
-			return records[i].senderId;
-		}
-	}
-	return undefined;
-}
-
 /**
  * On manager activation, scan stored chats and queue the ones the bot should
  * catch up on (see {@link selectCatchUpChats}), replying for the owner. The
@@ -2486,7 +2468,7 @@ async function catchUpOnActivation(
 		const contactName = lastInterlocutorName(records) ?? chatId;
 		// Carry the interlocutor's userId (from the stored transcript) so facts are
 		// stored/shown for the right contact even before a fresh live message arrives.
-		const userId = lastInterlocutorUserId(records);
+		const userId = lastInterlocutorUserId(records, connection.userId);
 		manager.markReady(chatId, {
 			connectionId: connection.id,
 			contactName,
@@ -2498,7 +2480,7 @@ async function catchUpOnActivation(
 	// conversation that ended before this process started was never consolidated at
 	// all; queueing them here is what makes memory survive a restart.
 	for (const chat of chats) {
-		const userId = lastInterlocutorUserId(chat.records);
+		const userId = lastInterlocutorUserId(chat.records, connection.userId);
 		if (!userId) continue; // no contact to remember facts about
 		const activityAt = chat.records[chat.records.length - 1]?.timestamp;
 		if (activityAt === undefined) continue;
