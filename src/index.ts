@@ -22,6 +22,7 @@ import {
 	COMMANDS,
 	COMPLIANCE_LINKS,
 	COMPLIANCE_NOTICE,
+	SETUP_GUIDE_URL,
 	TELEGRAM_BOT_COMMANDS,
 } from "./constants";
 import { AbortRegistry } from "./core/abort";
@@ -191,6 +192,26 @@ interface ControlApi {
 		disable_notification?: boolean;
 	}): Promise<unknown>;
 }
+
+/**
+ * Sent to the owner's DM when the topics could not be set up. Threaded Mode is a
+ * setup step, not a nicety: without it the manager feed, the notices and your own
+ * conversation share one stream, and the DM becomes unusable as either.
+ */
+const TOPICS_SETUP_NOTICE = [
+	"⚠️ Threaded Mode is OFF for this bot, so this DM stays one flat stream:",
+	"your conversation, the manager feed and every notice mixed together.",
+	"",
+	"Turn it on: @BotFather → open its Mini App (the menu button next to the",
+	"message field) → pick this bot → Thread Settings → Threaded Mode.",
+	"It is NOT in the classic /mybots → Bot Settings keyboard.",
+	"",
+	`Setup steps: ${SETUP_GUIDE_URL}`,
+	"",
+	"Then restart the mode and the bot creates the `personal` and `manager`",
+	"topics itself. Prefer one flat DM? Set topics.enabled: false and this",
+	"notice stops.",
+].join("\n");
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -897,7 +918,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			path: paths.topicsPath,
 			ownerChatId,
 			options: settings.topics,
-			onFallback: (reason) => ctx.ui.notify(reason, "warning"),
+			onFallback: (reason) => {
+				ctx.ui.notify(reason, "warning");
+				// The TUI notice is invisible to someone driving the bot from a phone —
+				// which is the whole point of this extension. Say it where they ARE: in
+				// the DM that is about to become one undivided stream.
+				if (!settings.topics.enabled) return;
+				void (api as ControlApi)
+					.sendMessage({
+						chat_id: ownerChatId,
+						text: TOPICS_SETUP_NOTICE,
+						link_preview_options: { is_disabled: true },
+					})
+					.catch(() => {});
+			},
 		});
 		await topics.ensure();
 	};

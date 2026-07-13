@@ -12,6 +12,10 @@ export const EXTENSION_NAME = "pi-telegram-manager";
  * follow. Surfaced on `/start` and in `/help` so using the bot is never separated
  * from the responsibility that comes with it.
  */
+/** The README's setup section — where a misconfigured bot points the owner. */
+export const SETUP_GUIDE_URL =
+	"https://github.com/m62624/pi-telegram-manager#getting-started";
+
 export const COMPLIANCE_LINKS = {
 	botTerms: "https://telegram.org/tos/bot-developers",
 	privacy: "https://telegram.org/privacy",

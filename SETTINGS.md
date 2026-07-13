@@ -49,7 +49,7 @@ A silent timer probes the bot connection while a mode is active; after too many 
 
 Bot API 9.3 lets a bot create forum topics **inside a private chat**, so your DM with the bot is split by *whose* conversation it is: **personal** — you and the model (your prompts, its replies, and the tool calls it made for you, so you can watch it work) — and **manager** — what the bot did for other people (the per-turn feed and runtime notices).
 
-It needs **Threaded Mode** on the bot, toggled in the **@BotFather Mini App** (tap BotFather's menu button → your bot → Threaded Mode). It is *not* in the classic `/mybots` → Bot Settings keyboard. Without it (or on any error) everything degrades to the single plain DM exactly as before — nothing to configure, nothing breaks.
+It needs **Threaded Mode** on the bot, toggled in the **@BotFather Mini App** (tap BotFather's menu button → your bot → Threaded Mode). It is *not* in the classic `/mybots` → Bot Settings keyboard. This is a setup step, not a nicety — with it off, the bot warns you in the DM on every mode start (set `topics.enabled: false` if you genuinely want one flat stream). Without it (or on any error) everything degrades to the single plain DM exactly as before — nothing to configure, nothing breaks.
 
 The two thread ids are remembered on disk (`topics.json`); a topic you delete while the bot is off is simply recreated on the next start, and a pair created under the old `chat`/`log` names is adopted and renamed in place.
 
