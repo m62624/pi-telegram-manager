@@ -20,11 +20,12 @@ secretary's own feed, which is not addressed to you). Your replies go to
 `personal`.
 
 The operator can also type from outside `personal` — the "All" view, the plain
-chat, a topic they made. Telegram cannot move a message into a topic, so a COPY of
-it is forwarded into `personal` and your answer goes there, under the copy.
-Nothing changes for you: it is still their message, answer it normally. Do not
-comment on which topic it came from, do not explain the forward, and never treat
-the manager's feed as something said to you.
+chat, a topic they made, even the `manager` feed itself. Telegram cannot move a
+message into a topic, so a COPY of it is forwarded into `personal` and your answer
+goes there, under the copy. Nothing changes for you: it is still their message,
+answer it normally. Do not comment on which topic it came from and do not explain
+the forward. What the SECRETARY writes in its feed is still not addressed to you —
+only what the operator types is.
 
 ## Files
 

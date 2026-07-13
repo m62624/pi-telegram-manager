@@ -46,7 +46,12 @@ export function deadName(personalName: string): string {
  * Where an owner message was written — the fact everything about it depends on.
  *
  *  - `personal` — the conversation with the model: answered, and left alone;
- *  - `manager`  — the bot reporting to itself: never a prompt, ignored;
+ *  - `ours`     — a topic this bot made and does not talk to you in: the `manager` feed,
+ *    the `archive`, a topic Telegram refused to delete. The bot's own writing there is
+ *    output, but a message YOU typed there is still a message to the bot, and it does not
+ *    belong in a service feed — so it is MOVED into `personal`, exactly like the "All"
+ *    view. (Only owner messages ever reach this function; a private chat delivers no
+ *    updates for what the bot itself posted, so its own cards are never touched.)
  *  - `outside`  — the "All" view, where Telegram itself labels the input box "message
  *    outside a topic". Nothing lives there, so the message is MOVED into `personal`
  *    (copied, then deleted) and the conversation stays in one place;
@@ -61,18 +66,19 @@ export function deadName(personalName: string): string {
  * message without saying which topic, it is treated as `personal` rather than moved out
  * of a topic we cannot name.
  */
-export type OwnerMessagePlace = "personal" | "manager" | "outside" | "topic";
+export type OwnerMessagePlace = "personal" | "ours" | "outside" | "topic";
 
 export function placeOfOwnerMessage(input: {
 	thread: number | undefined;
 	isTopicMessage?: boolean;
 	personal: number | undefined;
-	manager: number | undefined;
+	/** Every thread this bot created (see {@link TopicRouter.ownThreads}). */
+	ours: readonly number[];
 }): OwnerMessagePlace {
-	const { thread, personal, manager } = input;
+	const { thread, personal, ours } = input;
 	if (thread !== undefined) {
-		if (thread === manager) return "manager";
-		return thread === personal ? "personal" : "topic";
+		if (thread === personal) return "personal";
+		return ours.includes(thread) ? "ours" : "topic";
 	}
 	return input.isTopicMessage === true ? "personal" : "outside";
 }
@@ -207,6 +213,23 @@ export class TopicRouter {
 	/** Whether topics are live (both threads resolved). */
 	get active(): boolean {
 		return this.state !== null;
+	}
+
+	/**
+	 * Every thread this bot made: the two topics, the archive it renamed, and the ones
+	 * Telegram refused to delete. Together with `personal` they say which topics are the
+	 * bot's own furniture — and a message the owner typed in any of them is a message to
+	 * the bot that ended up in the wrong room, not a note in a room of their own.
+	 */
+	get ownThreads(): readonly number[] {
+		const state = this.state;
+		if (!state) return [];
+		return [
+			state.personal,
+			state.manager,
+			...(state.archive !== undefined ? [state.archive] : []),
+			...(state.stale ?? []),
+		];
 	}
 
 	/**

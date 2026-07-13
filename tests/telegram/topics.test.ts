@@ -560,14 +560,74 @@ describe("TopicRouter: a topic Telegram will not delete", () => {
 	});
 });
 
+describe("TopicRouter.ownThreads", () => {
+	it("names every topic the bot made — including the archive and the undeletable one", async () => {
+		const fs = new FakeFs();
+		const first = router(fakeApi(), fs).router;
+		await first.ensure(); // personal 100, manager 101
+		await first.markUsed(); // a conversation happened in 100
+
+		// Next session: 100 becomes the archive, 200 is the new personal. Telegram then
+		// refuses to delete the archive, so it lingers as a `(closed)` topic.
+		const refuses = fakeApi(
+			{
+				deleteForumTopic: vi.fn(async () => {
+					throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+				}),
+			},
+			200,
+		);
+		const second = router(refuses, fs).router;
+		await second.ensure();
+		await second.startSession();
+		await second.markUsed();
+
+		const stubborn = fakeApi(
+			{
+				deleteForumTopic: vi.fn(
+					async (args: { chat_id: number; message_thread_id: number }) => {
+						if (args.message_thread_id === 100) {
+							throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+						}
+						return {};
+					},
+				),
+			},
+			300,
+		);
+		const third = router(stubborn, fs).router;
+		await third.ensure();
+		await third.startSession();
+
+		// personal 300, archive 200, and 100 still hanging around: all of them ours, so a
+		// message the owner types in any of them is moved back into `personal`.
+		expect([...third.ownThreads].sort((a, b) => a - b)).toEqual([
+			100, 101, 200, 300,
+		]);
+	});
+
+	it("claims nothing while the topics are not resolved", () => {
+		const r = router(fakeApi()).router;
+		expect(r.ownThreads).toEqual([]);
+	});
+});
+
 // Where an owner message was written decides everything that happens to it — including
 // whether the bot may delete it. That question gets its own tests.
 describe("placeOfOwnerMessage", () => {
-	const topics = { personal: 5, manager: 6 };
+	// personal 5, manager 6, archive 7, and 8 — a topic Telegram would not delete.
+	const topics = { personal: 5, ours: [5, 6, 7, 8] };
 
 	it("reads the topic Telegram names", () => {
 		expect(placeOfOwnerMessage({ thread: 5, ...topics })).toBe("personal");
-		expect(placeOfOwnerMessage({ thread: 6, ...topics })).toBe("manager");
+	});
+
+	it("moves the owner out of the topics the BOT made", () => {
+		// The manager feed, the archive, a topic that outlived its delete: the bot's own
+		// furniture. A line the owner typed there belongs in `personal`, not in a report.
+		expect(placeOfOwnerMessage({ thread: 6, ...topics })).toBe("ours");
+		expect(placeOfOwnerMessage({ thread: 7, ...topics })).toBe("ours");
+		expect(placeOfOwnerMessage({ thread: 8, ...topics })).toBe("ours");
 	});
 
 	it("calls a topic we did not make the owner's own", () => {
@@ -575,7 +635,7 @@ describe("placeOfOwnerMessage", () => {
 		expect(placeOfOwnerMessage({ thread: 9, ...topics })).toBe("topic");
 	});
 
-	it('reads no thread as the "All" view — the one place a message is moved OUT of', () => {
+	it('reads no thread as the "All" view — a place a message is moved OUT of', () => {
 		expect(placeOfOwnerMessage({ thread: undefined, ...topics })).toBe(
 			"outside",
 		);
@@ -595,18 +655,10 @@ describe("placeOfOwnerMessage", () => {
 
 	it("treats everything as the conversation while topics are not resolved yet", () => {
 		expect(
-			placeOfOwnerMessage({
-				thread: undefined,
-				personal: undefined,
-				manager: undefined,
-			}),
+			placeOfOwnerMessage({ thread: undefined, personal: undefined, ours: [] }),
 		).toBe("outside");
 		expect(
-			placeOfOwnerMessage({
-				thread: 9,
-				personal: undefined,
-				manager: undefined,
-			}),
+			placeOfOwnerMessage({ thread: 9, personal: undefined, ours: [] }),
 		).toBe("topic");
 	});
 });
