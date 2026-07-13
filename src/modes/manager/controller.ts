@@ -95,7 +95,9 @@ export const MANAGER_ACTION_TRIGGER =
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
 	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
 	"observing. You may also call manager_remember first to save a durable fact. " +
-	"Never write plain text and never write a tool name as text.]";
+	"Never write plain text and never write a tool name as text. No draft is held " +
+	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
+	"fails.]";
 
 /**
  * Replaces the action trigger once the turn's terminal decision is already
@@ -115,12 +117,19 @@ export const MANAGER_TURN_DONE =
  */
 export function reviseDirective(draft: string): string {
 	return (
-		`[You drafted this reply: «${draft}». Since then the interlocutor sent new ` +
-		"message(s), shown above. End this turn by calling manager_resolve_draft: " +
-		"'send' if the draft still fits, 'refine' with a rewritten text that folds in " +
-		"the new info, or 'drop' ONLY if they explicitly retracted, answered " +
-		"themselves, or it was already answered. A still-open question must be sent or " +
-		"refined — never dropped just because a trailing message is small talk.]"
+		`[HELD-DRAFT TURN. You drafted this reply: «${draft}». Since then the ` +
+		"interlocutor sent new message(s), shown above, so it was NOT sent yet.\n" +
+		"manager_reply and manager_silent are DISABLED this turn — calling either " +
+		"fails and wastes the turn. The ONE tool that ends this turn is " +
+		"manager_resolve_draft (it IS available, whatever you assume about your tool " +
+		"list):\n" +
+		'  manager_resolve_draft {"action": "send"} — deliver the draft unchanged;\n' +
+		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		"deliver a rewrite that starts from the draft and folds in the new info;\n" +
+		'  manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
+		"question, answered it themselves, or it was already answered.\n" +
+		"A still-open question must be sent or refined — never dropped just because a " +
+		"trailing message is small talk.]"
 	);
 }
 
@@ -134,12 +143,20 @@ export function reviseDirective(draft: string): string {
  */
 export function proseResolveDirective(draft: string): string {
 	return (
-		"[Your previous turn was plain text, which is NEVER delivered to Telegram: " +
-		`«${draft}». That was almost certainly your reply, written the wrong way. End ` +
-		"this turn by calling manager_resolve_draft: 'send' to deliver it as-is, " +
-		"'refine' with a corrected text, or 'drop' ONLY if it was not meant as a message " +
-		"to the interlocutor (e.g. it was just your own reasoning). A real question " +
-		"deserves an answer — do not drop it as chatter.]"
+		"[HELD-DRAFT TURN. Your previous turn was plain text, which is NEVER delivered " +
+		`to Telegram: «${draft}». That was almost certainly your reply, written the ` +
+		"wrong way — the interlocutor has NOT seen it. It is not lost: it is held as a " +
+		"draft, and this turn decides what happens to it.\n" +
+		"manager_reply and manager_silent are DISABLED this turn — calling either fails " +
+		"and wastes the turn. The ONE tool that ends this turn is manager_resolve_draft " +
+		"(it IS available, whatever you assume about your tool list):\n" +
+		'  manager_resolve_draft {"action": "send"} — deliver that text as-is (usually ' +
+		"the right call);\n" +
+		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		"deliver a corrected version of it;\n" +
+		'  manager_resolve_draft {"action": "drop"} — ONLY if it was not meant as a ' +
+		"message to the interlocutor (e.g. it was just your own reasoning).\n" +
+		"A real question deserves its answer — do not drop it as chatter.]"
 	);
 }
 

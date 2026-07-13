@@ -4,8 +4,6 @@ import {
 	buildManagerFeed,
 	buildManagerNotice,
 	isEmptyFeedTurn,
-	telegramChatDeepLink,
-	telegramMessageDeepLink,
 } from "../../../src/modes/manager/debug-feed";
 
 const NOW = "[Now: 2026-07-11 20:00 +05]";
@@ -124,71 +122,34 @@ describe("buildManagerFeed", () => {
 	});
 });
 
-describe("telegramChatDeepLink", () => {
-	it("prefers the t.me username link — the only form every client honours", () => {
-		expect(telegramChatDeepLink({ userId: "5", username: "nka1i" })).toBe(
-			"https://t.me/nka1i",
-		);
-	});
-
-	it("falls back to tg:// without a username", () => {
-		expect(telegramChatDeepLink({ userId: "5" })).toBe(
-			"tg://openmessage?user_id=5",
-		);
-	});
-
-	it("links a single message separately, so a card can offer both taps", () => {
-		expect(telegramMessageDeepLink({ userId: "5", messageId: 7 })).toBe(
-			"tg://openmessage?user_id=5&message_id=7",
-		);
-		// No message, no user id → no link (the raw id is shown instead).
-		expect(telegramMessageDeepLink({ userId: "5" })).toBeUndefined();
-		expect(telegramMessageDeepLink({ messageId: 7 })).toBeUndefined();
-	});
-
-	it("returns undefined without a username or a numeric user id", () => {
-		expect(telegramChatDeepLink({})).toBeUndefined();
-		expect(telegramChatDeepLink({ userId: "" })).toBeUndefined();
-		expect(telegramChatDeepLink({ userId: "abc" })).toBeUndefined();
-	});
-
-	it("makes the chat id a tappable deep link in the feed when the user id is known", () => {
-		const html = feed({
-			chatId: "42",
-			contactName: "Alice",
-			outcome: "reply",
-			text: "hi",
-			userId: "5",
-			replyToMessageId: 7,
-		});
-		// The ampersand is HTML-escaped inside the attribute (decodes back to & in
-		// the client), which is correct HTML.
-		expect(html).toContain(
-			'href="tg://openmessage?user_id=5&amp;message_id=7"',
-		);
-	});
-
-	it("links the chat id to t.me when the contact has a username", () => {
-		const html = feed({
-			chatId: "42",
-			contactName: "Alice",
-			outcome: "reply",
-			text: "hi",
-			userId: "5",
-			username: "alice",
-			replyToMessageId: 7,
-		});
-		expect(html).toContain('href="https://t.me/alice"');
-	});
-
-	it("keeps the raw chat id (no link) when the user id is unknown", () => {
+describe("Contact block", () => {
+	it("shows plain identifiers — no deep links (Telegram has none that work here)", () => {
 		const html = feed({
 			chatId: "42",
 			contactName: "Alice",
 			outcome: "silent",
+			text: "banter",
+			userId: "5",
+			username: "alice",
+			lastMessageId: 7,
 		});
-		expect(html).toContain("#42");
-		expect(html).not.toContain("tg://openmessage");
+		expect(html).toContain("Chat: <code>#42</code>");
+		expect(html).toContain("Message: <code>#7</code>");
+		expect(html).toContain("User ID: <code>5</code>");
+		expect(html).not.toContain("href=");
+		expect(html).not.toContain("tg://");
+	});
+
+	it("falls back to the answered message id when a reply was delivered", () => {
+		const html = feed({
+			chatId: "42",
+			contactName: "Alice",
+			outcome: "reply",
+			text: "hi",
+			replyToMessageId: 9,
+			lastMessageId: 7,
+		});
+		expect(html).toContain("Message: <code>#9</code>");
 	});
 });
 

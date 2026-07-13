@@ -51,38 +51,6 @@ export interface ManagerFeedEntry {
 	tools: readonly ManagerToolCall[];
 }
 
-/**
- * A deep link that OPENS the conversation (at wherever you last left it).
- *
- * `https://t.me/<username>` is preferred: it is the only form every client honours.
- * Without a public username we fall back to `tg://openmessage`, ignored by some
- * clients — hence the raw id stays visible next to the link.
- */
-export function telegramChatDeepLink(contact: {
-	userId?: string;
-	username?: string;
-}): string | undefined {
-	if (contact.username) return `https://t.me/${contact.username}`;
-	if (!contact.userId || !/^\d+$/.test(contact.userId)) return undefined;
-	return `tg://openmessage?user_id=${contact.userId}`;
-}
-
-/**
- * A deep link that JUMPS to one message in that conversation — the turn's own
- * message, not "wherever the chat was left". A private chat has no public
- * `t.me/…/<id>` form, so this is `tg://openmessage` with a `message_id`; some
- * clients ignore it, which is why it sits NEXT TO the plain chat link rather than
- * replacing it (the card offers both, and you pick whichever your client honours).
- */
-export function telegramMessageDeepLink(contact: {
-	userId?: string;
-	messageId?: number;
-}): string | undefined {
-	if (contact.messageId === undefined) return undefined;
-	if (!contact.userId || !/^\d+$/.test(contact.userId)) return undefined;
-	return `tg://openmessage?user_id=${contact.userId}&message_id=${contact.messageId}`;
-}
-
 /** Trim overlong text, marking how much was cut so nothing looks silently lost. */
 function truncate(text: string, max: number): string {
 	const trimmed = text.trim();
@@ -161,39 +129,18 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	}
 
 	// Everything else about the contact, folded: the ids and flags you rarely need.
-	// Two separate taps, because they do different things (and different clients
-	// honour different schemes): the chat id OPENS the conversation, while "jump to
-	// message" lands on this turn's own message instead of wherever you last left the
-	// chat. The raw ids stay visible as the fallback when neither link is available.
-	const chatIdCode = inlineCode(`#${log.chatId}`);
-	const chatLink = telegramChatDeepLink({
-		userId: log.userId,
-		username: log.username,
-	});
+	// Plain identifiers, deliberately: Telegram has no link that opens a PRIVATE chat
+	// at a given message (`t.me/<name>/<id>` is channels/groups only, and tg:// with a
+	// message_id is ignored by most clients), so a "jump" link promised what it could
+	// not deliver and only landed you wherever the chat was last left.
+	const detailRows: RichHtml[] = [
+		paragraph(RichHtml.join(["Chat: ", inlineCode(`#${log.chatId}`)])),
+	];
 	// The message this turn is about: the one we answered, else their latest.
 	const turnMessageId = log.replyToMessageId ?? log.lastMessageId;
-	const messageLink = telegramMessageDeepLink({
-		userId: log.userId,
-		messageId: turnMessageId,
-	});
-	const detailRows: RichHtml[] = [
-		paragraph(
-			RichHtml.join([
-				"Chat: ",
-				chatLink ? link(chatIdCode, chatLink) : chatIdCode,
-			]),
-		),
-	];
 	if (turnMessageId !== undefined) {
-		const messageCode = inlineCode(`#${turnMessageId}`);
 		detailRows.push(
-			paragraph(
-				RichHtml.join([
-					"Message: ",
-					messageLink ? link(messageCode, messageLink) : messageCode,
-					messageLink ? " · jump to it" : "",
-				]),
-			),
+			paragraph(RichHtml.join(["Message: ", inlineCode(`#${turnMessageId}`)])),
 		);
 	}
 	if (log.userId) {
