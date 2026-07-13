@@ -358,6 +358,13 @@ const DRAFT_THROTTLE_MS = 700;
  * in place, so this is invisible — the number just ticks.
  */
 const THINKING_REFRESH_MS = 3_000;
+/**
+ * How long an UNCHANGED trace may sit before it is re-sent anyway. It only has to
+ * beat the draft's ~30s expiry; until then, repeating identical content is traffic
+ * that buys nothing (Telegram's guidance is one message per second per chat, so
+ * neither rate is anywhere near a limit — this is just not being wasteful).
+ */
+const THINKING_KEEPALIVE_MS = 15_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -514,6 +521,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Whether a trace is currently in the draft (so a finished turn knows to erase it).
 	let thinkingUp = false;
 	let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+	// The last trace actually sent, so an unchanged one is not re-sent every tick.
+	let lastThinkingHtml = "";
+	let lastThinkingAt = 0;
 	let draftText = "";
 	let lastDraftAt = 0;
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
@@ -729,6 +739,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const stopThinking = (): void => {
 		thinkingUp = false;
 		thinkingLog.clear();
+		lastThinkingHtml = "";
+		lastThinkingAt = 0;
 		if (thinkingTimer) {
 			clearInterval(thinkingTimer);
 			thinkingTimer = null;
@@ -741,15 +753,30 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * elapsed seconds — both want a refresh well under half a minute. Re-sending the
 	 * SAME draft id animates in place, so refreshing is invisible: no flicker, and the
 	 * timer simply ticks.
+	 *
+	 * Identical content is NOT re-sent, except to beat the expiry: while the model is
+	 * merely sampling, the trace says the same thing every tick, and repeating it at
+	 * the tick rate is traffic that buys nothing. (Telegram's own limit is one message
+	 * per second per chat — this stays far under it either way.)
 	 */
+	const pushThinking = (): void => {
+		const now = Date.now();
+		const html = thinkingLog.html(now);
+		const unchanged = html.html === lastThinkingHtml;
+		if (unchanged && now - lastThinkingAt < THINKING_KEEPALIVE_MS) return;
+		lastThinkingHtml = html.html;
+		lastThinkingAt = now;
+		void connect?.streamThinking(html);
+	};
+
 	const showThinking = (): void => {
 		if (!thinkingAllowed()) return;
 		thinkingUp = true;
-		void connect?.streamThinking(thinkingLog.html(Date.now()));
+		pushThinking();
 		if (thinkingTimer) return;
 		thinkingTimer = setInterval(() => {
 			if (!thinkingUp) return;
-			void connect?.streamThinking(thinkingLog.html(Date.now()));
+			pushThinking();
 		}, THINKING_REFRESH_MS);
 	};
 
