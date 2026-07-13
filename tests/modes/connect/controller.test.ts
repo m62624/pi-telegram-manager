@@ -333,6 +333,50 @@ describe("ConnectController", () => {
 		expect(api.drafts).toHaveLength(2);
 	});
 
+	it("animates the thinking placeholder into the streaming text on ONE draft", async () => {
+		const { controller, api } = setup();
+		// The placeholder opens the draft itself — no beginDraft() beforehand.
+		await controller.streamThinking("bash — npm test");
+		expect(api.drafts).toHaveLength(1);
+		expect(api.drafts[0].rich_message.html).toBe(
+			"<tg-thinking>bash — npm test</tg-thinking>",
+		);
+
+		// The reply starts: beginDraft must REUSE the open id, or the text would
+		// arrive as a second draft and read as a flicker.
+		controller.beginDraft();
+		await controller.streamDraft("done");
+		expect(api.drafts).toHaveLength(2);
+		expect(api.drafts[1].draft_id).toBe(api.drafts[0].draft_id);
+		expect(api.drafts[1].rich_message.markdown).toBe("done");
+	});
+
+	it("erases the placeholder on an aborted turn instead of letting it expire", async () => {
+		const { controller, api } = setup();
+		await controller.streamThinking("Thinking…");
+		const draftId = api.drafts[0].draft_id;
+
+		await controller.clearDraft();
+		expect(api.drafts).toHaveLength(2);
+		expect(api.drafts[1].draft_id).toBe(draftId);
+		expect(api.drafts[1].rich_message.html).toBe("");
+
+		// The draft is closed: a late refresh cannot resurrect it.
+		await controller.streamDraft("late");
+		expect(api.drafts).toHaveLength(2);
+	});
+
+	it("escapes text in the placeholder and ignores an empty label", async () => {
+		const { controller, api } = setup();
+		await controller.streamThinking("   ");
+		expect(api.drafts).toHaveLength(0);
+
+		await controller.streamThinking('grep — <b>&"x"');
+		expect(api.drafts[0].rich_message.html).toBe(
+			'<tg-thinking>grep — &lt;b&gt;&amp;"x"</tg-thinking>',
+		);
+	});
+
 	it("uses a fresh draft id for the next message", async () => {
 		const { controller, api } = setup();
 		controller.beginDraft();

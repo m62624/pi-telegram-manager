@@ -3,6 +3,7 @@ import {
 	defaultDescribeArgs,
 	formatToolArgs,
 	toolActivityHtml,
+	toolActivityLabel,
 	toolActivityMessage,
 } from "../../src/telegram/tool-activity";
 
@@ -134,5 +135,35 @@ describe("toolActivityMessage", () => {
 		});
 		expect(message.html).toBeDefined();
 		expect(message.html).toContain("<code>ls</code>");
+	});
+});
+
+describe("toolActivityLabel", () => {
+	it("names the tool and its primary argument on one line", () => {
+		expect(
+			toolActivityLabel({ toolName: "bash", args: { command: "npm test" } }),
+		).toBe("bash — npm test");
+		expect(
+			toolActivityLabel({
+				toolName: "read",
+				args: { file_path: "src/index.ts" },
+			}),
+		).toBe("read — src/index.ts");
+	});
+
+	it("falls back to the bare tool name when no argument speaks for it", () => {
+		expect(toolActivityLabel({ toolName: "ls" })).toBe("ls");
+		expect(toolActivityLabel({ toolName: "ls", args: { recurse: true } })).toBe(
+			"ls",
+		);
+	});
+
+	it("collapses a multi-line argument to one truncated line", () => {
+		const label = toolActivityLabel(
+			{ toolName: "bash", args: { command: "find .\n | sort\n | uniq" } },
+			{ maxHintChars: 12 },
+		);
+		expect(label).toBe("bash — find . | sor…");
+		expect(label).not.toContain("\n");
 	});
 });

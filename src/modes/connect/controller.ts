@@ -26,6 +26,7 @@ import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
+import { buildRichHtmlMessage, thinking } from "../../telegram/rich-builder";
 import {
 	type ToolCallActivity,
 	toolActivityMessage,
@@ -541,11 +542,33 @@ export class ConnectController {
 			.catch(() => {});
 	}
 
-	/** Open a fresh streaming-draft id for the assistant message about to stream. */
+	/**
+	 * Open a streaming-draft id for the assistant message about to stream. An id
+	 * already open — the thinking placeholder of this same turn — is REUSED, so the
+	 * placeholder animates into the streaming text instead of being replaced by a
+	 * second draft (which would read as a flicker). A closed draft gets a fresh id,
+	 * distinct per message, so drafts never animate across replies.
+	 */
 	beginDraft(): void {
-		// Non-zero and distinct per message so drafts never animate across replies.
+		if (this.draftId !== 0) return;
 		this.draftCounter = (this.draftCounter % 1_000_000) + 1;
 		this.draftId = this.draftCounter;
+	}
+
+	/**
+	 * Show the animated placeholder for what the agent is doing right now (`label`),
+	 * opening a draft if the turn has not started streaming text yet. This is NOT the
+	 * model's reasoning — the SDK exposes none; it is the live activity line that fills
+	 * the silence between the prompt and the first token, and it disappears with the
+	 * draft. Best-effort, exactly like {@link streamDraft}.
+	 */
+	async streamThinking(label: string): Promise<void> {
+		if (!label.trim()) return;
+		this.beginDraft();
+		await this.flushMirror();
+		await this.deps.outbound
+			.draft(this.target, this.draftId, buildRichHtmlMessage(thinking(label)))
+			.catch(() => {});
 	}
 
 	/**
@@ -566,6 +589,22 @@ export class ConnectController {
 	/** Close the current streaming draft (the real reply is sent separately). */
 	endDraft(): void {
 		this.draftId = 0;
+	}
+
+	/**
+	 * Erase the draft in place with an empty one. A draft only expires ~30s after its
+	 * last update, so a turn that ends while the placeholder is up — an abort (/esc),
+	 * an error, a tool-only run — would otherwise leave "Thinking…" animating long
+	 * after the agent stopped. Best-effort: if the API refuses an empty draft, the
+	 * placeholder still expires on its own.
+	 */
+	async clearDraft(): Promise<void> {
+		if (this.draftId === 0) return;
+		const draftId = this.draftId;
+		this.draftId = 0;
+		await this.deps.outbound
+			.draft(this.target, draftId, { html: "" })
+			.catch(() => {});
 	}
 
 	/**

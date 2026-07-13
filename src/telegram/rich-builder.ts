@@ -95,6 +95,17 @@ export const superscript = (content: RichContent): RichHtml =>
 export const mathInline = (latex: string): RichHtml =>
 	RichHtml.raw(`<tg-math>${escapeHtml(latex)}</tg-math>`);
 
+/**
+ * An animated "Thinking…" placeholder (`<tg-thinking>`). Telegram animates the
+ * block; the text inside is ours, so we do NOT put model reasoning there (the
+ * SDK never exposes any) — we say what the agent is DOING right now.
+ *
+ * Valid ONLY inside `sendRichMessageDraft`: a real `sendRichMessage` rejects it,
+ * which is also why it can never leak into chat history.
+ */
+export const thinking = (content: RichContent): RichHtml =>
+	inline("tg-thinking", content);
+
 export function link(text: RichContent, url: string): RichHtml {
 	return RichHtml.raw(
 		`<a href="${escapeAttr(url)}">${RichHtml.of(text).html}</a>`,

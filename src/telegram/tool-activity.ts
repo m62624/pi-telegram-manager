@@ -159,6 +159,22 @@ export function toolActivityHtml(
 	return details(summary, [body], options.open ?? false);
 }
 
+/**
+ * The same call as one plain line — `bash — npm test` — for the streaming-draft
+ * thinking placeholder, which takes text, not blocks. Shares the hint logic with
+ * {@link toolActivityHtml} so the card and the live line never disagree.
+ */
+export function toolActivityLabel(
+	activity: ToolCallActivity,
+	options: ToolActivityOptions = {},
+): string {
+	const describe = options.describeArgs ?? defaultDescribeArgs;
+	const hint = describe(activity);
+	if (!hint) return activity.toolName;
+	const short = shortHint(hint, options.maxHintChars ?? DEFAULT_MAX_HINT_CHARS);
+	return `${activity.toolName} — ${short}`;
+}
+
 /** The tool call as a ready-to-send {@link InputRichMessage}. */
 export function toolActivityMessage(
 	activity: ToolCallActivity,

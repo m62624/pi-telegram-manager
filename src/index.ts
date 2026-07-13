@@ -160,6 +160,7 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
+import { toolActivityLabel } from "./telegram/tool-activity";
 import {
 	placeOfOwnerMessage,
 	TopicRouter,
@@ -286,6 +287,14 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
+/**
+ * A streaming draft expires after ~30s, so the placeholder is re-sent well inside
+ * that window — otherwise a tool that runs longer than half a minute would leave
+ * the chat silent exactly when the agent is busiest.
+ */
+const THINKING_REFRESH_MS = 12_000;
+/** What the placeholder says before the first tool call: the model is sampling. */
+const THINKING_START_LABEL = "Thinking…";
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -436,6 +445,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let toolActivityEnabled = false;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
+	// What the agent is doing right now, shown in the draft's animated placeholder
+	// until the first token of the reply arrives. Null = no placeholder in flight.
+	let thinkingLabel: string | null = null;
+	let thinkingTimer: ReturnType<typeof setInterval> | null = null;
 	let draftText = "";
 	let lastDraftAt = 0;
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
@@ -639,6 +652,40 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, TYPING_REFRESH_MS);
 	};
 
+	/**
+	 * The placeholder rides the streaming draft, which exists only in the owner's own
+	 * chat: personal mode always, mixed mode only on a coding turn. `ownerRun` is
+	 * exactly that distinction — a MANAGER turn never gets one, and could not anyway
+	 * (a draft cannot be sent over a business connection).
+	 */
+	const thinkingAllowed = (): boolean =>
+		connect !== null && draftPreviewsEnabled && ownerRun;
+
+	const stopThinking = (): void => {
+		thinkingLabel = null;
+		if (thinkingTimer) {
+			clearInterval(thinkingTimer);
+			thinkingTimer = null;
+		}
+	};
+
+	/**
+	 * Show what the agent is doing now, and keep it alive: a draft expires after
+	 * ~30s, so a long-running tool would leave the chat blank mid-turn without the
+	 * refresh. Re-sending the SAME draft id animates in place, so the refresh is
+	 * invisible — no flicker.
+	 */
+	const showThinking = (label: string): void => {
+		if (!thinkingAllowed()) return;
+		thinkingLabel = label;
+		void connect?.streamThinking(label);
+		if (thinkingTimer) return;
+		thinkingTimer = setInterval(() => {
+			if (thinkingLabel === null) return;
+			void connect?.streamThinking(thinkingLabel);
+		}, THINKING_REFRESH_MS);
+	};
+
 	// Registered once at load; the visibility gate hides it until a mode is
 	// active, and it routes through whichever ConnectController is live. Mode 1
 	// mirrors the model's reply text automatically, so only file-sending needs a
@@ -679,6 +726,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		stopTyping();
+		stopThinking();
 		disarmWatchdog();
 		if (heartbeat) {
 			clearInterval(heartbeat);
@@ -733,6 +781,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// is already stopped above) — tear it down here, without touching the
 			// `connect` lifecycle record, which mixed never activated.
 			stopTyping();
+			stopThinking();
 			connect = null;
 			connectSystemBlock = null;
 			connectTimezone = undefined;
@@ -820,7 +869,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// action can abort it immediately: /esc in mode 1, or /switch in either mode
 		// (which must not wait for a long consolidation/reply to finish).
 		abort.set(() => ctx.abort());
-		if (ownerRun) startTyping();
+		if (ownerRun) {
+			startTyping();
+			// Fill the silence between the prompt and the first token: until a tool is
+			// called, the only true thing to say is that the model is sampling.
+			showThinking(THINKING_START_LABEL);
+		}
 	});
 	// End the manager's agent run as soon as it has made the turn's terminal
 	// decision. A single manager tool does not end the agentic loop (a tool call
@@ -851,7 +905,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// re-arms it in agent_start.
 		abort.clear();
 		stopTyping();
-		connect?.endDraft();
+		// A placeholder still up when the run ends means no reply text ever streamed —
+		// an abort (/esc), an error, or a run that only called tools. Nothing will
+		// overwrite it, so erase it; otherwise it keeps animating until it expires.
+		const placeholderWasUp = thinkingLabel !== null;
+		stopThinking();
+		if (placeholderWasUp) {
+			await connect?.clearDraft();
+		} else {
+			connect?.endDraft();
+		}
 		// A manager run in mixed still pumps the connect queue (an owner message may
 		// be waiting behind the aborted moderation turn) but its text is NOT a reply
 		// to the owner — only an owner run delivers to the chat topic.
@@ -901,6 +964,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
+		// The live placeholder rides the draft, not the cards, so it updates even when
+		// the tool CARDS are switched off — `showThinking` applies its own gate.
+		showThinking(
+			toolActivityLabel({ toolName: event.toolName, args: event.args }),
+		);
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
 			.sendToolActivity({ toolName: event.toolName, args: event.args })
@@ -924,6 +992,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			(event.message as { content?: unknown }).content as never,
 		);
 		if (!text || text === draftText) return;
+		// The reply has started: retire the placeholder BEFORE the first chunk, or its
+		// refresh timer would overwrite the streaming text with "Thinking…" again.
+		stopThinking();
 		draftText = text;
 		const now = Date.now();
 		if (now - lastDraftAt < DRAFT_THROTTLE_MS) return;
