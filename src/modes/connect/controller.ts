@@ -113,6 +113,13 @@ export interface ConnectControllerDeps {
 /** See {@link ConnectControllerDeps.albumWindowMs}. */
 export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 
+/**
+ * How many un-answered stray messages are remembered (see `strayMessages`). A turn
+ * claims its own, so this only bounds the ones no turn ever came for — commands,
+ * edits, messages sent while a mode was off.
+ */
+const MAX_STRAY_MESSAGES = 50;
+
 // Telegram bot commands the bridge handles itself instead of forwarding to the
 // agent. Everything else (including /start) falls through as an ordinary prompt.
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
@@ -153,6 +160,20 @@ export class ConnectController {
 	private readonly albumTimers = new Map<string, unknown>();
 	/** The open forward batch, so a burst of forwards reaches the model as one turn. */
 	private readonly forwards: ForwardBursts;
+	/**
+	 * Owner messages typed OUTSIDE the personal topic (the "All" view, the plain DM,
+	 * a topic of their own): message id → the thread it was typed in.
+	 *
+	 * Telegram cannot move a message between topics, so such a message stays where it
+	 * was written while the answer goes to the personal topic — the topic then reads
+	 * as if the bot were talking to itself. It cannot be prevented, so it is made
+	 * legible: the answer is sent as a REPLY to that message, which quotes it. Bounded,
+	 * so a long run of stray messages cannot grow this without limit.
+	 */
+	private readonly strayMessages = new Map<number, number | undefined>();
+	/** The stray message the running turn answers; consumed by that turn's first send. */
+	private strayReply: { messageId: number; thread: number | undefined } | null =
+		null;
 
 	constructor(private readonly deps: ConnectControllerDeps) {
 		this.forwards = new ForwardBursts(this.forwardPolicy);
@@ -198,6 +219,67 @@ export class ConnectController {
 		};
 	}
 
+	/** Remember a message the owner typed outside the personal topic. */
+	private noteStray(message: Message): void {
+		const personal = this.deps.chatThread?.();
+		// No topics at all (or none resolved yet): the DM is one stream, nothing strays.
+		if (personal === undefined) return;
+		if (message.message_thread_id === personal) return;
+		this.strayMessages.set(message.message_id, message.message_thread_id);
+		if (this.strayMessages.size > MAX_STRAY_MESSAGES) {
+			const oldest = this.strayMessages.keys().next();
+			if (!oldest.done) this.strayMessages.delete(oldest.value);
+		}
+	}
+
+	/** Claim the stray message this turn was built from, if any (it is answered once). */
+	private takeStray(sourceMessageIds: readonly number[]) {
+		let claimed: { messageId: number; thread: number | undefined } | null =
+			null;
+		for (const id of sourceMessageIds) {
+			if (!this.strayMessages.has(id)) continue;
+			// An album/forward batch is several messages but ONE question: quote the first.
+			claimed ??= { messageId: id, thread: this.strayMessages.get(id) };
+			this.strayMessages.delete(id);
+		}
+		return claimed;
+	}
+
+	/**
+	 * Deliver the model's text, quoting the stray message when this turn answers one.
+	 *
+	 * Telegram may refuse to quote a message that lives in a different topic — and an
+	 * answer is never worth losing to a formatting nicety, so the send degrades in
+	 * order: quote it from the personal topic; else answer in the topic it was asked
+	 * in, still quoting; else plain, as before.
+	 */
+	private async sendAnswer(text: string): Promise<void> {
+		const stray = this.strayReply;
+		if (!stray) {
+			await this.deps.outbound.sendMarkdown(this.target, text);
+			return;
+		}
+		// Only the run's first message quotes it; the rest are the same answer.
+		this.strayReply = null;
+		const attempts: OutboundTarget[] = [
+			{ ...this.target, replyToMessageId: stray.messageId },
+			{
+				chatId: this.deps.allowedUserId,
+				messageThreadId: stray.thread,
+				replyToMessageId: stray.messageId,
+			},
+			this.target,
+		];
+		for (const [index, target] of attempts.entries()) {
+			try {
+				await this.deps.outbound.sendMarkdown(target, text);
+				return;
+			} catch (error) {
+				if (index === attempts.length - 1) throw error;
+			}
+		}
+	}
+
 	/** Handle an inbound Telegram event. Returns true when it enqueued/edited a turn. */
 	async onEvent(event: TelegramEvent): Promise<boolean> {
 		if (event.kind !== "message" && event.kind !== "edited_message")
@@ -212,6 +294,8 @@ export class ConnectController {
 		if (this.deps.onContact && event.message.from) {
 			void this.deps.onContact(event.message.from).catch(() => {});
 		}
+
+		this.noteStray(event.message);
 
 		// Intercept the bridge's own control commands (e.g. /clear) so they never
 		// reach the agent as a prompt. Unknown commands (and /start, /help) fall
@@ -425,6 +509,7 @@ export class ConnectController {
 		if (this.isOpenAlbum(next.id)) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
+		this.strayReply = this.takeStray(item.sourceMessageIds);
 		await this.deps.sendFollowUp(this.toContent(item));
 	}
 
@@ -450,7 +535,7 @@ export class ConnectController {
 	 */
 	async deliverAssistant(text: string): Promise<void> {
 		if (!text.trim()) return;
-		await this.deps.outbound.sendMarkdown(this.target, text);
+		await this.sendAnswer(text);
 	}
 
 	/**
@@ -469,7 +554,10 @@ export class ConnectController {
 	): Promise<void> {
 		this.deps.abort.clear();
 		const reply = fallbackReply ? lastAssistantReply(messages) : null;
-		if (reply) await this.deps.outbound.sendMarkdown(this.target, reply);
+		if (reply) await this.sendAnswer(reply);
+		// The run is over: a message that goes out later (a notice, a tool's output) is
+		// no longer this question's answer and must not quote it.
+		this.strayReply = null;
 		await this.dispatch();
 	}
 

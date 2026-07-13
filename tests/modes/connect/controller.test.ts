@@ -543,3 +543,104 @@ describe("ConnectController forwards", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 });
+
+// The owner's DM is split into topics, and they can type outside the personal one
+// (the "All" view, the plain chat). Telegram cannot move that message into the
+// topic, so the answer quotes it instead — otherwise the personal topic reads as
+// the bot talking to nobody.
+describe("ConnectController: a message typed outside the personal topic", () => {
+	const PERSONAL = 5;
+
+	function threadEvent(
+		messageId: number,
+		threadId?: number,
+		text = "hi",
+	): TelegramEvent {
+		return classifyUpdate({
+			update_id: messageId,
+			message: {
+				message_id: messageId,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+				text,
+			},
+		} as Update);
+	}
+
+	it("answers in the personal topic, quoting the stray message", async () => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11));
+		await controller.deliverAssistant("answer");
+
+		expect(api.sent).toHaveLength(1);
+		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
+		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
+	});
+
+	it("quotes it once, not on every message of the run", async () => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11));
+		await controller.deliverAssistant("first");
+		await controller.deliverAssistant("second");
+
+		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
+		expect(api.sent[1]).not.toHaveProperty("reply_parameters");
+	});
+
+	it("leaves a message typed IN the personal topic alone", async () => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11, PERSONAL));
+		await controller.deliverAssistant("answer");
+
+		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
+		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
+	});
+
+	it("does not quote a later notice — the run is over", async () => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11));
+		await controller.onAgentEnd([], false);
+		await controller.sendToChat("a notice");
+
+		expect(api.sent[0].text ?? api.sent[0].rich_message).toBeDefined();
+		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
+	});
+
+	it("answers where the question was asked when Telegram refuses the quote", async () => {
+		// Telegram rejecting a cross-topic quote must never cost the answer.
+		class RefusesCrossTopicQuotes extends FakeOutboundApi {
+			async sendRichMessage(
+				args: Parameters<FakeOutboundApi["sendRichMessage"]>[0],
+			) {
+				if (args.reply_parameters && args.message_thread_id !== undefined) {
+					throw new Error("400: message to be replied not found");
+				}
+				return super.sendRichMessage(args);
+			}
+			async sendMessage(args: Parameters<FakeOutboundApi["sendMessage"]>[0]) {
+				if (args.reply_parameters && args.message_thread_id !== undefined) {
+					throw new Error("400: message to be replied not found");
+				}
+				return super.sendMessage(args);
+			}
+		}
+		const api = new RefusesCrossTopicQuotes();
+		const controller = new ConnectController({
+			allowedUserId: ALLOWED,
+			maxBytes: 1000,
+			isIdle: () => true,
+			sendFollowUp: async () => {},
+			outbound: new OutboundSender(api),
+			abort: new AbortRegistry(),
+			chatThread: () => PERSONAL,
+		});
+		await controller.onEvent(threadEvent(11));
+		await controller.deliverAssistant("answer");
+
+		expect(api.sent).toHaveLength(1);
+		expect(api.sent[0].message_thread_id).toBeUndefined();
+		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
+	});
+});
