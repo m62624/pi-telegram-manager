@@ -27,6 +27,7 @@
 		"src/**/*.md",
 		"README.md",
 		"SETTINGS.md",
+		"SECURITY.md",
 		"LICENSE"
 	],
 	"pi": {

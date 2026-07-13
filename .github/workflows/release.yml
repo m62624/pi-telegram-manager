@@ -102,6 +102,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # --provenance is what lets a user check that the tarball on npm was built
+      # from THIS repository, at a commit they can read, and not by whoever forked
+      # it (see SECURITY.md). Trusted publishing already signs via OIDC; asking for
+      # provenance explicitly keeps that true regardless of what the npm CLI
+      # decides to do by default.
       - name: Publish Package
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
@@ -109,7 +114,7 @@ jobs:
           if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
             echo "Skipping $PACKAGE_NAME@$PACKAGE_VERSION because it is already published on npm."
           else
-            npm publish --access public
+            npm publish --access public --provenance
           fi
 
   release:

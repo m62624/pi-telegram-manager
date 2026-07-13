@@ -310,6 +310,42 @@ pi -e ./src/index.ts
 
 ---
 
+## Provenance, forks, and who answers for what
+
+The bot answers real people on your behalf, so it matters that you can tell the
+real thing from something wearing its name.
+
+**Where it is published from.** Two places, both mine:
+[npm](https://www.npmjs.com/package/pi-telegram-manager) and
+[github.com/m62624/pi-telegram-manager](https://github.com/m62624/pi-telegram-manager)
+(mirrored to [tangled](https://tangled.org/m62624.tngl.sh/pi-telegram-manager)).
+Releases are built by GitHub Actions and published with npm **trusted publishing**,
+which attaches a signed [provenance attestation](https://docs.npmjs.com/generating-provenance-statements)
+binding the tarball to the commit it was built from — `npm audit signatures` checks
+it. A package that cannot show provenance pointing at this repository was not built
+here, whatever its README says.
+
+**What the code guarantees.** Two behaviours are bundled into the instructions and
+reachable by no setting: the manager introduces itself as an AI assistant to anyone
+it has no history with, and it answers truthfully when asked whether it is a bot.
+The block that says so is appended after your own instruction files, so your text
+cannot outweigh it. Everything else — tone, name, banner, subjects — is yours to
+configure.
+
+**What a fork can do, and what it cannot.** MIT means anyone may fork this, delete
+that block, and ship the result. That is the deal, and I would not change it. But a
+fork is not this project: I cannot vouch for one, patch one, or answer for one.
+Whoever strips the disclosure and points a bot at real people is the person who did
+that — and under Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers)
+the developer is *"you"*: the account that holds the bot's credentials. Running a
+bot honestly is a choice each operator makes on their own machine. This one is built
+to make the honest choice the easy one.
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and how to verify a
+release.
+
+---
+
 ## License
 
 [MIT](https://github.com/m62624/pi-telegram-manager/blob/main/LICENSE)
