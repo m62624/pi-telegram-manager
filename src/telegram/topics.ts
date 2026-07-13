@@ -49,11 +49,16 @@ export interface TopicsApi {
 	}): Promise<unknown>;
 }
 
-/** Persisted thread ids, scoped to the owner they were created for. */
+/**
+ * Persisted thread ids, scoped to the owner they were created for — plus the NAMES
+ * we last gave them, so a start does not rename a topic that is already called that.
+ * (Renaming posts a "changed the topic name" service message every time.)
+ */
 export interface TopicsState {
 	ownerChatId: number;
 	personal: number;
 	manager: number;
+	names?: Record<TopicKind, string>;
 }
 
 /**
@@ -141,6 +146,10 @@ export class TopicRouter {
 				ownerChatId: this.deps.ownerChatId,
 				personal,
 				manager,
+				names: {
+					personal: options.personalName,
+					manager: options.managerName,
+				},
 			};
 			await this.save(state);
 			this.state = state;
@@ -168,7 +177,11 @@ export class TopicRouter {
 		stored: TopicsState | null,
 	): Promise<number> {
 		const known = stored?.[kind];
-		if (known !== undefined && (await this.adopt(known, name))) return known;
+		if (
+			known !== undefined &&
+			(await this.adopt(known, name, stored?.names?.[kind]))
+		)
+			return known;
 		const created = await this.deps.api.createForumTopic({
 			chat_id: this.deps.ownerChatId,
 			name,
@@ -178,24 +191,44 @@ export class TopicRouter {
 	}
 
 	/**
-	 * Claim a stored thread: rename it to the wanted name, which doubles as the
-	 * existence check — `editForumTopic` FAILS on a thread that is gone, and it is the
-	 * cheapest call that does. (`sendChatAction` was the old probe and is useless here:
-	 * Telegram accepts it for a thread that no longer exists, so a deleted topic passed
-	 * verification and every later send died with "message thread not found".) It also
-	 * migrates a topic created under the old `chat`/`log` names, keeping its history.
+	 * Claim a stored thread, and say whether it is still there.
+	 *
+	 * The probe is `editForumTopic` with NO fields: per the Bot API, omitted `name` /
+	 * `icon_custom_emoji_id` keep the existing values, so it changes nothing — yet it
+	 * FAILS on a thread that is gone, which is exactly the check we need. (The old
+	 * probe was `sendChatAction`, which Telegram accepts even for a dead thread, so a
+	 * deleted topic passed verification and every later send died with "message thread
+	 * not found".)
+	 *
+	 * The rename is a SEPARATE call, made only when the name actually differs from the
+	 * one we last set — renaming posts a "changed the topic name" service message, so
+	 * doing it on every start littered the chat with them. `currentName` is undefined
+	 * for a topic created before we stored names (or under the old chat/log layout),
+	 * which is precisely when a one-off rename is wanted.
 	 */
-	private async adopt(threadId: number, name: string): Promise<boolean> {
+	private async adopt(
+		threadId: number,
+		name: string,
+		currentName?: string,
+	): Promise<boolean> {
 		try {
 			await this.deps.api.editForumTopic({
 				chat_id: this.deps.ownerChatId,
 				message_thread_id: threadId,
-				name,
 			});
-			return true;
 		} catch {
 			return false;
 		}
+		if (currentName !== name) {
+			await this.deps.api
+				.editForumTopic({
+					chat_id: this.deps.ownerChatId,
+					message_thread_id: threadId,
+					name,
+				})
+				.catch(() => {});
+		}
+		return true;
 	}
 
 	/** Persisted ids for THIS owner, in either layout (the old one is adopted). */
@@ -210,6 +243,7 @@ export class TopicRouter {
 				ownerChatId: stored.ownerChatId,
 				personal: stored.personal,
 				manager: stored.manager,
+				names: stored.names,
 			};
 		}
 		if (stored.chat !== undefined && stored.log !== undefined) {

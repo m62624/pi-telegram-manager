@@ -14,7 +14,9 @@ function fakeApi(overrides: Partial<TopicsApi> = {}) {
 				message_thread_id: nextThread++,
 			}),
 		),
-		editForumTopic: vi.fn(async () => ({})),
+		editForumTopic: vi.fn(
+			async (_args: { message_thread_id: number; name?: string }) => ({}),
+		),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
 }
@@ -62,6 +64,39 @@ describe("TopicRouter", () => {
 		expect(second.createForumTopic).not.toHaveBeenCalled();
 		expect(r2.thread("personal")).toBe(100);
 		expect(r2.thread("manager")).toBe(101);
+	});
+
+	it("does not rename a topic that is already called that", async () => {
+		// Regression: the liveness probe passed the name every start, so Telegram posted
+		// "Pi Agent changed the topic name to personal" on every single start.
+		const fs = new FakeFs();
+		await router(api, fs).router.ensure();
+		const second = fakeApi();
+		expect(await router(second, fs).router.ensure()).toBe(true);
+		// Probed (no fields = keep values), never renamed.
+		expect(second.editForumTopic).toHaveBeenCalledTimes(2);
+		for (const call of second.editForumTopic.mock.calls) {
+			expect(call[0].name).toBeUndefined();
+		}
+	});
+
+	it("renames when the configured name actually changed", async () => {
+		const fs = new FakeFs();
+		await router(api, fs).router.ensure();
+		const second = fakeApi();
+		const renamed = new TopicRouter({
+			api: second,
+			fs,
+			path: PATH,
+			ownerChatId: OWNER,
+			options: { enabled: true, personalName: "me", managerName: "manager" },
+		});
+		expect(await renamed.ensure()).toBe(true);
+		const renames = second.editForumTopic.mock.calls.filter(
+			(call) => call[0].name !== undefined,
+		);
+		expect(renames).toHaveLength(1);
+		expect(renames[0][0].name).toBe("me");
 	});
 
 	it("recreates a topic the owner deleted while the bot was off", async () => {
@@ -176,7 +211,14 @@ describe("TopicRouter", () => {
 		const { router: r } = router(api, fs);
 		expect(await r.ensure()).toBe(true);
 		expect(api.createForumTopic).not.toHaveBeenCalled();
-		expect(api.editForumTopic).toHaveBeenCalledTimes(2);
+		// Each adopted thread is probed, then renamed once (it had no stored name).
+		const renames = api.editForumTopic.mock.calls.filter(
+			(call) => call[0].name !== undefined,
+		);
+		expect(renames.map((call) => call[0].name)).toEqual([
+			"personal",
+			"manager",
+		]);
 		expect(r.thread("personal")).toBe(11);
 		expect(r.thread("manager")).toBe(12);
 	});
