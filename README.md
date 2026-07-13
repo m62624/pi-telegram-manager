@@ -177,6 +177,8 @@ Your DM with the bot is **two topics**, split by *whose* conversation it is: **p
 | --- | --- |
 | <img src="assets/threaded-mode-1-open-mini-app.jpg" alt="The BotFather Mini App button, left of the message field" width="320"> | <img src="assets/threaded-mode-2-toggle.jpg" alt="Thread Settings → Threaded Mode, on" width="320"> |
 
+*Not rendering? Open them in the repository: [`assets/threaded-mode-1-open-mini-app.jpg`](assets/threaded-mode-1-open-mini-app.jpg), [`assets/threaded-mode-2-toggle.jpg`](assets/threaded-mode-2-toggle.jpg).*
+
 Leave **Disallow users to create new threads** off — the extension creates the `personal` and `manager` topics itself, and you may want to add your own.
 
 If the toggle is off, the bot does not die — it falls back to one flat DM — but it **tells you so**, in that DM, with a link back to this section, on every mode start. Silence it only by deciding: either turn Threaded Mode on, or say you meant it with `topics.enabled: false` (then also consider `manager.log: false`, since the feed is chatty in a single stream).
@@ -206,6 +208,8 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 The toggle in step 2 only *allows* the bot to be connected; this is where you actually hand it your chats. Open Telegram **Settings → Telegram Business / Secretary → Chatbots** (Telegram is rolling out the *Secretary* label), enter your bot's username, and choose which chats it may access — and make sure it is allowed to **reply** (without that permission the bot can read but not answer, and the manager will sit there silent).
 
 <img src="assets/connect-secretary-bot.gif" alt="Telegram Settings → Business/Secretary → Chatbots: adding the bot and picking its chats" width="300">
+
+*Not rendering? Open it in the repository: [`assets/connect-secretary-bot.gif`](assets/connect-secretary-bot.gif).*
 
 Then open Pi and run one of the commands below.
 

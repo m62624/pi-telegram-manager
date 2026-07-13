@@ -2,6 +2,14 @@
 	"name": "pi-telegram-manager",
 	"version": "0.1.0",
 	"description": "Telegram bridge for Pi local coding agents: terminal-continuation and business manager modes",
+	"homepage": "https://github.com/m62624/pi-telegram-manager#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/m62624/pi-telegram-manager.git"
+	},
+	"bugs": {
+		"url": "https://github.com/m62624/pi-telegram-manager/issues"
+	},
 	"keywords": [
 		"pi-package",
 		"pi-extension",
