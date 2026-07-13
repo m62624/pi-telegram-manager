@@ -120,6 +120,7 @@ import {
 import { createConsolidationQueue } from "./storage/consolidation-queue";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
+import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateMemory } from "./storage/memory-migration";
 import { createSentRegistry } from "./storage/sent-registry";
 import type { ManagerSubMode } from "./storage/singleton-store";
@@ -405,6 +406,42 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// pins), plus the mode it currently shows (to skip redundant edits).
 	let modePinMessageId: number | null = null;
 	let modePinTarget: PanelMode | null = null;
+	/**
+	 * The pin lives in the owner's DM, not in this process: without persisting its id
+	 * a restarted Pi forgot it and pinned a SECOND message ("Закреплённое сообщение
+	 * #2") instead of editing the one already there. Loaded on the first pin update
+	 * of a session, written whenever a new pin is created.
+	 */
+	interface ModePinState {
+		ownerChatId: number;
+		messageId: number;
+	}
+	let modePinLoaded = false;
+
+	const loadModePin = async (ownerChatId: number): Promise<void> => {
+		if (modePinLoaded) return;
+		modePinLoaded = true;
+		const stored = await readJsonIfExists<ModePinState>(
+			fs,
+			paths.modePinPath,
+		).catch(() => null);
+		if (stored && stored.ownerChatId === ownerChatId) {
+			modePinMessageId = stored.messageId;
+			// The mode it shows is unknown after a restart, so the first update always
+			// rewrites the text rather than assuming it already matches.
+			modePinTarget = null;
+		}
+	};
+
+	const saveModePin = async (
+		ownerChatId: number,
+		messageId: number,
+	): Promise<void> => {
+		await writeJson<ModePinState>(fs, paths.modePinPath, {
+			ownerChatId,
+			messageId,
+		}).catch(() => {});
+	};
 
 	// Connection watchdog: a silent timer that probes the active bot connection and
 	// auto-disconnects after too many consecutive failures. `connectionFailures` is
@@ -1717,12 +1754,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	const updateModePin = async (target: PanelMode): Promise<void> => {
-		if (ownerUserId === null || modePinTarget === target) return;
+		if (ownerUserId === null) return;
+		await loadModePin(ownerUserId);
+		if (modePinTarget === target) return;
 		const api = controlApi();
 		if (!api) return;
 		const text = modePinText(target);
 		try {
 			if (modePinMessageId !== null) {
+				// Always EDIT the pin that is already there — a new mode is not a new
+				// message. A pin per switch is what buried the chat under numbered pins.
 				await api.editMessageText({
 					chat_id: ownerUserId,
 					message_id: modePinMessageId,
@@ -1742,13 +1783,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						disable_notification: true,
 					})
 					.catch(() => {});
+				await saveModePin(ownerUserId, sent.message_id);
 			}
 			modePinTarget = target;
 		} catch {
-			// The pinned message was likely deleted — forget it so the next update
-			// re-creates and re-pins from scratch.
+			// The pinned message was deleted (or is unreachable): forget it so the next
+			// update re-creates and re-pins from scratch, and drop the stale id on disk.
 			modePinMessageId = null;
 			modePinTarget = null;
+			await fs.removeFile(paths.modePinPath).catch(() => {});
 		}
 	};
 
