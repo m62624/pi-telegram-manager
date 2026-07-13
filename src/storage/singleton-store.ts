@@ -3,9 +3,6 @@ import { withFileWriteLock } from "./file-lock";
 import type { TelegramFs } from "./fs";
 import { readJsonIfExists, writeJson } from "./json";
 
-/** Manager sub-mode (mode 2 only). */
-export type ManagerSubMode = "observer" | "takeover";
-
 /**
  * The single source of truth for "which mode is active right now". Persisted
  * atomically. `pid` + `heartbeatAt` let a fresh process detect a crashed owner
@@ -24,8 +21,6 @@ export interface TelegramSingletonRecord {
 	sessionFile?: string;
 	/** Mode 2: directory the manager session was opened in. */
 	workdir?: string;
-	/** Mode 2: active sub-mode. */
-	subMode?: ManagerSubMode;
 }
 
 export interface SingletonStalenessOptions {

@@ -5,6 +5,7 @@ import {
 	dispatchUpdate,
 	fetchBytesFromUrl,
 	fileBaseUrl,
+	TelegramClient,
 } from "../../src/telegram/client";
 import type { TelegramEvent } from "../../src/telegram/updates";
 
@@ -60,6 +61,46 @@ describe("dispatchUpdate", () => {
 			kind: "ignored",
 			updateType: "poll_answer",
 		});
+	});
+});
+
+describe("TelegramClient.sendDocument", () => {
+	function clientWithSpy() {
+		const client = new TelegramClient({
+			token: "123:ABC",
+			onEvent: () => {},
+		});
+		const sendDocument = vi
+			.spyOn(client.bot.api, "sendDocument")
+			.mockResolvedValue({} as never);
+		return { client, sendDocument };
+	}
+
+	it("posts the file into the given topic", async () => {
+		const { client, sendDocument } = clientWithSpy();
+		await client.sendDocument({
+			chatId: 42,
+			threadId: 7,
+			url: "https://example/f.png",
+			caption: "here",
+		});
+		expect(sendDocument).toHaveBeenCalledWith(42, "https://example/f.png", {
+			caption: "here",
+			message_thread_id: 7,
+		});
+	});
+
+	it("omits the thread id when there is no topic", async () => {
+		const { client, sendDocument } = clientWithSpy();
+		await client.sendDocument({ chatId: 42, url: "https://example/f.png" });
+		expect(sendDocument).toHaveBeenCalledWith(42, "https://example/f.png", {});
+	});
+
+	it("rejects a call with neither a path nor a url", async () => {
+		const { client } = clientWithSpy();
+		await expect(client.sendDocument({ chatId: 42 })).rejects.toThrow(
+			"requires a local path or a url",
+		);
 	});
 });
 

@@ -33,8 +33,8 @@ function partsFor(
 	return parts;
 }
 
-/** e.g. `[Now: Mon 2026-07-10 14:32 +05:00]`. */
-export function formatNowLine(now: number, timezone?: string): string {
+/** e.g. `Mon 2026-07-10 14:32 +05:00` — the clock, without any framing. */
+export function formatClock(now: number, timezone?: string): string {
 	let parts: Record<string, string>;
 	try {
 		parts = partsFor(now, timezone);
@@ -48,7 +48,12 @@ export function formatNowLine(now: number, timezone?: string): string {
 	const offset = offsetRaw === "" ? "+00:00" : offsetRaw;
 	const date = `${parts.year}-${parts.month}-${parts.day}`;
 	const time = `${parts.hour}:${parts.minute}`;
-	return `[Now: ${parts.weekday} ${date} ${time} ${offset}]`;
+	return `${parts.weekday} ${date} ${time} ${offset}`;
+}
+
+/** e.g. `[Now: Mon 2026-07-10 14:32 +05:00]`. */
+export function formatNowLine(now: number, timezone?: string): string {
+	return `[Now: ${formatClock(now, timezone)}]`;
 }
 
 /**

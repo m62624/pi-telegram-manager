@@ -141,3 +141,38 @@ describe("ChatScheduler", () => {
 		expect(scheduler.activeChat()).toBe("b");
 	});
 });
+
+describe("ChatScheduler.dropContinuation", () => {
+	it("ends the fast lane so the chat goes back through the gate", () => {
+		const clock = new ManualClock(0);
+		const s = new ChatScheduler({ continueWindowMs: 90_000, clock });
+		s.onMessage("a");
+		s.onReplied();
+		expect(s.continuationRemaining()).toBe(90_000);
+
+		// The owner spoke in this chat: the bot loses its fast lane.
+		s.dropContinuation("a");
+		expect(s.continuationRemaining()).toBeNull();
+		expect(s.activeChat()).toBeNull();
+	});
+
+	it("promotes the next chat when the active one loses its window", () => {
+		const clock = new ManualClock(0);
+		const s = new ChatScheduler({ continueWindowMs: 90_000, clock });
+		s.onMessage("a");
+		s.onMessage("b");
+		s.onReplied();
+		s.dropContinuation("a");
+		expect(s.activeChat()).toBe("b");
+	});
+
+	it("is a no-op for a chat that is not active", () => {
+		const clock = new ManualClock(0);
+		const s = new ChatScheduler({ continueWindowMs: 90_000, clock });
+		s.onMessage("a");
+		s.onReplied();
+		s.dropContinuation("other");
+		expect(s.activeChat()).toBe("a");
+		expect(s.continuationRemaining()).toBe(90_000);
+	});
+});

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { BridgeMode } from "../constants";
 import {
 	isSingletonStale,
-	type ManagerSubMode,
 	type SingletonStore,
 	type TelegramSingletonRecord,
 } from "../storage/singleton-store";
@@ -29,7 +28,6 @@ export interface ActivateInput {
 	chatId?: string;
 	sessionFile?: string;
 	workdir?: string;
-	subMode?: ManagerSubMode;
 }
 
 export type ActivateResult =
@@ -101,7 +99,6 @@ export function createLifecycleController(
 				chatId: input.chatId,
 				sessionFile: input.sessionFile,
 				workdir: input.workdir,
-				subMode: input.subMode,
 			};
 			await deps.store.save(record);
 			return { ok: true, record };

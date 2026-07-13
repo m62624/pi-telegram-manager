@@ -28,11 +28,84 @@ import { readJsonIfExists, writeJson } from "../storage/json";
 /** The two topics we maintain in the owner's DM. */
 export type TopicKind = "personal" | "manager";
 
+/** The name the outgoing `personal` is renamed to when it is kept. */
+export function archiveName(personalName: string): string {
+	return `${personalName} (archive)`;
+}
+
+/**
+ * The name for a topic Telegram refuses to delete (`TOPIC_ID_INVALID`) and that holds
+ * nothing worth keeping. It cannot be removed, so it is at least named honestly instead
+ * of standing next to the live topic under the same name.
+ */
+export function deadName(personalName: string): string {
+	return `${personalName} (closed)`;
+}
+
+/**
+ * Where an owner message was written — the fact everything about it depends on.
+ *
+ *  - `personal` — the conversation with the model: answered, and left alone;
+ *  - `manager`  — the bot reporting to itself: never a prompt, ignored;
+ *  - `outside`  — the "All" view, where Telegram itself labels the input box "message
+ *    outside a topic". Nothing lives there, so the message is MOVED into `personal`
+ *    (copied, then deleted) and the conversation stays in one place;
+ *  - `topic`    — a topic the owner made themselves. It is copied into `personal` and
+ *    the original is LEFT THERE: that topic is theirs, and a bot that empties it to tidy
+ *    its own conversation is a bot that deletes your things.
+ *
+ * A message written in a topic always names it (`message_thread_id`, plus
+ * `is_topic_message`) — measured on Desktop and on Android, into an old topic and a new
+ * one. So the absence of a thread is not missing information: it is the answer.
+ * `isTopicMessage` is the safety catch — should Telegram ever mark a message as a topic
+ * message without saying which topic, it is treated as `personal` rather than moved out
+ * of a topic we cannot name.
+ */
+export type OwnerMessagePlace = "personal" | "manager" | "outside" | "topic";
+
+export function placeOfOwnerMessage(input: {
+	thread: number | undefined;
+	isTopicMessage?: boolean;
+	personal: number | undefined;
+	manager: number | undefined;
+}): OwnerMessagePlace {
+	const { thread, personal, manager } = input;
+	if (thread !== undefined) {
+		if (thread === manager) return "manager";
+		return thread === personal ? "personal" : "topic";
+	}
+	return input.isTopicMessage === true ? "personal" : "outside";
+}
+
 /** Topic icon colors, from the fixed palette Bot API allows. */
 const ICON_COLOR: Record<TopicKind, number> = {
 	personal: 7322096, // 0x6FB9F0 — blue
 	manager: 16478047, // 0xFB6F5F — red
 };
+
+/**
+ * The icon each topic wears, so the three chips are told apart at a glance: the
+ * conversation, the secretary's feed, and the conversation before this one.
+ *
+ * These are plain emoji, resolved at run time to the custom-emoji ids Telegram allows
+ * as topic icons (`getForumTopicIconStickers` — an arbitrary emoji is refused). If the
+ * lookup fails, the topics simply keep their colours, which is what they had before.
+ *
+ * The archive gets an icon rather than a colour on purpose: a colour can only be set
+ * when a topic is CREATED, and the archive is not created — it is the `personal` topic
+ * renamed. `editForumTopic` can change the name and the custom emoji, never the colour.
+ */
+const ICON_EMOJI = {
+	personal: "💻",
+	manager: "📣",
+	archive: "📁",
+} as const;
+
+/** A sticker as `getForumTopicIconStickers` returns it (only what we read). */
+export interface TopicIconSticker {
+	emoji?: string;
+	custom_emoji_id?: string;
+}
 
 /** The subset of the bot API the router needs; keeps the fake in tests small. */
 export interface TopicsApi {
@@ -41,12 +114,19 @@ export interface TopicsApi {
 		chat_id: number;
 		name: string;
 		icon_color?: number;
+		icon_custom_emoji_id?: string;
 	}): Promise<{ message_thread_id: number }>;
 	editForumTopic(args: {
 		chat_id: number;
 		message_thread_id: number;
 		name?: string;
+		icon_custom_emoji_id?: string;
 	}): Promise<unknown>;
+	deleteForumTopic(args: {
+		chat_id: number;
+		message_thread_id: number;
+	}): Promise<unknown>;
+	getForumTopicIconStickers(): Promise<TopicIconSticker[]>;
 }
 
 /**
@@ -59,6 +139,12 @@ export interface TopicsState {
 	personal: number;
 	manager: number;
 	names?: Record<TopicKind, string>;
+	/** The previous session's `personal`, kept to read back (see {@link TopicRouter.startSession}). */
+	archive?: number;
+	/** Whether anything was actually said in the current `personal` this session. */
+	used?: boolean;
+	/** Topics Telegram refused to delete; retried on every later session. */
+	stale?: number[];
 }
 
 /**
@@ -96,6 +182,15 @@ export interface TopicRouterDeps {
  */
 export class TopicRouter {
 	private state: TopicsState | null = null;
+	/**
+	 * Whether `personal` was created by THIS `ensure` (a first run, or a topic the owner
+	 * deleted). Such a topic is already brand new, so {@link startSession} leaves it
+	 * alone instead of replacing it with another one — and the chat is spared a pair of
+	 * "topic created" notices on every first start.
+	 */
+	private personalIsFresh = false;
+	/** emoji → the custom-emoji id Telegram accepts for it; loaded once, best-effort. */
+	private icons: Map<string, string> | null = null;
 
 	constructor(private readonly deps: TopicRouterDeps) {}
 
@@ -137,6 +232,7 @@ export class TopicRouter {
 				options.personalName,
 				stored,
 			);
+			this.personalIsFresh = personal !== stored?.personal;
 			const manager = await this.resolveTopic(
 				"manager",
 				options.managerName,
@@ -150,6 +246,15 @@ export class TopicRouter {
 					personal: options.personalName,
 					manager: options.managerName,
 				},
+				// Carried, not rebuilt: which topic is the archive, and whether the current
+				// `personal` holds a conversation, is what the next session's rotation
+				// decides on (see startSession). A topic we had to recreate here is new and
+				// empty by definition, so it starts unused.
+				...(stored?.archive !== undefined ? { archive: stored.archive } : {}),
+				...(personal === stored?.personal && stored?.used
+					? { used: true }
+					: {}),
+				...(stored?.stale !== undefined ? { stale: stored.stale } : {}),
 			};
 			await this.save(state);
 			this.state = state;
@@ -168,6 +273,170 @@ export class TopicRouter {
 	 */
 	fallBack(): void {
 		this.state = null;
+	}
+
+	/**
+	 * Remember that the conversation actually happened in this `personal` — so the
+	 * next session archives it instead of throwing it away. Called on anything the
+	 * owner says and anything the bot answers; NOT on the mode pin, which is furniture.
+	 */
+	async markUsed(): Promise<void> {
+		const state = this.state;
+		if (!state || state.used) return;
+		this.state = { ...state, used: true };
+		await this.save(this.state);
+	}
+
+	/**
+	 * Open a fresh `personal` for this session, and decide what becomes of the old one.
+	 *
+	 * A topic can go bad. A three-day-old one — which had survived a rename and a chat
+	 * the owner deleted — stopped accepting ordinary messages from the Android client:
+	 * they were posted OUTSIDE it, with no `message_thread_id`, while replies (which
+	 * name their target explicitly) still landed inside, and Desktop never noticed. A
+	 * topic created minutes earlier took the same message from the same phone. What
+	 * exactly ruins a topic we do not know, and there is no signal to check for, so we
+	 * do not try to detect it: every session simply starts in a topic that is new, and
+	 * none lives long enough to find out.
+	 *
+	 * What happens to the outgoing one is decided by whether anything was SAID in it:
+	 *  - it holds a conversation → it becomes the archive (renamed), and the previous
+	 *    archive is deleted, so exactly one past session is kept;
+	 *  - it holds nothing but its own creation notice (a restart where you never wrote)
+	 *    → it is deleted outright, taking that notice with it, and the archive is left
+	 *    alone. Otherwise a couple of silent restarts would push a real conversation out
+	 *    of the archive with empty topics.
+	 *
+	 * Deleting is NOT guaranteed. Telegram refuses some topics with
+	 * `400: TOPIC_ID_INVALID` — a topic that survived the owner clearing the chat, for
+	 * one — while `editForumTopic` still answers `ok` for the very same id, so nothing
+	 * warns us in advance. Swallowing that refusal is what turned this feature into a
+	 * chip factory: every switch added a topic and removed none. So a refusal is now a
+	 * fact we keep: the topic is renamed out of the way (it must not sit there as a
+	 * second `personal`) and retried on later sessions.
+	 *
+	 * Best-effort: if a fresh topic cannot be created, the session keeps the one it has
+	 * and nothing else is touched.
+	 */
+	async startSession(): Promise<void> {
+		const state = this.state;
+		if (!state || !this.deps.options.enabled) return;
+		// Just created (first run, or the owner deleted it): it IS the fresh topic this
+		// method exists to provide, and replacing it would only litter the chat with a
+		// second "topic created" notice.
+		if (this.personalIsFresh) return;
+		const { options } = this.deps;
+		let fresh: number;
+		try {
+			const created = await this.create("personal", options.personalName);
+			fresh = created.message_thread_id;
+		} catch {
+			return; // no fresh topic — carry on in the one we have
+		}
+		// Topics Telegram would not delete before: try again, it may allow it now.
+		const stale: number[] = [];
+		for (const id of state.stale ?? []) {
+			if (!(await this.deleteTopic(id))) stale.push(id);
+		}
+		const outgoing = state.personal;
+		let archive = state.archive;
+		if (state.used) {
+			if (archive !== undefined && !(await this.deleteTopic(archive))) {
+				stale.push(archive);
+			}
+			await this.rename(outgoing, archiveName(options.personalName), "archive");
+			archive = outgoing;
+		} else if (!(await this.deleteTopic(outgoing))) {
+			// Nothing was said in it, and it will not go away. It must not stay next to
+			// the new topic under the same name, and it must not evict the archive — it
+			// holds nothing worth keeping. Name it for what it is and keep trying later.
+			await this.rename(outgoing, deadName(options.personalName), "archive");
+			stale.push(outgoing);
+		}
+		// Rebuilt rather than spread over the old state: `archive` and `stale` are
+		// decided fresh here, and a stale id that Telegram finally removed must not be
+		// inherited from the state we started with — it would be retried forever.
+		const next: TopicsState = {
+			ownerChatId: state.ownerChatId,
+			personal: fresh,
+			manager: state.manager,
+			names: state.names,
+			used: false,
+			...(archive !== undefined ? { archive } : {}),
+			...(stale.length > 0 ? { stale } : {}),
+		};
+		this.state = next;
+		await this.save(next);
+	}
+
+	/** Rename a topic and re-badge it. Best-effort — a name is not worth a failed start. */
+	private async rename(
+		threadId: number,
+		name: string,
+		icon: keyof typeof ICON_EMOJI,
+	): Promise<void> {
+		const emoji = await this.iconFor(icon);
+		await this.deps.api
+			.editForumTopic({
+				chat_id: this.deps.ownerChatId,
+				message_thread_id: threadId,
+				name,
+				...(emoji ? { icon_custom_emoji_id: emoji } : {}),
+			})
+			.catch(() => {});
+	}
+
+	/**
+	 * The custom-emoji id for one of our icons, or undefined when Telegram does not
+	 * offer it (or the list could not be read — then the topic keeps its colour).
+	 *
+	 * Only the emoji Telegram itself hands out may be a topic icon; an arbitrary one is
+	 * refused, and a refused create would cost us the topic. So the list is fetched once
+	 * and matched by the emoji character, with the variation selector Telegram sometimes
+	 * appends (U+FE0F) stripped on both sides.
+	 */
+	private async iconFor(
+		kind: keyof typeof ICON_EMOJI,
+	): Promise<string | undefined> {
+		if (this.icons === null) {
+			this.icons = new Map();
+			const stickers = await this.deps.api
+				.getForumTopicIconStickers()
+				.catch(() => [] as TopicIconSticker[]);
+			for (const sticker of stickers) {
+				const emoji = sticker.emoji?.replace(/️/g, "");
+				if (emoji && sticker.custom_emoji_id) {
+					this.icons.set(emoji, sticker.custom_emoji_id);
+				}
+			}
+		}
+		return this.icons.get(ICON_EMOJI[kind].replace(/️/g, ""));
+	}
+
+	/** Create a topic wearing its icon (falling back to its colour). */
+	private async create(
+		kind: TopicKind,
+		name: string,
+	): Promise<{ message_thread_id: number }> {
+		const icon = await this.iconFor(kind);
+		return await this.deps.api.createForumTopic({
+			chat_id: this.deps.ownerChatId,
+			name,
+			...(icon
+				? { icon_custom_emoji_id: icon }
+				: { icon_color: ICON_COLOR[kind] }),
+		});
+	}
+
+	/** Delete a topic, and say whether Telegram actually did it (see startSession). */
+	private async deleteTopic(threadId: number): Promise<boolean> {
+		return await this.deps.api
+			.deleteForumTopic({
+				chat_id: this.deps.ownerChatId,
+				message_thread_id: threadId,
+			})
+			.then(() => true)
+			.catch(() => false);
 	}
 
 	/**
@@ -198,11 +467,7 @@ export class TopicRouter {
 		const name =
 			kind === "personal" ? options.personalName : options.managerName;
 		try {
-			const created = await this.deps.api.createForumTopic({
-				chat_id: this.deps.ownerChatId,
-				name,
-				icon_color: ICON_COLOR[kind],
-			});
+			const created = await this.create(kind, name);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
 				personal: this.state?.personal ?? created.message_thread_id,
@@ -236,11 +501,7 @@ export class TopicRouter {
 			(await this.adopt(known, name, stored?.names?.[kind]))
 		)
 			return known;
-		const created = await this.deps.api.createForumTopic({
-			chat_id: this.deps.ownerChatId,
-			name,
-			icon_color: ICON_COLOR[kind],
-		});
+		const created = await this.create(kind, name);
 		return created.message_thread_id;
 	}
 
@@ -298,6 +559,9 @@ export class TopicRouter {
 				personal: stored.personal,
 				manager: stored.manager,
 				names: stored.names,
+				...(stored.archive !== undefined ? { archive: stored.archive } : {}),
+				...(stored.used !== undefined ? { used: stored.used } : {}),
+				...(stored.stale !== undefined ? { stale: stored.stale } : {}),
 			};
 		}
 		if (stored.chat !== undefined && stored.log !== undefined) {

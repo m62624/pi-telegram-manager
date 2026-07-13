@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { TELEGRAM_TOOL_NAMES } from "../../src/core/attachments";
+import { managerHoldsSession } from "../../src/modes/manager/polarity";
 import { createToolMatcher } from "../../src/pi/tool-allow";
 import {
 	createToolVisibility,
@@ -113,6 +115,28 @@ describe("createToolVisibility", () => {
 		);
 		visibility.setActive("manager", true);
 		expect(api.active).toEqual(["grep", "manager_reply", "manager_silent"]);
+	});
+
+	// The owner's rule: telegram_attach is the personal side's tool. It exists while
+	// the owner is being served (Personal, and the coding polarity of mixed) and is
+	// gone the moment the manager holds the session — the secretary must not be able
+	// to push files at anyone. In mixed both groups are active at once, so this is
+	// the only place the rule is actually decided.
+	it("hides telegram_attach whenever the manager holds the session (mixed)", () => {
+		const api = fakeApi(["read", "telegram_attach", "manager_reply"]);
+		const visibility = createToolVisibility(api, {
+			connect: [...TELEGRAM_TOOL_NAMES],
+			manager: ["manager_reply"],
+		});
+		visibility.setExclusive("manager", createToolMatcher(["manager_reply"]));
+		visibility.setActive("connect", true);
+
+		for (const polarity of ["coding", "telegram"] as const) {
+			visibility.setActive("manager", managerHoldsSession(true, polarity));
+			expect(api.active.includes("telegram_attach")).toBe(
+				polarity === "coding",
+			);
+		}
 	});
 
 	it("clearing exclusive returns to additive visibility", () => {

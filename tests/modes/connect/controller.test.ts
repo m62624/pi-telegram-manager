@@ -543,3 +543,85 @@ describe("ConnectController forwards", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 });
+
+// The owner's DM is split into topics, and they can type outside the personal one
+// (the "All" view, the plain chat). The answer still goes to the personal topic:
+// the message itself is forwarded there by the topic router (see acceptAsPersonal),
+// so the controller has no cross-topic trickery to do. Quoting the far message was
+// tried in its place and removed — the clients did not agree on what it meant.
+describe("ConnectController: a message typed outside the personal topic", () => {
+	const PERSONAL = 5;
+	/** A topic that is not the personal one (a topic the owner made themselves). */
+	const FOREIGN = 9;
+
+	function threadEvent(
+		messageId: number,
+		threadId?: number,
+		text = "hi",
+	): TelegramEvent {
+		return classifyUpdate({
+			update_id: messageId,
+			message: {
+				message_id: messageId,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				...(threadId !== undefined ? { message_thread_id: threadId } : {}),
+				text,
+			},
+		} as Update);
+	}
+
+	it.each([
+		["typed in another topic", FOREIGN],
+		["typed in the personal topic", PERSONAL],
+		["typed with no topic at all", undefined],
+	])("answers in the personal topic, plain, for a message %s", async (_name, thread) => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11, thread));
+		await controller.deliverAssistant("answer");
+
+		expect(api.sent).toHaveLength(1);
+		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
+		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
+	});
+
+	it("hands over the turn's messages when the bot speaks, not when the turn starts", async () => {
+		// The copy of a stray message is made from this hook. It must fire with the
+		// bot's FIRST word, not when the prompt reaches the agent: a copy that lands
+		// while the model is still thinking sits alone in the topic for seconds.
+		const onTurnVisible = vi.fn(async () => {});
+		const { controller, setIdle } = setup({
+			chatThread: () => PERSONAL,
+			onTurnVisible,
+		});
+		setIdle(false);
+		await controller.onEvent(threadEvent(11, FOREIGN));
+		await controller.onEvent(threadEvent(12, FOREIGN));
+
+		setIdle(true);
+		await controller.dispatch();
+		// The prompt is with the agent, which is still silent — nothing copied yet.
+		expect(onTurnVisible).not.toHaveBeenCalled();
+
+		controller.beginDraft();
+		await controller.streamDraft("thinking…");
+		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
+
+		// The answer that follows is the same turn: it does not copy the prompt again.
+		await controller.deliverAssistant("answer");
+		expect(onTurnVisible).toHaveBeenCalledTimes(1);
+	});
+
+	it("hands them over with the answer when the model never streamed a draft", async () => {
+		const onTurnVisible = vi.fn(async () => {});
+		const { controller } = setup({
+			chatThread: () => PERSONAL,
+			onTurnVisible,
+		});
+		await controller.onEvent(threadEvent(11, FOREIGN));
+		await controller.deliverAssistant("answer");
+
+		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
+	});
+});

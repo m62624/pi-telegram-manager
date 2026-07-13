@@ -23,39 +23,24 @@ function stubFs(files: Record<string, string>): TelegramFs {
 
 const BUNDLED = {
 	"manager-common.md": "COMMON RULES",
-	"manager-observer.md": "OBSERVER BODY",
-	"manager-takeover.md": "TAKEOVER BODY",
+	"manager.md": "MANAGER BODY",
 	"manager-first-message.md": "DEFAULT FIRST",
 	"manager-reopen.md": "DEFAULT REOPEN",
 	"connect.md": "CONNECT BODY",
 };
 
 describe("loadManagerInstructions", () => {
-	it("assembles common + observer body for the observer sub-mode", async () => {
-		const result = await loadManagerInstructions({
-			fs: stubFs(BUNDLED),
-			subMode: "observer",
-		});
+	it("assembles the common rules and the manager stance", async () => {
+		const result = await loadManagerInstructions({ fs: stubFs(BUNDLED) });
 		expect(result.base).toContain("COMMON RULES");
-		expect(result.base).toContain("OBSERVER BODY");
-		expect(result.base).not.toContain("TAKEOVER BODY");
+		expect(result.base).toContain("MANAGER BODY");
 		expect(result.firstMessage).toBe("DEFAULT FIRST");
 		expect(result.reopen).toBe("DEFAULT REOPEN");
-	});
-
-	it("selects the takeover body for the takeover sub-mode", async () => {
-		const result = await loadManagerInstructions({
-			fs: stubFs(BUNDLED),
-			subMode: "takeover",
-		});
-		expect(result.base).toContain("TAKEOVER BODY");
-		expect(result.base).not.toContain("OBSERVER BODY");
 	});
 
 	it("layers a user override on top of the bundled rules", async () => {
 		const result = await loadManagerInstructions({
 			fs: stubFs(BUNDLED),
-			subMode: "observer",
 			overrideText: "MY CUSTOM POLICY",
 			firstMessageOverride: "MY FIRST TEMPLATE",
 			reopenOverride: "MY REOPEN TEMPLATE",
@@ -69,7 +54,6 @@ describe("loadManagerInstructions", () => {
 	it("surfaces the configured wake-words to the model", async () => {
 		const result = await loadManagerInstructions({
 			fs: stubFs(BUNDLED),
-			subMode: "observer",
 			labeler: "Assistant:",
 			mentionWords: ["llm", "qwen"],
 		});

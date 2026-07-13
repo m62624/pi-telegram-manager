@@ -42,16 +42,14 @@ export const COMPLIANCE_NOTICE = [
 export const COMMANDS = {
 	/** Personal — bind the current terminal session to a single Telegram DM. */
 	personal: "telegram-personal",
-	/** Business manager — pick observer/takeover, then run the manager. */
+	/** Business manager — answer other people on the owner's behalf. */
 	manager: "telegram-manager",
-	/** Mixed — coding + Telegram moderation in one session (pick observer/takeover). */
+	/** Mixed — coding + Telegram moderation in one session. */
 	mixed: "telegram-mixed",
 	/** Stop whichever Telegram mode is currently active. */
 	stop: "telegram-stop",
 	/** Print the active bridge status. */
 	status: "telegram-status",
-	/** Open the inline mode-switcher panel in the owner's bot DM. */
-	switch: "telegram-switch",
 } as const;
 
 /**
@@ -67,7 +65,7 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "clear", description: "Clear the conversation history" },
 		{
 			command: "switch",
-			description: "Switch bot mode (observer / takeover / mixed / personal)",
+			description: "Switch bot mode (manager / personal / mixed)",
 		},
 		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },

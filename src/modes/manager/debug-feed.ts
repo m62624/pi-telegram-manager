@@ -8,7 +8,6 @@
  * the thinking/tool-calls from the turn's messages and does the actual send.
  */
 
-import type { ManagerSubMode } from "../../storage/singleton-store";
 import {
 	blockquote,
 	bold,
@@ -42,7 +41,6 @@ export interface ManagerToolCall {
 
 export interface ManagerFeedEntry {
 	log: ManagerTurnLog;
-	subMode: ManagerSubMode;
 	/** The `[Now: …]` line, shown as a small footer. */
 	nowLine: string;
 	/** The model's raw reasoning for the turn, if any (folded, collapsed). */
@@ -62,26 +60,18 @@ function truncate(text: string, max: number): string {
  * {@link RichHtml} ready for `OutboundSender.notify`.
  */
 export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
-	const { log, subMode, nowLine, thinking, tools } = entry;
+	const { log, nowLine, thinking, tools } = entry;
 	const blocks: RichHtml[] = [];
 
 	// Header: the interlocutor this turn is about — full name, with @username and
-	// phone (when shared) in parentheses; the sub-mode. Ids and the rest live in a
-	// folded "Contact" block below.
-	const modeBadge = subMode === "takeover" ? "🎛️ takeover" : "👁️ observer";
+	// phone (when shared) in parentheses. Ids and the rest live in a folded
+	// "Contact" block below.
 	const paren: string[] = [];
 	if (log.username) paren.push(`@${log.username}`);
 	if (log.phone) paren.push(log.phone);
 	const parenSuffix = paren.length > 0 ? ` (${paren.join(", ")})` : "";
 	blocks.push(
-		paragraph(
-			RichHtml.join([
-				"💬 ",
-				bold(log.contactName),
-				parenSuffix,
-				`  ·  ${modeBadge}`,
-			]),
-		),
+		paragraph(RichHtml.join(["💬 ", bold(log.contactName), parenSuffix])),
 	);
 
 	// Outcome headline. For a reply, name who it went to (always the interlocutor

@@ -33,7 +33,11 @@ import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
-import { backgroundNowMessage, formatNowLine } from "./core/datetime";
+import {
+	backgroundNowMessage,
+	formatClock,
+	formatNowLine,
+} from "./core/datetime";
 import { expandHome, readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -91,14 +95,12 @@ import {
 	stripTelegramTurns,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
-import { selectMode } from "./modes/manager/mode-picker";
 import {
 	managerGuardActive,
 	managerHoldsSession,
 	mixedContextSource,
 } from "./modes/manager/polarity";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
-import { selectManagerSubMode } from "./modes/manager/submode-picker";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -128,7 +130,6 @@ import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateMemory } from "./storage/memory-migration";
 import { createSentRegistry } from "./storage/sent-registry";
-import type { ManagerSubMode } from "./storage/singleton-store";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -155,7 +156,11 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
-import { TopicRouter, type TopicsApi } from "./telegram/topics";
+import {
+	placeOfOwnerMessage,
+	TopicRouter,
+	type TopicsApi,
+} from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
 import { fitLine, fitLines, terminalWidth } from "./ui/fit";
 import { managerBannerLines } from "./ui/manager-banner";
@@ -186,15 +191,22 @@ interface ControlApi {
 		message_id: number;
 		reply_markup?: InlineKeyboardMarkup;
 	}): Promise<unknown>;
-	editMessageText(payload: {
-		chat_id: number;
-		message_id: number;
-		text: string;
-	}): Promise<unknown>;
 	pinChatMessage(payload: {
 		chat_id: number;
 		message_id: number;
 		disable_notification?: boolean;
+	}): Promise<unknown>;
+	/** Removes the previous mode pin, so only one is ever in the chat. */
+	deleteMessage(payload: {
+		chat_id: number;
+		message_id: number;
+	}): Promise<unknown>;
+	/** Copies a message the owner typed elsewhere into the personal topic. */
+	forwardMessage(payload: {
+		chat_id: number;
+		message_thread_id?: number;
+		from_chat_id: number;
+		message_id: number;
 	}): Promise<unknown>;
 }
 
@@ -272,6 +284,13 @@ const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
+
+/**
+ * How many un-answered messages typed outside the personal topic are remembered. A
+ * turn claims its own, so this only bounds the ones no turn ever came for (a message
+ * sent while the bot was busy elsewhere, an aborted turn).
+ */
+const MAX_STRAY_MESSAGES = 50;
 const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
 // Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
@@ -288,7 +307,7 @@ const MANAGER_TOOLS = [
 const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
-	"/switch — change mode (observer / takeover / mixed / personal)",
+	"/switch — change mode (manager / personal / mixed)",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
 	"",
@@ -457,11 +476,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// `/switch` control state. `activeCtx` is the most recent command context —
 	// needed so a Telegram button press (which has no Pi ctx) can still notify and
 	// restart a mode; captured on every mode start. `ownerUserId` gates control to
-	// the owner; `activeSubMode` tracks the running manager sub-mode so the panel
-	// can highlight the current mode.
+	// the owner.
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
-	let activeSubMode: ManagerSubMode | null = null;
+	// The configured zone, for the clock the mode pin carries. Set on every mode start.
+	let activeTimezone: string | undefined;
 
 	// Mixed mode: the manager runtime coexists with the owner's coding thread in
 	// ONE session. `polarity` says whose turn the shared brain is serving right
@@ -474,20 +493,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let polarity: "coding" | "telegram" = "coding";
 	let mixedReturnMs = 480_000;
 	let mixedReturnTimer: ReturnType<typeof setTimeout> | null = null;
-	// The pinned "current mode" indicator in the owner's DM: the message id we pin
-	// once and then edit in place on every mode change (so switches never spam new
-	// pins), plus the mode it currently shows (to skip redundant edits).
-	let modePinMessageId: number | null = null;
-	let modePinTarget: PanelMode | null = null;
 	/**
-	 * The pin lives in the owner's DM, not in this process: without persisting its id
-	 * a restarted Pi forgot it and pinned a SECOND message ("Закреплённое сообщение
-	 * #2") instead of editing the one already there. Loaded on the first pin update
-	 * of a session, written whenever a new pin is created.
+	 * Every mode message this bot has posted and not yet removed, newest last.
+	 *
+	 * Not one id but a LIST, because the chat is the only real record and we are not
+	 * its only author: a mode message can survive us (a crash between posting and
+	 * saving, a `/start` that deliberately let go of the old one), and one forgotten
+	 * message means the chat keeps a stale "Bot mode: …" line forever while the next
+	 * switch deletes the wrong one. Deleting the whole list on every update makes the
+	 * chat converge on exactly one mode message, whatever happened before.
+	 *
+	 * Persisted, because the ids live in the owner's DM and not in this process: a
+	 * restarted Pi that forgot them used to pin a SECOND message next to the first.
 	 */
+	let modePinMessageIds: number[] = [];
 	interface ModePinState {
 		ownerChatId: number;
-		messageId: number;
+		/** Historic single-id form; still read so an existing pin is not orphaned. */
+		messageId?: number;
+		messageIds?: number[];
 	}
 	let modePinLoaded = false;
 
@@ -498,21 +522,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			paths.modePinPath,
 		).catch(() => null);
-		if (stored && stored.ownerChatId === ownerChatId) {
-			modePinMessageId = stored.messageId;
-			// The mode it shows is unknown after a restart, so the first update always
-			// rewrites the text rather than assuming it already matches.
-			modePinTarget = null;
-		}
+		if (!stored || stored.ownerChatId !== ownerChatId) return;
+		modePinMessageIds = [
+			...(stored.messageIds ?? []),
+			...(stored.messageId !== undefined ? [stored.messageId] : []),
+		];
+	};
+
+	/** Forget the pin entirely (an error path: better a new one than a ghost). */
+	const forgetModePin = async (): Promise<void> => {
+		modePinMessageIds = [];
+		await fs.removeFile(paths.modePinPath).catch(() => {});
 	};
 
 	const saveModePin = async (
 		ownerChatId: number,
-		messageId: number,
+		messageIds: number[],
 	): Promise<void> => {
+		modePinMessageIds = messageIds;
 		await writeJson<ModePinState>(fs, paths.modePinPath, {
 			ownerChatId,
-			messageId,
+			messageIds,
 		}).catch(() => {});
 	};
 
@@ -543,16 +573,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	// Mixed mode's only persistent TUI chrome: a one-line status showing the mode,
-	// sub-mode, and which polarity the shared brain is serving right now.
+	// which polarity the shared brain is serving right now.
 	const updateMixedFooter = (): void => {
 		if (!mixedActive) return;
 		const where = polarity === "telegram" ? "in Telegram" : "coding";
 		activeCtx?.ui.setStatus(
 			STATUS_KEY,
-			fitLine(
-				`mixed · ${activeSubMode ?? "observer"} · ${where}`,
-				terminalWidth(),
-			),
+			fitLine(`mixed · ${where}`, terminalWidth()),
 		);
 	};
 
@@ -684,7 +711,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await managerClient?.stop().catch(() => {});
 		managerClient = null;
 		manager = null;
-		activeSubMode = null;
 		deliverManagerFeed = null;
 		mirrorManagerNotice = null;
 		visibility.setActive("manager", false);
@@ -912,6 +938,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!text?.trim()) return;
 		connect.endDraft();
 		mirroredThisRun = true;
+		notePersonalActivity();
 		await connect.deliverAssistant(text).catch(() => {});
 	});
 
@@ -921,6 +948,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("input", async (event) => {
 		const origin = classifyInputSource(event.source);
 		if (connect && shouldMirrorToTelegram(origin)) {
+			notePersonalActivity();
 			await connect.mirrorTerminalInput(event.text).catch(() => {});
 		}
 		// Mixed mode: a prompt the owner typed at the terminal is the priority
@@ -951,15 +979,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
-		if (connect) {
-			await connect
-				.sendToChat(
-					card("🔌", "Pi session closed", [
-						note("The bridge is no longer active."),
-					]),
-				)
-				.catch(() => {});
-		}
+		// No goodbye card: the pinned mode line is the one place that says whether the
+		// bridge is up, and it now flips to "Stopped" here. A card said the same thing
+		// once, then stayed in the chat saying it forever.
+		if (connect || manager) await updateModePin("stop");
 	});
 
 	// Both mode launchers load settings, surface any warnings, and need the bot
@@ -970,6 +993,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<{ settings: TelegramSettings; token: string } | null> => {
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		activeTimezone = settings.timezone;
 		const token = resolveSecret(settings.botToken);
 		if (!token) {
 			ctx.ui.notify(
@@ -1013,6 +1037,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		});
 		await topics.ensure();
+	};
+
+	/**
+	 * Start this session in a brand-new `personal` topic (see TopicRouter.startSession
+	 * for what we measured and why). Only where the conversation actually lives: personal
+	 * and mixed. The manager never talks in `personal` — it only pins the mode line there
+	 * — so rotating on its start would burn topics for nothing.
+	 */
+	const rotatePersonalTopic = async (): Promise<void> => {
+		if (!topics?.active) return;
+		await topics.startSession();
+	};
+
+	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
+	const notePersonalActivity = (): void => {
+		void topics?.markUsed().catch(() => {});
 	};
 
 	/**
@@ -1163,14 +1203,111 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * swallowed in silence (the router still pointed at a dead thread). So an
 	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
 	 * message is taken as personal: the reply lands in the fresh `personal` topic.
+	 *
+	 * A message with NO thread is one typed OUTSIDE the topics — the "All" view, where
+	 * Telegram itself labels the input box "message outside a topic". Live proof: a
+	 * message typed inside `personal` arrives with `message_thread_id` set to it and
+	 * `is_topic_message=true`, so the absence is not silence, it is the answer. Such a
+	 * message is brought over too, since the answer to it goes to `personal` and the
+	 * conversation there must not read as the bot talking to itself.
 	 */
 	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
 		if (!topics?.active) return true;
-		const thread = threadOf(event);
-		if (thread === personalThread()) return true;
-		if (thread === managerThread()) return false;
-		await topics.revalidate();
+		const place = placeOfOwnerMessage({
+			thread: threadOf(event),
+			isTopicMessage:
+				event.kind === "message" || event.kind === "edited_message"
+					? event.message.is_topic_message
+					: undefined,
+			personal: personalThread(),
+			manager: managerThread(),
+		});
+		if (place === "manager") return false;
+		notePersonalActivity();
+		if (place === "personal") return true;
+		// A topic we do not know may be one the owner made — or ours, deleted and
+		// replaced. Re-check ours (recreating whatever is gone) before answering.
+		if (place === "topic") await topics.revalidate();
+		noteStray(event, place === "outside");
 		return true;
+	};
+
+	/**
+	 * Messages typed outside the personal topic, waiting for the turn that answers them.
+	 *
+	 * Telegram cannot MOVE a message between topics, so the question stays where it was
+	 * typed while the answer goes to `personal` — leaving the topic reading as if the
+	 * bot talked to itself. Quoting the far message across topics was tried and
+	 * abandoned (no two clients agreed on what the quote meant), so a COPY is forwarded
+	 * into `personal` instead.
+	 *
+	 * The copy is made when the turn STARTS, not when the message lands: a message may
+	 * still be waiting for an album to close, be folded into a burst of forwards, or be
+	 * followed by three more sentences — copying each on arrival filled the topic with
+	 * forwards before the bot had even begun to think. One turn, one copy of what it
+	 * actually answers, right as the answer starts being written.
+	 *
+	 * The value says whether the ORIGINAL is then removed — and that depends on where it
+	 * was typed. The "All" view is not a place: nothing lives there, so the message is
+	 * MOVED out of it. A topic the owner made themselves IS a place, theirs, and the bot
+	 * has no business emptying it: from there the message is only copied.
+	 */
+	const strayMessages = new Map<number, { moveOut: boolean }>();
+
+	const noteStray = (event: TelegramEvent, moveOut: boolean): void => {
+		if (event.kind !== "message") return;
+		// A command (/clear, /help) is an instruction to the bridge, not a line of the
+		// conversation — the topic needs no record of it.
+		if ((event.message.text ?? "").startsWith("/")) return;
+		strayMessages.set(event.message.message_id, { moveOut });
+		// Bound it: turns claim their own, so this only holds the ones no turn came for.
+		if (strayMessages.size > MAX_STRAY_MESSAGES) {
+			const oldest = strayMessages.keys().next();
+			if (!oldest.done) strayMessages.delete(oldest.value);
+		}
+	};
+
+	/**
+	 * Bring the messages this turn answers into `personal`: copy each one there, and —
+	 * only for those typed in the "All" view — remove the original, so the question is
+	 * MOVED rather than duplicated. "Bots can delete incoming messages in private chats"
+	 * is the one lever Telegram gives us for that.
+	 *
+	 * A message from a topic the OWNER made is copied and left alone. That topic is
+	 * theirs — notes, a scratch thread, whatever they built it for — and a bot that
+	 * empties it to keep its own conversation tidy is a bot that deletes your things.
+	 * The copy is enough: `personal` still reads as a whole conversation.
+	 *
+	 * The delete happens only once the copy is safely there, so a failed forward costs
+	 * nothing: the message stays where it is and is answered from `personal`, as before.
+	 * (Telegram refuses to delete anything older than 48 hours; ignored for the same
+	 * reason.)
+	 */
+	const mirrorStraysIntoPersonal = async (
+		sourceMessageIds: readonly number[],
+	): Promise<void> => {
+		const api = controlApi();
+		const personal = personalThread();
+		if (!api || personal === undefined || ownerUserId === null) return;
+		const owner = ownerUserId;
+		for (const messageId of sourceMessageIds) {
+			const stray = strayMessages.get(messageId);
+			if (!stray) continue;
+			strayMessages.delete(messageId);
+			const copied = await api
+				.forwardMessage({
+					chat_id: owner,
+					message_thread_id: personal,
+					from_chat_id: owner,
+					message_id: messageId,
+				})
+				.then(() => true)
+				.catch(() => false);
+			if (!copied || !stray.moveOut) continue;
+			await api
+				.deleteMessage({ chat_id: owner, message_id: messageId })
+				.catch(() => {});
+		}
 	};
 
 	/**
@@ -1306,6 +1443,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		};
 		// Upload a local file or URL back to the bound chat (the telegram_attach
 		// tool). Validate a local path up front so the model gets a clear error.
+		//
+		// The file belongs in the `personal` topic, like every other half of this
+		// conversation: sent thread-less it landed in the DM's catch-all instead, so
+		// the model announced a file that was nowhere to be seen in the topic the
+		// owner was reading. A dead thread is repaired and retried once, exactly as
+		// the text sends do — a failed send is the only proof a topic was deleted.
 		const uploadFile = async (input: {
 			path?: string;
 			url?: string;
@@ -1314,7 +1457,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);
 			}
-			await telegram.sendDocument({ chatId: allowedUserId, ...input });
+			const send = (threadId: number | undefined) =>
+				telegram.sendDocument({
+					chatId: allowedUserId,
+					threadId,
+					...input,
+				});
+			try {
+				await send(personalThread());
+			} catch (error) {
+				if (!topics?.active || !TopicRouter.isMissingThread(error)) throw error;
+				await send(await topics.recreate("personal"));
+			}
 		};
 		connect = new ConnectController({
 			allowedUserId,
@@ -1360,6 +1514,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			},
 			chatThread: personalThread,
+			onTurnVisible: mirrorStraysIntoPersonal,
 			forwards: settings.forwards,
 			outbound,
 			abort,
@@ -1421,13 +1576,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
-		const bridge = await startConnectRuntime(
-			client,
-			token,
-			settings,
-			ctx,
-			allowedUserId,
-		);
+		await rotatePersonalTopic();
+		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
 		// Publish the tappable command menu (no manual setup needed by the user).
 		void client.api
@@ -1441,14 +1591,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			STATUS_KEY,
 			fitLine(`Telegram: connected (chat ${allowedUserId})`, terminalWidth()),
 		);
-		// Route through the Markdown pipeline (sendToChat), not notify(): notify
-		// HTML-escapes its string, so any `*`/`_` markup would show up literally.
-		await bridge
-			.sendToChat(
-				card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
-			)
-			.catch(() => {});
 		ctx.ui.notify("Telegram connect: active.");
+		// The pin IS the connection notice, in every mode — a separate "Connected"
+		// card would say the same thing twice, and only personal mode ever sent one.
 		await updateModePin("personal");
 	};
 
@@ -1465,26 +1610,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	// Shared launcher for both manager sub-modes, and for mixed mode (`mixed:
-	// true`), which runs the same manager runtime alongside the owner's coding
-	// thread in one session. The sub-mode comes from the command's picker, not from
-	// settings.
+	// Shared launcher for the manager and for mixed mode (`mixed: true`), which runs
+	// the same manager runtime alongside the owner's coding thread in one session.
 	const startManager = async (
 		ctx: ExtensionCommandContext,
-		subMode: ManagerSubMode,
 		options: { mixed?: boolean } = {},
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
-		const wanted: PanelMode = mixed
-			? (`mixed-${subMode}` as PanelMode)
-			: subMode;
+		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
 		const { settings, token } = loaded;
 		ownerUserId = settings.allowedUserId ?? null;
-		activeSubMode = subMode;
 		// Prime mixed-mode state before anything reads it (context handler, isIdle):
 		// the owner is at the keyboard when they launch it, so start in the coding
 		// polarity with the return timer disarmed until the first coding turn ends.
@@ -1497,7 +1636,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const activation = await lifecycle.activate({
 			mode: mixed ? "mixed" : "manager",
 			workdir: mixed ? ctx.cwd : paths.managerWorkspaceDir,
-			subMode,
 		});
 		if (!activation.ok) {
 			mixedActive = false;
@@ -1508,17 +1646,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
-		// Assemble the manager's system instructions: the bundled defaults for this
-		// sub-mode plus any user override files (global + manager + sub-mode).
+		// Assemble the manager's system instructions: the bundled defaults plus any
+		// user override files (global + manager).
 		const overrideFiles = [
 			...settings.instructionFiles,
 			...settings.manager.instructionFiles,
-			...(subMode === "takeover"
-				? [settings.manager.takeover.instructionFile]
-				: [
-						settings.manager.observer.interlocutorInstructionFile,
-						settings.manager.observer.ownerInstructionFile,
-					]),
 		].filter((file): file is string => Boolean(file));
 		const override = await readInstructionFiles(fs, overrideFiles);
 		for (const file of override.missing) {
@@ -1544,7 +1676,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		const instructions = await loadManagerInstructions({
 			fs,
-			subMode,
 			labeler: settings.manager.labeler,
 			mentionWords: effectiveMentionWords,
 			overrideText: override.text,
@@ -1639,6 +1770,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// for the very same session — a message there is exactly a prompt typed at
 			// the terminal (and terminal prompts mirror back into it).
 			if (mixed) {
+				await rotatePersonalTopic();
 				await startConnectRuntime(
 					managerClient,
 					token,
@@ -1688,7 +1820,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		);
 		manager = new ManagerController({
-			subMode,
 			instructions,
 			labeler: settings.manager.labeler,
 			rememberMessages: settings.manager.rememberMessages,
@@ -1813,7 +1944,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await sendOwnerFeed(
 					buildManagerFeed({
 						log,
-						subMode,
 						nowLine: formatNowLine(Date.now(), settings.timezone),
 						thinking: thinking || undefined,
 						tools,
@@ -1864,11 +1994,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// owner hands the brain to Telegram on its own.
 			updateMixedFooter();
 			armMixedReturnTimer();
-			ctx.ui.notify(`Telegram mixed: active (${subMode}).`);
-			await updateModePin(`mixed-${subMode}` as PanelMode);
+			ctx.ui.notify("Telegram mixed: active.");
+			await updateModePin("mixed");
 		} else {
-			ctx.ui.notify(`Telegram manager: active (${subMode}).`);
-			await updateModePin(subMode);
+			ctx.ui.notify("Telegram manager: active.");
+			await updateModePin("manager");
 		}
 	};
 
@@ -1878,24 +2008,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			"Bind this terminal session to a Telegram chat (personal mode).",
 		handler: (_args, ctx) => startConnect(ctx),
 	});
-	// Business manager: pick a sub-mode, then run the manager.
+	// Business manager: answer other people on the owner's behalf.
 	pi.registerCommand(COMMANDS.manager, {
-		description:
-			"Start the Telegram business manager (pick observer or takeover).",
+		description: "Start the Telegram business manager (answer for you).",
 		handler: async (_args, ctx) => {
-			const subMode = await selectManagerSubMode(ctx.ui);
-			if (!subMode) return;
-			await startManager(ctx, subMode);
+			await startManager(ctx);
 		},
 	});
-	// Mixed: coding + Telegram moderation share one session (pick a sub-mode).
+	// Mixed: coding + Telegram moderation share one session.
 	pi.registerCommand(COMMANDS.mixed, {
-		description:
-			"Run coding and Telegram moderation together (pick observer or takeover).",
+		description: "Run coding and Telegram moderation together.",
 		handler: async (_args, ctx) => {
-			const subMode = await selectManagerSubMode(ctx.ui, "Mixed mode sub-mode");
-			if (!subMode) return;
-			await startManager(ctx, subMode, { mixed: true });
+			await startManager(ctx, { mixed: true });
 		},
 	});
 	// Stop whichever Telegram mode is currently active.
@@ -1933,13 +2057,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
 
 	// The mode currently running, for the panel caption / pin ("stop" when idle).
-	// Mixed reports as its own target (mixed-observer / mixed-takeover) so the right
-	// button is checked and a tap on a different one switches as expected.
 	const activeTarget = (): PanelMode => {
-		if (manager) {
-			const sub = activeSubMode ?? "observer";
-			return mixedActive ? (`mixed-${sub}` as PanelMode) : sub;
-		}
+		if (manager) return mixedActive ? "mixed" : "manager";
 		if (connect) return "personal";
 		return "stop";
 	};
@@ -1955,12 +2074,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		target: SwitchTarget,
 		ctx: ExtensionCommandContext,
 	): Promise<void> => {
-		if (target === "observer" || target === "takeover") {
-			await startManager(ctx, target);
-		} else if (target === "mixed-observer") {
-			await startManager(ctx, "observer", { mixed: true });
-		} else if (target === "mixed-takeover") {
-			await startManager(ctx, "takeover", { mixed: true });
+		if (target === "manager") {
+			await startManager(ctx);
+		} else if (target === "mixed") {
+			await startManager(ctx, { mixed: true });
 		} else if (target === "personal") {
 			await startConnect(ctx);
 		}
@@ -2021,53 +2138,111 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	// Keep a pinned message at the top of the owner's DM showing the active mode, so
 	// the current mode is always visible without running a command. Pinned once, then
-	// edited in place on every change (no new pins per switch); "stop" shows the bot
-	// is off. Best-effort — never blocks a mode start/stop.
+	// edited in place (no new pins per switch); "stop" shows the bot is off.
+	//
+	// It carries the time it last changed, which is not decoration: a reconnect in the
+	// SAME mode is a real event for the person reading it ("is it up again?"), and
+	// without a clock the pin would be rewritten with identical text and look frozen.
+	// Best-effort — never blocks a mode start/stop.
 	const modePinText = (target: PanelMode): string => {
-		if (target === "stop")
-			return "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode.";
-		return `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
+		const at = formatClock(Date.now(), activeTimezone);
+		if (target === "stop") {
+			return `📌 Bot mode: ⏹️ Stopped\nStopped: ${at}\nUse /switch to start a mode.`;
+		}
+		return `📌 Bot mode: ${switchLabel(target)}\nActive since: ${at}\nUse /switch to change.`;
 	};
 
+	/**
+	 * Announce the mode in the owner's DM as a single pinned message.
+	 *
+	 * This used to edit the message in place. That cannot be made reliable: clearing
+	 * the chat wipes the owner's copy while Telegram goes on accepting edits to that
+	 * message id and still reports it as the chat's pinned message — so the bot edited
+	 * a ghost, concluded all was well, and posted nothing. An empty chat, no error, no
+	 * pin. "The message exists" and "the owner can see it" are simply not the same
+	 * fact, and nothing in the Bot API tells them apart.
+	 *
+	 * So the pin is not maintained, it is REPLACED: delete every mode message we
+	 * remember (if any is still there), post a new one, pin it. Connecting, switching and stopping
+	 * are each a real event the person should see arrive, the chat never collects more
+	 * than one mode message, and an owner who unpinned or deleted it needs no special
+	 * case — the next update simply posts one that exists.
+	 *
+	 * Best-effort: never blocks a mode start or stop, but a failure is reported rather
+	 * than swallowed.
+	 */
 	const updateModePin = async (target: PanelMode): Promise<void> => {
+		// Serialised: two updates at once (a switch racing a shutdown) would each read
+		// the same "previous" id, delete it twice and post twice — leaving a message
+		// nobody remembers, which is exactly the duplicate this is meant to prevent.
+		modePinChain = modePinChain.then(() => runModePinUpdate(target));
+		await modePinChain;
+	};
+
+	let modePinChain: Promise<void> = Promise.resolve();
+
+	const runModePinUpdate = async (target: PanelMode): Promise<void> => {
 		if (ownerUserId === null) return;
 		await loadModePin(ownerUserId);
-		if (modePinTarget === target) return;
 		const api = controlApi();
 		if (!api) return;
+		const owner = ownerUserId;
 		const text = modePinText(target);
-		try {
-			if (modePinMessageId !== null) {
-				// Always EDIT the pin that is already there — a new mode is not a new
-				// message. A pin per switch is what buried the chat under numbered pins.
-				await api.editMessageText({
-					chat_id: ownerUserId,
-					message_id: modePinMessageId,
-					text,
-				});
-			} else {
+
+		// Post into the personal topic, rebuilding it when it turns out to be gone
+		// (deleting the chat takes its topics with it).
+		const post = async (): Promise<number> => {
+			try {
 				const sent = await api.sendMessage({
-					chat_id: ownerUserId,
+					chat_id: owner,
 					message_thread_id: personalThread(),
 					text,
 				});
-				modePinMessageId = sent.message_id;
-				await api
-					.pinChatMessage({
-						chat_id: ownerUserId,
-						message_id: sent.message_id,
-						disable_notification: true,
-					})
-					.catch(() => {});
-				await saveModePin(ownerUserId, sent.message_id);
+				return sent.message_id;
+			} catch (error) {
+				if (!topics?.active || !TopicRouter.isMissingThread(error)) throw error;
+				const thread = await topics.recreate("personal");
+				const sent = await api.sendMessage({
+					chat_id: owner,
+					message_thread_id: thread,
+					text,
+				});
+				return sent.message_id;
 			}
-			modePinTarget = target;
-		} catch {
-			// The pinned message was deleted (or is unreachable): forget it so the next
-			// update re-creates and re-pins from scratch, and drop the stale id on disk.
-			modePinMessageId = null;
-			modePinTarget = null;
-			await fs.removeFile(paths.modePinPath).catch(() => {});
+		};
+
+		try {
+			// Remove every mode message we know of, not just the last one. A delete that
+			// fails is the normal case (deleted by hand, or with the chat), not an error —
+			// we are about to replace it anyway.
+			for (const messageId of modePinMessageIds) {
+				await api
+					.deleteMessage({ chat_id: owner, message_id: messageId })
+					.catch(() => {});
+			}
+			modePinMessageIds = [];
+			const messageId = await post();
+			await saveModePin(owner, [messageId]);
+			await api
+				.pinChatMessage({
+					chat_id: owner,
+					message_id: messageId,
+					disable_notification: true,
+				})
+				.catch((error) => {
+					// It is still a readable message, just not pinned — say so rather than
+					// leave the owner wondering why the mode is not shown at the top.
+					activeCtx?.ui.notify(
+						`Sent the mode message but could not pin it: ${String(error)}`,
+						"warning",
+					);
+				});
+		} catch (error) {
+			await forgetModePin();
+			activeCtx?.ui.notify(
+				`Could not announce the mode in Telegram: ${String(error)}`,
+				"warning",
+			);
 		}
 	};
 
@@ -2088,6 +2263,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				link_preview_options: { is_disabled: true },
 			})
 			.catch(() => {});
+		// The owner pressing Start means their chat begins again — after deleting it,
+		// that is the only way back in, and the chat has no mode message any more. Post
+		// one showing whatever mode is actually running. (The old ids are dropped by the
+		// update itself: deleting a message the owner already wiped simply fails.)
+		if (event.fromId === ownerUserId && event.chatId === ownerUserId) {
+			await updateModePin(activeTarget());
+		}
 		return true;
 	};
 
@@ -2179,39 +2361,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		return false;
 	};
-
-	pi.registerCommand(COMMANDS.switch, {
-		description:
-			"Switch the Telegram mode (or send the switcher to your bot DM).",
-		handler: async (_args, ctx) => {
-			activeCtx = ctx;
-			const api = controlApi();
-			const botRunning = api !== null && ownerUserId !== null;
-			// Pick right here in the terminal. Pushing the inline keyboard to Telegram is
-			// just one of the options, and only when a bot is polling to receive it — the
-			// switcher used to be Telegram-only, so with the bot off it could not start
-			// the very modes it exists to start.
-			const choice = await selectMode(ctx.ui, activeTarget(), botRunning);
-			if (choice === null) return;
-			if (choice === "panel") {
-				if (!api) return;
-				await sendSwitchPanel(api);
-				ctx.ui.notify("Telegram switcher: sent to your bot DM.");
-				return;
-			}
-			if (choice === "stop") {
-				if (!botRunning && activeTarget() === "stop") {
-					ctx.ui.notify("No Telegram mode is active.", "warning");
-					return;
-				}
-				await updateModePin("stop");
-				await stopAll();
-				ctx.ui.notify("Telegram: stopped.");
-				return;
-			}
-			await startMode(choice, ctx);
-		},
-	});
 
 	// ─── Connection watchdog ─────────────────────────────────────────────────
 	// A silent liveness probe on whichever client is polling; after too many
@@ -2343,5 +2492,26 @@ async function catchUpOnActivation(
 			contactName,
 			userId,
 		});
+	}
+	// Memory catch-up, for EVERY chat with a transcript — not only the ones being
+	// answered. Consolidation candidates were only ever created by live traffic, so a
+	// conversation that ended before this process started was never consolidated at
+	// all; queueing them here is what makes memory survive a restart.
+	for (const chat of chats) {
+		const userId = lastInterlocutorUserId(chat.records);
+		if (!userId) continue; // no contact to remember facts about
+		const activityAt = chat.records[chat.records.length - 1]?.timestamp;
+		if (activityAt === undefined) continue;
+		await manager
+			.seedConsolidation(
+				chat.chatId,
+				{
+					connectionId: connection.id,
+					contactName: lastInterlocutorName(chat.records) ?? chat.chatId,
+					userId,
+				},
+				activityAt,
+			)
+			.catch(() => {});
 	}
 }

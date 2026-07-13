@@ -144,6 +144,25 @@ export class ChatScheduler {
 	}
 
 	/**
+	 * The OWNER spoke in this chat: end its continuation window.
+	 *
+	 * The window is a fast lane for a conversation the bot is carrying — while it
+	 * is armed, the interlocutor's next message skips the owner-reply window and is
+	 * served at once. That is right only while the exchange is strictly
+	 * bot↔interlocutor. The moment the owner writes, they are present, and the bot
+	 * must go back to letting them answer first: without this, the owner steps in,
+	 * the interlocutor writes 20 seconds later, and the bot replies instantly —
+	 * straight over the owner who just arrived.
+	 *
+	 * The chat is released only when nothing is owed on it; call while idle, so the
+	 * active slot is never moved mid-turn.
+	 */
+	dropContinuation(chatId: string): void {
+		this.timers.cancel(chatId, TIMER.continueWindow);
+		if (this.active === chatId) this.promoteNext();
+	}
+
+	/**
 	 * Advance time: if the active chat's continuation window has expired, release
 	 * it and promote the next queued chat. Idempotent when nothing is due.
 	 */

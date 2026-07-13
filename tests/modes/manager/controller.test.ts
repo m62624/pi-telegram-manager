@@ -12,7 +12,6 @@ import { createConsolidationQueue } from "../../../src/storage/consolidation-que
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
 import { createSentRegistry } from "../../../src/storage/sent-registry";
-import type { ManagerSubMode } from "../../../src/storage/singleton-store";
 import { FakeFs } from "../../helpers/fake-fs";
 
 const OWNER_ID = 999;
@@ -38,10 +37,7 @@ function ownerMsg(text: string, messageId = 100): Message {
 	} as Message;
 }
 
-async function setup(
-	subMode: ManagerSubMode = "observer",
-	mentionWords: string[] = [],
-) {
+async function setup(mentionWords: string[] = []) {
 	const fs = new FakeFs();
 	const paths = createTelegramPaths("/agent");
 	const clock = new ManualClock(0);
@@ -59,7 +55,6 @@ async function setup(
 	const sendReply = vi.fn(async () => [nextId++]);
 	let idle = true;
 	const deps: ManagerControllerDeps = {
-		subMode,
 		instructions: {
 			base: "BASE MANAGER RULES",
 			firstMessage: "FIRST CONTACT",
@@ -423,7 +418,7 @@ describe("ManagerController", () => {
 	});
 
 	it("strict guard lets an addressed reply through", async () => {
-		const { controller, sendReply } = await setup("observer", ["llm"]);
+		const { controller, sendReply } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -470,7 +465,7 @@ describe("ManagerController", () => {
 	});
 
 	it("fast-tracks an interlocutor wake-word past the owner-reply window", async () => {
-		const { controller, triggerAgent } = await setup("observer", ["llm"]);
+		const { controller, triggerAgent } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -490,9 +485,7 @@ describe("ManagerController", () => {
 		// In mixed mode's coding polarity the manager's isIdle is false, so a
 		// wake-word may make the chat ready but must NOT preempt the owner's coding —
 		// unlike the standalone manager, it waits for the return-timer to free the brain.
-		const { controller, triggerAgent, setIdle } = await setup("observer", [
-			"llm",
-		]);
+		const { controller, triggerAgent, setIdle } = await setup(["llm"]);
 		setIdle(false);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -509,7 +502,7 @@ describe("ManagerController", () => {
 	});
 
 	it("without a wake-word the interlocutor still waits out the owner window", async () => {
-		const { controller } = await setup("observer", ["llm"]);
+		const { controller } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -523,7 +516,7 @@ describe("ManagerController", () => {
 	});
 
 	it("observer: an owner wake-word summons the bot immediately", async () => {
-		const { controller, triggerAgent } = await setup("observer", ["llm"]);
+		const { controller, triggerAgent } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -535,15 +528,20 @@ describe("ManagerController", () => {
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
 	});
 
-	it("takeover: an owner wake-word is ignored (owner presence still freezes)", async () => {
-		const { controller, triggerAgent } = await setup("takeover", ["llm"]);
+	it("never opens a turn on the owner's own question to the interlocutor", async () => {
+		// The invariant the owner hit live: they wrote "did you buy bread?" to the
+		// interlocutor and the BOT answered "yes" — reading the owner's question as one
+		// put to it. No owner message (bar a wake-word) may start a turn at all: after
+		// one, nothing in the chat is unanswered, so there is nothing to wake for.
+		const { controller, triggerAgent, clock } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: OWNER_ID,
-			message: ownerMsg("llm, do this"),
+			message: ownerMsg("did you buy bread?"),
 		});
 		expect(controller.status().activeChat).toBeUndefined();
+		clock.advance(300_001);
 		await controller.onTick();
 		expect(triggerAgent).not.toHaveBeenCalled();
 	});
@@ -562,7 +560,7 @@ describe("ManagerController", () => {
 	});
 
 	it("ignores the bot's own outgoing echo (does not freeze/queue)", async () => {
-		const { controller, triggerAgent, deps } = await setup("takeover");
+		const { controller, triggerAgent, deps } = await setup();
 		// Simulate a prior bot send recorded in the registry.
 		await deps.sentRegistry.recordSent("42", 500);
 		await controller.onBusinessMessage({
@@ -576,7 +574,7 @@ describe("ManagerController", () => {
 	});
 
 	it("takeover: a manual owner message freezes the chat so the bot stays silent", async () => {
-		const { controller, triggerAgent } = await setup("takeover");
+		const { controller, triggerAgent } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -594,13 +592,11 @@ describe("ManagerController", () => {
 		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
-	it("takeover: a frozen chat ignores even a wake-word until the owner is away", async () => {
-		// The freeze used to be dead state — nothing read it — so a wake-word from the
-		// interlocutor pulled the bot straight back into a chat the owner had just
-		// taken over. Now the owner keeps the wheel until they go quiet again.
-		const { controller, triggerAgent, clock } = await setup("takeover", [
-			"llm",
-		]);
+	it("the owner writing does not switch the bot off in that chat", async () => {
+		// There used to be a freeze: once the owner wrote, nothing the interlocutor said
+		// afterwards could reach the bot — not even a wake-word. Now the owner simply
+		// took that batch; being addressed still reaches the bot at once.
+		const { controller, triggerAgent } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -614,17 +610,11 @@ describe("ManagerController", () => {
 			message: interlocutorMsg("hey llm, what do you think?", 5, 2),
 		});
 		await controller.onTick();
-		expect(triggerAgent).not.toHaveBeenCalled();
-
-		// The owner stays silent through the window: the freeze lapses and the chat is
-		// served — the question is not lost, only deferred.
-		clock.advance(300_001);
-		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
 	});
 
-	it("takeover: the bot re-engages after the owner-reply window lapses", async () => {
-		const { controller, triggerAgent, clock } = await setup("takeover");
+	it("re-engages on the next interlocutor message the owner lets hang", async () => {
+		const { controller, triggerAgent, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -1319,10 +1309,7 @@ describe("consolidation pause/resume under live work", () => {
 		calls.filter(isConsolidation).length;
 
 	it("pauses at a fragment boundary for a live reply, then resumes", async () => {
-		const { controller, triggerAgent, clock, setIdle } = await setup(
-			"observer",
-			["llm"],
-		);
+		const { controller, triggerAgent, clock, setIdle } = await setup(["llm"]);
 		// Seed a contact and get its chat into the consolidation queue, then clear the
 		// unanswered state (the owner replied) so nothing is waiting on a reply.
 		await controller.onBusinessMessage({
@@ -1396,6 +1383,25 @@ describe("consolidation pause/resume under live work", () => {
 		// No interrogation turn was started, and the self-chat was dropped from the queue.
 		expect(triggerAgent).not.toHaveBeenCalled();
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+	});
+
+	it("queues a chat known only from disk, so a restart does not lose its memory", async () => {
+		// The queue used to be fed by live traffic alone: a conversation that ended
+		// before this process started was never consolidated at all. Activation seeds
+		// it from the transcripts on disk instead.
+		const { controller, triggerAgent, deps, clock } = await setup();
+		await controller.seedConsolidation(
+			"chat-1",
+			{ connectionId: "conn", contactName: "Ada", userId: "77" },
+			clock.now(),
+		);
+		expect(await deps.consolidationQueue.all()).toEqual([
+			{ chatId: "chat-1", userId: "77", activityAt: clock.now() },
+		]);
+
+		clock.advance(1_800_001); // quiet long enough
+		await controller.onTick();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
 	});
 });
 
@@ -1491,8 +1497,8 @@ describe("ManagerController forward budget", () => {
 describe("ManagerController owner identity without a stored connection", () => {
 	/** The manager, with an EMPTY business store — the state a bot connected before
 	 * its first run is in: Telegram only sends `business_connection` on change. */
-	async function noConnectionSetup(subMode: ManagerSubMode = "takeover") {
-		const base = await setup(subMode);
+	async function noConnectionSetup() {
+		const base = await setup();
 		const fs = new FakeFs();
 		const paths = createTelegramPaths("/agent-2");
 		const controller = new ManagerController({
@@ -1520,7 +1526,7 @@ describe("ManagerController owner identity without a stored connection", () => {
 		expect(controller.status().activeChat).toBeUndefined();
 	});
 
-	it("still freezes the chat in takeover while the owner holds it", async () => {
+	it("still stands the bot down while the owner is answering", async () => {
 		const { controller, triggerAgent, clock } = await noConnectionSetup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -1534,22 +1540,10 @@ describe("ManagerController owner identity without a stored connection", () => {
 			fromId: OWNER_ID,
 			message: ownerMsg("yes, one sec"),
 		});
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("ok!", 5, 2),
-		});
-		// Inside the window the owner still holds the chat: the bot stays out of it.
-		clock.advance(60_000);
-		await controller.onTick();
-		expect(triggerAgent).not.toHaveBeenCalled();
-
-		// Once they have been quiet for a full window the freeze lifts and the deferred
-		// message is served — exactly as with a stored connection.
+		// The owner answered: that batch is theirs, and the bot never steps on it.
 		clock.advance(300_001);
 		await controller.onTick();
-		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
 	it("still treats an interlocutor message as the job", async () => {
@@ -1630,7 +1624,7 @@ describe("ManagerController — whose words are whose", () => {
 	});
 
 	it("shows the owner's reply as the OWNER speaking, with the quote below it", async () => {
-		const { controller, deps } = await setup("takeover");
+		const { controller, deps } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -1687,7 +1681,7 @@ describe("ManagerController — the owner summons the bot (observer)", () => {
 		}) as Message;
 
 	it("keeps the summons alive while the owner is still adding to their question", async () => {
-		const { controller, triggerAgent } = await setup("observer", ["qwen"]);
+		const { controller, triggerAgent } = await setup(["qwen"]);
 		// The owner asks the bot something...
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -1710,9 +1704,7 @@ describe("ManagerController — the owner summons the bot (observer)", () => {
 	});
 
 	it("still stands down when the owner just answers the chat themselves", async () => {
-		const { controller, triggerAgent, clock } = await setup("observer", [
-			"qwen",
-		]);
+		const { controller, triggerAgent, clock } = await setup(["qwen"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -1732,9 +1724,7 @@ describe("ManagerController — the owner summons the bot (observer)", () => {
 	});
 
 	it("forgets the summons once the turn has run", async () => {
-		const { controller, triggerAgent, clock } = await setup("observer", [
-			"qwen",
-		]);
+		const { controller, triggerAgent, clock } = await setup(["qwen"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -1762,5 +1752,95 @@ describe("ManagerController — the owner summons the bot (observer)", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ManagerController — the owner steps into a live chat", () => {
+	it("ends the 1:30 fast lane, so the next message waits for the owner again", async () => {
+		// The continuation window exists for a conversation the bot is carrying: while
+		// it is armed the interlocutor's next message skips the owner-reply window. That
+		// is right only while the exchange is bot↔interlocutor. Once the owner writes,
+		// they are present — and the bot must let them answer first again, or it replies
+		// straight over the owner who just arrived.
+		const { controller, triggerAgent, sendReply, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("what time?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "at six" });
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
+
+		// The owner drops a line into the chat, inside the 1:30 window.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("actually, make it seven", 100),
+		});
+		// The interlocutor answers 20 seconds later — still inside what WAS the fast
+		// lane. The bot must not jump in: the owner is right there.
+		clock.advance(20_000);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("seven works?", 5, 2),
+		});
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1); // still just the first turn
+
+		// It is not lost — it goes through the full owner-reply window like any other.
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(2);
+	});
+
+	it("holds the draft when the owner answers mid-turn instead of sending it blind", async () => {
+		// The owner answering while the model is generating used to change nothing: the
+		// reply went out anyway, straight over them. Now the draft is held and the model
+		// gets a revise turn to send / refine / drop it against what the owner said.
+		const { controller, sendReply, triggerAgent, setIdle, clock } =
+			await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("what's the price?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		const triggersAfterStart = triggerAgent.mock.calls.length;
+
+		// The owner answers while the model is still writing.
+		setIdle(false);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("it's 200", 100),
+		});
+
+		setIdle(true);
+		controller
+			.decisionSink()
+			.record({ kind: "reply", text: "the price is 200" });
+		await controller.onAgentEnd();
+
+		// Nothing sent; a revise turn runs instead, naming the resolve tool.
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
+		const ctx = await controller.buildContextForActive();
+		expect(ctx?.at(-1)?.content).toContain("manager_resolve_draft");
+		expect(ctx?.at(-1)?.content).toContain("the price is 200");
+
+		// The model sees the owner already answered and drops it.
+		controller.resolveSink().record({ action: "drop" });
+		await controller.onAgentEnd();
+		expect(sendReply).not.toHaveBeenCalled();
 	});
 });

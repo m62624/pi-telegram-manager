@@ -10,8 +10,6 @@
  */
 
 export interface ManagerBannerStatus {
-	/** Sub-mode in effect. */
-	subMode: "observer" | "takeover";
 	/** The chat currently being served, if any. */
 	activeChat?: string;
 	/** How many chats are waiting their turn (past the owner-reply window). */
@@ -28,7 +26,7 @@ export function managerBannerLines(status: ManagerBannerStatus): string[] {
 	const holding = status.holding ? ` · holding: ${status.holding}` : "";
 	return [
 		"⚠️ Telegram MANAGER is running in this session.",
-		`mode: ${status.subMode} · ${active}${holding} · queued: ${status.queued}`,
+		`${active}${holding} · queued: ${status.queued}`,
 		"Stop it (/telegram-stop) and start a new session to use Pi normally.",
 	];
 }

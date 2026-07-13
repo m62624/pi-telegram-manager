@@ -178,13 +178,6 @@ export interface TelegramSettings {
 		 * banter. Default true.
 		 */
 		strictReplyGuard: boolean;
-		observer: {
-			interlocutorInstructionFile?: string;
-			ownerInstructionFile?: string;
-		};
-		takeover: {
-			instructionFile?: string;
-		};
 	};
 	/**
 	 * FORWARDED messages get their own budget, because they are not what someone
@@ -247,8 +240,6 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		labelerRule: "────────────",
 		mentionWords: ["llm", "manager"],
 		instructionFiles: [],
-		observer: {},
-		takeover: {},
 	},
 	forwards: { maxChars: 2000, maxMessages: 5, groupWindowMs: 3000 },
 	files: { maxBytes: 52_428_800, maxImagesPerTurn: 10 },
@@ -364,8 +355,6 @@ export function normalizeSettings(
 	const topics = asRecord(root.topics, "topics");
 	const connect = asRecord(root.connect, "connect");
 	const manager = asRecord(root.manager, "manager");
-	const observer = asRecord(manager.observer, "manager.observer");
-	const takeover = asRecord(manager.takeover, "manager.takeover");
 	const media = asRecord(manager.media, "manager.media");
 	const forwards = asRecord(root.forwards, "forwards");
 	const files = asRecord(root.files, "files");
@@ -558,22 +547,6 @@ export function normalizeSettings(
 				"manager.strictReplyGuard",
 				d.manager.strictReplyGuard,
 			),
-			observer: {
-				interlocutorInstructionFile: asOptionalString(
-					observer.interlocutorInstructionFile,
-					"manager.observer.interlocutorInstructionFile",
-				),
-				ownerInstructionFile: asOptionalString(
-					observer.ownerInstructionFile,
-					"manager.observer.ownerInstructionFile",
-				),
-			},
-			takeover: {
-				instructionFile: asOptionalString(
-					takeover.instructionFile,
-					"manager.takeover.instructionFile",
-				),
-			},
 		},
 		forwards: {
 			maxChars: asNonNegativeInt(

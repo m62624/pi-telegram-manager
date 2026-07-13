@@ -91,17 +91,15 @@ describe("normalizeSettings", () => {
 		).toThrow(/mixed.returnToTelegramMs/);
 	});
 
-	it("parses manager sub-mode instruction files", () => {
+	it("parses the manager instruction files and the first-message template", () => {
 		const s = normalizeSettings({
 			manager: {
 				firstMessageTemplate: "~/first.md",
-				observer: { interlocutorInstructionFile: "~/i.md" },
-				takeover: { instructionFile: "~/t.md" },
+				instructionFiles: ["~/policy.md"],
 			},
 		});
 		expect(s.manager.firstMessageTemplate).toBe("~/first.md");
-		expect(s.manager.observer.interlocutorInstructionFile).toBe("~/i.md");
-		expect(s.manager.takeover.instructionFile).toBe("~/t.md");
+		expect(s.manager.instructionFiles).toEqual(["~/policy.md"]);
 	});
 
 	it("defaults mentionWords to [llm, manager]; an explicit array (incl. []) is honoured", () => {

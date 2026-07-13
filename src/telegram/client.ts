@@ -102,9 +102,15 @@ export class TelegramClient {
 	 * sendPhoto which re-encodes and caps at 10 MB). A local `path` is streamed
 	 * via multipart; a `url` is handed to Telegram to fetch. Standard Bot API
 	 * caps: 50 MB for uploads, 20 MB for a URL Telegram fetches.
+	 *
+	 * `threadId` is the topic to post into, and matters as much as the chat id: the
+	 * owner's DM is split into topics, so a document sent without one lands OUTSIDE
+	 * the personal topic the conversation lives in — the file appears to vanish while
+	 * the model reports it sent.
 	 */
 	async sendDocument(input: {
 		chatId: number;
+		threadId?: number;
 		path?: string;
 		url?: string;
 		caption?: string;
@@ -113,11 +119,12 @@ export class TelegramClient {
 		if (!document) {
 			throw new Error("sendDocument requires a local path or a url");
 		}
-		await this.bot.api.sendDocument(
-			input.chatId,
-			document,
-			input.caption ? { caption: input.caption } : {},
-		);
+		await this.bot.api.sendDocument(input.chatId, document, {
+			...(input.caption ? { caption: input.caption } : {}),
+			...(input.threadId !== undefined
+				? { message_thread_id: input.threadId }
+				: {}),
+		});
 	}
 
 	/** Begin long polling. Resolves only when the bot stops, so callers rarely await it. */

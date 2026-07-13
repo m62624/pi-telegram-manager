@@ -51,6 +51,15 @@ export interface ConnectControllerDeps {
 	isIdle: () => boolean;
 	/** Deliver a prompt turn to the agent as a follow-up (no interruption). */
 	sendFollowUp: (content: PromptContent) => Promise<void>;
+	/**
+	 * The moment the bot first SPEAKS in a turn (its first draft chunk, tool block or
+	 * answer), with the messages that turn answers. This — not the moment the prompt is
+	 * handed to the agent — is when a message typed outside the personal topic is copied
+	 * into it (see the topic router's `mirrorStraysIntoPersonal`): a copy that lands
+	 * while the model is still thinking sits alone in the topic for seconds, which reads
+	 * as the bot echoing you rather than answering you.
+	 */
+	onTurnVisible?: (sourceMessageIds: readonly number[]) => Promise<void>;
 	/** Download an inbound message's image attachments as base64 (best-effort). */
 	loadImages?: (message: Message) => Promise<InboundImage[]>;
 	/**
@@ -127,7 +136,7 @@ export const MIRROR_URL =
 
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
 const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
-	bullet("/switch", "change mode — observer / takeover / mixed / personal"),
+	bullet("/switch", "change mode — manager / personal / mixed"),
 	bullet("/stop", "stop the bot entirely"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
@@ -196,6 +205,36 @@ export class ConnectController {
 			chatId: this.deps.allowedUserId,
 			messageThreadId: this.deps.chatThread?.(),
 		};
+	}
+
+	/**
+	 * The running turn's source messages, until the bot first speaks (see
+	 * {@link ConnectControllerDeps.onTurnVisible}). Null once they have been handed over
+	 * — one turn copies its prompt once.
+	 */
+	private pendingMirror: readonly number[] | null = null;
+
+	/** Hand the turn's prompt over right before the first thing the bot says. */
+	private async flushMirror(): Promise<void> {
+		const sources = this.pendingMirror;
+		if (!sources) return;
+		this.pendingMirror = null;
+		await this.deps.onTurnVisible?.(sources);
+	}
+
+	/**
+	 * Deliver the model's text into the personal topic.
+	 *
+	 * A message the owner typed in another topic is not answered where it was typed:
+	 * Telegram cannot move it, and quoting it across topics is not something the
+	 * clients agree on (phone, desktop and web each rendered the quote differently,
+	 * and each was wrong in its own way). Instead the message itself is FORWARDED
+	 * into the personal topic before the model sees it (see the topic router), so the
+	 * conversation there stays whole and the answer needs no trick at all.
+	 */
+	private async sendAnswer(text: string): Promise<void> {
+		await this.flushMirror();
+		await this.deps.outbound.sendMarkdown(this.target, text);
 	}
 
 	/** Handle an inbound Telegram event. Returns true when it enqueued/edited a turn. */
@@ -425,6 +464,7 @@ export class ConnectController {
 		if (this.isOpenAlbum(next.id)) return;
 		const item = this.queue.dequeue();
 		if (!item) return;
+		this.pendingMirror = item.sourceMessageIds;
 		await this.deps.sendFollowUp(this.toContent(item));
 	}
 
@@ -450,7 +490,7 @@ export class ConnectController {
 	 */
 	async deliverAssistant(text: string): Promise<void> {
 		if (!text.trim()) return;
-		await this.deps.outbound.sendMarkdown(this.target, text);
+		await this.sendAnswer(text);
 	}
 
 	/**
@@ -469,7 +509,7 @@ export class ConnectController {
 	): Promise<void> {
 		this.deps.abort.clear();
 		const reply = fallbackReply ? lastAssistantReply(messages) : null;
-		if (reply) await this.deps.outbound.sendMarkdown(this.target, reply);
+		if (reply) await this.sendAnswer(reply);
 		await this.dispatch();
 	}
 
@@ -510,6 +550,9 @@ export class ConnectController {
 	 */
 	async streamDraft(text: string): Promise<void> {
 		if (this.draftId === 0 || !text.trim()) return;
+		// The first chunk IS the bot starting to speak — the prompt it answers belongs
+		// above it, not seconds earlier while the model was still silent.
+		await this.flushMirror();
 		await this.deps.outbound
 			.draft(this.target, this.draftId, buildRichMarkdownMessage(text))
 			.catch(() => {});
@@ -527,6 +570,7 @@ export class ConnectController {
 	 * interrupt the agent's turn.
 	 */
 	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
+		await this.flushMirror();
 		await this.deps.outbound
 			.sendMessages(this.target, [toolActivityMessage(activity)])
 			.catch(() => {});

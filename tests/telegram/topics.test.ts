@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TopicRouter, type TopicsApi } from "../../src/telegram/topics";
+import {
+	placeOfOwnerMessage,
+	TopicRouter,
+	type TopicsApi,
+} from "../../src/telegram/topics";
 import { FakeFs } from "../helpers/fake-fs";
 
 const OWNER = 42;
 const PATH = "/topics.json";
 
-function fakeApi(overrides: Partial<TopicsApi> = {}) {
-	let nextThread = 100;
+function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
+	let nextThread = firstThread;
 	return {
 		getMe: vi.fn(async () => ({ has_topics_enabled: true })),
 		createForumTopic: vi.fn(
@@ -17,6 +21,15 @@ function fakeApi(overrides: Partial<TopicsApi> = {}) {
 		editForumTopic: vi.fn(
 			async (_args: { message_thread_id: number; name?: string }) => ({}),
 		),
+		deleteForumTopic: vi.fn(
+			async (_args: { chat_id: number; message_thread_id: number }) => ({}),
+		),
+		// What Telegram allows as a topic icon; anything else is refused.
+		getForumTopicIconStickers: vi.fn(async () => [
+			{ emoji: "💻", custom_emoji_id: "id-personal" },
+			{ emoji: "📣", custom_emoji_id: "id-manager" },
+			{ emoji: "📁", custom_emoji_id: "id-archive" },
+		]),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
 }
@@ -303,5 +316,297 @@ describe("TopicRouter.recreate", () => {
 		expect(await r.recreate("manager")).toBeUndefined();
 		expect(r.active).toBe(false);
 		expect(r.thread("manager")).toBeUndefined();
+	});
+});
+
+// A topic that lives on stops accepting ordinary messages from the phone: they are
+// posted OUTSIDE it, with no message_thread_id, while a topic created minutes earlier
+// takes them fine. Nothing announces when a topic goes that way, so every session
+// simply starts in a fresh one — these tests pin down what happens to the old one.
+describe("TopicRouter: a fresh personal topic every session", () => {
+	/** One session: adopt what is on disk, rotate, and say whether a conversation happened. */
+	async function session(fs: FakeFs, firstThread: number, spoke: boolean) {
+		const api = fakeApi({}, firstThread);
+		const r = router(api, fs).router;
+		await r.ensure();
+		await r.startSession();
+		if (spoke) await r.markUsed();
+		return { api, router: r };
+	}
+
+	it("leaves the topic it just created alone — it is already fresh", async () => {
+		const fs = new FakeFs();
+		const { api, router: r } = await session(fs, 100, false);
+
+		// personal + manager, and nothing else: no second topic, no delete, no rename.
+		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+		expect(api.deleteForumTopic).not.toHaveBeenCalled();
+		expect(r.thread("personal")).toBe(100);
+	});
+
+	it("archives a personal that holds a conversation, and drops the previous archive", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true); // personal 100, and the owner spoke in it
+
+		const second = await session(fs, 200, true); // rotates: personal 200, archive 100
+		expect(second.router.thread("personal")).toBe(200);
+		expect(second.api.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (archive)",
+			}),
+		);
+		expect(second.api.deleteForumTopic).not.toHaveBeenCalled();
+
+		const third = await session(fs, 300, true); // rotates: personal 300, archive 200
+		expect(third.api.deleteForumTopic).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+		expect(third.api.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 200,
+				name: "personal (archive)",
+			}),
+		);
+	});
+
+	it("deletes a personal nobody spoke in, and leaves the archive alone", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true); // a real conversation in 100
+		await session(fs, 200, false); // rotates: personal 200 (archive 100), nothing said
+
+		// A restart after a silent session: 200 is thrown away with its creation notice,
+		// and the conversation in 100 must NOT be pushed out of the archive by it.
+		const third = await session(fs, 300, false);
+		expect(third.api.deleteForumTopic).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ message_thread_id: 200 }),
+		);
+		expect(third.api.editForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal (archive)" }),
+		);
+		expect(third.router.thread("personal")).toBe(300);
+	});
+
+	it("keeps the session's topic when a fresh one cannot be created", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true);
+
+		const api = fakeApi({}, 200);
+		api.createForumTopic.mockRejectedValue(new Error("429: Too Many Requests"));
+		const r = router(api, fs).router;
+		await r.ensure();
+		await r.startSession();
+
+		expect(r.thread("personal")).toBe(100);
+		expect(api.deleteForumTopic).not.toHaveBeenCalled();
+		expect(api.editForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal (archive)" }),
+		);
+	});
+});
+
+// The three chips must be told apart at a glance. Icons, not colours: a colour can
+// only be set when a topic is created, and the archive is a renamed `personal`.
+describe("TopicRouter: topic icons", () => {
+	it("gives each topic its icon, and marks the archive when it renames it", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi();
+		const a = router(first, fs).router;
+		await a.ensure();
+
+		expect(first.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "personal",
+				icon_custom_emoji_id: "id-personal",
+			}),
+		);
+		expect(first.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "manager",
+				icon_custom_emoji_id: "id-manager",
+			}),
+		);
+		await a.markUsed();
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession();
+
+		expect(second.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (archive)",
+				icon_custom_emoji_id: "id-archive",
+			}),
+		);
+	});
+
+	it("falls back to the topic colours when Telegram offers no icons", async () => {
+		const api = fakeApi({
+			getForumTopicIconStickers: vi.fn(async () => {
+				throw new Error("500: Internal Server Error");
+			}),
+		});
+		const r = router(api).router;
+		await r.ensure();
+
+		expect(api.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal", icon_color: 7322096 }),
+		);
+		expect(api.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "manager", icon_color: 16478047 }),
+		);
+	});
+});
+
+// Telegram refuses to delete some topics with 400: TOPIC_ID_INVALID — one that survived
+// the owner clearing the chat, for instance — while editForumTopic still answers `ok`
+// for the same id, so nothing warns us. Swallowing that refusal turned the rotation into
+// a chip factory: every switch added a topic and removed none.
+describe("TopicRouter: a topic Telegram will not delete", () => {
+	function refusing(ids: number[], firstThread: number) {
+		return fakeApi(
+			{
+				deleteForumTopic: vi.fn(
+					async (args: { chat_id: number; message_thread_id: number }) => {
+						if (ids.includes(args.message_thread_id)) {
+							throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+						}
+						return {};
+					},
+				),
+			},
+			firstThread,
+		);
+	}
+
+	it("names the undeletable topic for what it is, instead of a second `personal`", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi();
+		const a = router(first, fs).router;
+		await a.ensure(); // personal 100
+
+		// A silent session: 100 should be deleted — but Telegram will not have it.
+		const second = refusing([100], 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession();
+
+		expect(b.thread("personal")).toBe(200);
+		expect(second.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (closed)",
+			}),
+		);
+	});
+
+	it("retries it on the next session, and forgets it once it is gone", async () => {
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // personal 100
+
+		const second = refusing([100], 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession(); // 100 refused → remembered
+
+		// Next session: Telegram allows it now, so it is deleted and not carried further.
+		const third = fakeApi({}, 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession();
+
+		expect(third.deleteForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+
+		const fourth = fakeApi({}, 400);
+		const d = router(fourth, fs).router;
+		await d.ensure();
+		await d.startSession();
+
+		expect(fourth.deleteForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+	});
+
+	it("keeps the archive when the previous one cannot be deleted", async () => {
+		const fs = new FakeFs();
+		const a = router(fakeApi(), fs).router;
+		await a.ensure(); // personal 100
+		await a.markUsed();
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession(); // personal 200, archive 100
+		await b.markUsed();
+
+		// 100 (the archive) is now undeletable: 200 still becomes the archive, and 100 is
+		// renamed out of the way rather than left standing as a second `personal`.
+		const third = refusing([100], 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession();
+
+		expect(c.thread("personal")).toBe(300);
+		expect(third.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 200,
+				name: "personal (archive)",
+			}),
+		);
+	});
+});
+
+// Where an owner message was written decides everything that happens to it — including
+// whether the bot may delete it. That question gets its own tests.
+describe("placeOfOwnerMessage", () => {
+	const topics = { personal: 5, manager: 6 };
+
+	it("reads the topic Telegram names", () => {
+		expect(placeOfOwnerMessage({ thread: 5, ...topics })).toBe("personal");
+		expect(placeOfOwnerMessage({ thread: 6, ...topics })).toBe("manager");
+	});
+
+	it("calls a topic we did not make the owner's own", () => {
+		// Copied into `personal`, never emptied: that topic is theirs.
+		expect(placeOfOwnerMessage({ thread: 9, ...topics })).toBe("topic");
+	});
+
+	it('reads no thread as the "All" view — the one place a message is moved OUT of', () => {
+		expect(placeOfOwnerMessage({ thread: undefined, ...topics })).toBe(
+			"outside",
+		);
+	});
+
+	it("never moves a message Telegram calls a topic message but will not place", () => {
+		// The safety catch: deleting the owner's words out of a topic we cannot name is
+		// the worse failure of the two.
+		expect(
+			placeOfOwnerMessage({
+				thread: undefined,
+				isTopicMessage: true,
+				...topics,
+			}),
+		).toBe("personal");
+	});
+
+	it("treats everything as the conversation while topics are not resolved yet", () => {
+		expect(
+			placeOfOwnerMessage({
+				thread: undefined,
+				personal: undefined,
+				manager: undefined,
+			}),
+		).toBe("outside");
+		expect(
+			placeOfOwnerMessage({
+				thread: 9,
+				personal: undefined,
+				manager: undefined,
+			}),
+		).toBe("topic");
 	});
 });

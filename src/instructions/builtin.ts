@@ -2,9 +2,9 @@
  * Load and assemble the manager's system-instruction text.
  *
  * The extension ships default instruction Markdown next to this file
- * (`manager-common.md`, `manager-observer.md`, `manager-takeover.md`,
- * `manager-first-message.md`, `connect.md`). They are read at runtime from disk
- * (Pi runs the extension from source, so they sit beside the compiled module).
+ * (`manager-common.md`, `manager.md`, `manager-first-message.md`, `connect.md`).
+ * They are read at runtime from disk (Pi runs the extension from source, so they
+ * sit beside the compiled module).
  * A user's `settings.json` `instructionFiles` are layered on top as an override,
  * never replacing the built-in behaviour rules.
  *
@@ -17,7 +17,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TelegramFs } from "../storage/fs";
-import type { ManagerSubMode } from "../storage/singleton-store";
 
 /** Header that marks the injected instruction block for the model. */
 export const SYSTEM_INSTRUCTIONS_HEADER = "[SYSTEM_INSTRUCTIONS]";
@@ -34,7 +33,7 @@ async function readBuiltin(fs: TelegramFs, name: string): Promise<string> {
 }
 
 export interface ManagerInstructions {
-	/** Persistent base block (common + sub-mode + user override), header-less. */
+	/** Persistent base block (common + stance + user override), header-less. */
 	base: string;
 	/** First-contact addendum, appended only when the active chat has no history. */
 	firstMessage: string;
@@ -43,13 +42,12 @@ export interface ManagerInstructions {
 }
 
 /**
- * Assemble the manager instruction blocks for a sub-mode. `overrideText` is the
- * already-read content of the user's `instructionFiles` (global + manager);
+ * Assemble the manager instruction blocks. `overrideText` is the already-read
+ * content of the user's `instructionFiles` (global + manager);
  * `firstMessageOverride`/`reopenOverride` are the already-read templates, if any.
  */
 export async function loadManagerInstructions(input: {
 	fs: TelegramFs;
-	subMode: ManagerSubMode;
 	/** The bot's name in the chat (the labeler); people may address it by this. */
 	labeler?: string;
 	/** Configured wake-words; surfaced so the model knows how it may be addressed. */
@@ -59,16 +57,11 @@ export async function loadManagerInstructions(input: {
 	reopenOverride?: string;
 }): Promise<ManagerInstructions> {
 	const common = await readBuiltin(input.fs, "manager-common.md");
-	const submode = await readBuiltin(
-		input.fs,
-		input.subMode === "takeover"
-			? "manager-takeover.md"
-			: "manager-observer.md",
-	);
+	const stance = await readBuiltin(input.fs, "manager.md");
 	const firstDefault = await readBuiltin(input.fs, "manager-first-message.md");
 	const reopenDefault = await readBuiltin(input.fs, "manager-reopen.md");
 
-	const parts = [common, submode];
+	const parts = [common, stance];
 	const name = input.labeler?.trim().replace(/:\s*$/, "");
 	const wake = (input.mentionWords ?? [])
 		.map((w) => w.trim())
