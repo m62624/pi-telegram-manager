@@ -1182,12 +1182,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
 	 * message is taken as personal: the reply lands in the fresh `personal` topic.
 	 *
-	 * A message with NO thread is one typed OUTSIDE the topics — the "All" view, where
-	 * Telegram itself labels the input box "message outside a topic". Live proof: a
-	 * message typed inside `personal` arrives with `message_thread_id` set to it and
-	 * `is_topic_message=true`, so the absence is not silence, it is the answer. Such a
-	 * message is brought over too, since the answer to it goes to `personal` and the
-	 * conversation there must not read as the bot talking to itself.
+	 * A message with NO thread is left alone. It was briefly treated as one typed in the
+	 * "All" view and MOVED into `personal` — until the owner, typing inside the topic,
+	 * got messages back with no thread at all. Telegram marks a topic message sometimes
+	 * (`message_thread_id` + `is_topic_message=true`) and sometimes not, so an absent
+	 * thread proves nothing, and acting on it deleted real messages out of the topic
+	 * they were written in.
 	 */
 	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
 		if (!topics?.active) return true;
@@ -1204,22 +1204,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Whether an owner message was typed OUTSIDE the personal topic — on evidence, not
-	 * on absence.
+	 * Whether an owner message was typed outside the personal topic — on POSITIVE
+	 * evidence only: Telegram named a topic, and it is not ours.
 	 *
-	 * A message written in a topic carries that topic (`message_thread_id`) and
-	 * `is_topic_message`. So a different thread means elsewhere, and no thread at all
-	 * means the "All" view, where Telegram itself labels the input box "message outside
-	 * a topic". The `is_topic_message` check is the safety catch: should Telegram ever
-	 * mark a message as a topic message without saying which topic, it is NOT treated
-	 * as an outsider — copying the owner's every word into their own topic is a far
-	 * worse failure than missing one stray.
+	 * An absent `message_thread_id` is NOT evidence, however much it looks like one. It
+	 * is true that a message from the "All" view arrives without a thread — but so does
+	 * a message typed inside `personal`, some of the time: the same client that reported
+	 * `message_thread_id=352698, is_topic_message=true` for one message reported nothing
+	 * at all for the next. Reading that absence as "typed elsewhere" made the bot delete
+	 * the owner's real messages out of the very topic they were written in, which is why
+	 * this asks for proof and settles for missing the odd stray.
 	 */
 	const isOutsidePersonal = (event: TelegramEvent): boolean => {
 		if (event.kind !== "message") return false;
 		const thread = threadOf(event);
-		if (thread !== undefined) return thread !== personalThread();
-		return event.message.is_topic_message !== true;
+		return thread !== undefined && thread !== personalThread();
 	};
 
 	/**
