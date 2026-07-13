@@ -1465,13 +1465,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
-		const bridge = await startConnectRuntime(
-			client,
-			token,
-			settings,
-			ctx,
-			allowedUserId,
-		);
+		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
 		// Publish the tappable command menu (no manual setup needed by the user).
 		void client.api
@@ -1485,14 +1479,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			STATUS_KEY,
 			fitLine(`Telegram: connected (chat ${allowedUserId})`, terminalWidth()),
 		);
-		// Route through the Markdown pipeline (sendToChat), not notify(): notify
-		// HTML-escapes its string, so any `*`/`_` markup would show up literally.
-		await bridge
-			.sendToChat(
-				card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
-			)
-			.catch(() => {});
 		ctx.ui.notify("Telegram connect: active.");
+		// The pin IS the connection notice, in every mode — a separate "Connected"
+		// card would say the same thing twice, and only personal mode ever sent one.
 		await updateModePin("personal");
 	};
 
