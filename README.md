@@ -50,9 +50,11 @@ Start it with `/telegram-manager`; it asks for a sub-mode:
 
 Mixed uses the same two sub-modes for its Telegram side.
 
-### ⏹️ Switching from the chat (`/switch`)
+### ⏹️ Switching modes (`/switch`)
 
-Send **`/switch`** in your DM with the bot (or tap it in the command menu) to flip between **Observer / Takeover / Mixed·Observer / Mixed·Takeover / Personal / Stop** from an inline keyboard — no terminal needed. Every mode, including mixed, is switchable from here. It is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and switches at once. A **pinned message** at the top of that chat always shows the active mode.
+Run **`/telegram-switch`** in Pi to pick a mode right in the terminal — **Personal / Observer / Takeover / Mixed·Observer / Mixed·Takeover / Stop**, with the live one marked. Or send **`/switch`** in your DM with the bot to flip between the same modes from an inline keyboard, no terminal needed (the terminal picker can also push that keyboard to your phone, while the bot is running).
+
+Every mode command is itself a switch: starting one while another runs stops that one first — you never have to stop by hand. Switching is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and takes effect at once. A **pinned message** in the `personal` topic always shows the active mode.
 
 ---
 
@@ -132,7 +134,7 @@ Then open Pi and run a command below. The extension loads `./src/index.ts` direc
 | `/telegram-manager` | Start the **secretary manager** (asks for observer / takeover) |
 | `/telegram-mixed` | Start **mixed** mode — terminal + Telegram (asks for observer / takeover) |
 | `/telegram-stop` | Stop whichever mode is active |
-| `/telegram-switch` | Open the mode-switcher panel in your bot DM |
+| `/telegram-switch` | Pick the mode in the terminal (or send the switcher keyboard to your bot DM) |
 | `/telegram-status` | Show the active mode |
 
 **In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/help`; in Personal mode also `/clear`, `/esc`.

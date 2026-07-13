@@ -86,6 +86,7 @@ import {
 	stripTelegramTurns,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
+import { selectMode } from "./modes/manager/mode-picker";
 import {
 	managerGuardActive,
 	managerHoldsSession,
@@ -868,6 +869,32 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			: undefined;
 
 	/**
+	 * Make room for the mode about to start: a mode command IS a switch. Running one
+	 * while another is active used to just warn ("a Telegram mode is already active"),
+	 * leaving you to stop it by hand; now the running mode is torn down first — the same
+	 * thing the Telegram switch buttons do. Returns false when the wanted mode is
+	 * already the live one (nothing to do).
+	 */
+	const takeOverFrom = async (
+		ctx: ExtensionCommandContext,
+		wanted: PanelMode,
+	): Promise<boolean> => {
+		const current = activeTarget();
+		if (current === wanted) {
+			ctx.ui.notify(`Telegram ${switchLabel(wanted)} is already active.`);
+			return false;
+		}
+		if (current !== "stop") {
+			// The owner's switch is a priority action: interrupt an in-flight turn (a long
+			// consolidation, a reply) instead of waiting for it.
+			await abort.abort();
+			await stopAll();
+			ctx.ui.notify(`Telegram: stopped ${switchLabel(current)}.`);
+		}
+		return true;
+	};
+
+	/**
 	 * Build the personal (mode-1) runtime on an already-created bot client: the
 	 * outbound sender, media intake, and the ConnectController itself, plus its
 	 * system instructions. Shared by Personal mode and by mixed — where the owner's
@@ -1052,10 +1079,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// control panel.
 	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		activeCtx = ctx;
-		if (connect) {
-			ctx.ui.notify("Telegram connect is already active.", "warning");
-			return;
-		}
+		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
 		const { settings, token } = loaded;
@@ -1140,10 +1164,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
-		if (manager || connect) {
-			ctx.ui.notify("A Telegram mode is already active.", "warning");
-			return;
-		}
+		const wanted: PanelMode = mixed
+			? (`mixed-${subMode}` as PanelMode)
+			: subMode;
+		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
 		const { settings, token } = loaded;
@@ -1804,19 +1828,35 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand(COMMANDS.switch, {
-		description: "Open the Telegram mode switcher in the owner's bot DM.",
+		description:
+			"Switch the Telegram mode (or send the switcher to your bot DM).",
 		handler: async (_args, ctx) => {
 			activeCtx = ctx;
 			const api = controlApi();
-			if (!api || ownerUserId === null) {
-				ctx.ui.notify(
-					"Start a Telegram mode first (the bot must be running to open the switcher).",
-					"warning",
-				);
+			const botRunning = api !== null && ownerUserId !== null;
+			// Pick right here in the terminal. Pushing the inline keyboard to Telegram is
+			// just one of the options, and only when a bot is polling to receive it — the
+			// switcher used to be Telegram-only, so with the bot off it could not start
+			// the very modes it exists to start.
+			const choice = await selectMode(ctx.ui, activeTarget(), botRunning);
+			if (choice === null) return;
+			if (choice === "panel") {
+				if (!api) return;
+				await sendSwitchPanel(api);
+				ctx.ui.notify("Telegram switcher: sent to your bot DM.");
 				return;
 			}
-			await sendSwitchPanel(api);
-			ctx.ui.notify("Telegram switcher: sent to your bot DM.");
+			if (choice === "stop") {
+				if (!botRunning && activeTarget() === "stop") {
+					ctx.ui.notify("No Telegram mode is active.", "warning");
+					return;
+				}
+				await updateModePin("stop");
+				await stopAll();
+				ctx.ui.notify("Telegram: stopped.");
+				return;
+			}
+			await startMode(choice, ctx);
 		},
 	});
 
