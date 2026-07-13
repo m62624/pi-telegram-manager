@@ -330,6 +330,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Whether the agent run in flight belongs to the owner's own thread (personal
 	// mode always; mixed only in the coding polarity). Set at agent_start — see there.
 	let ownerRun = false;
+	// Whether any assistant message of the current run was already mirrored to
+	// Telegram (message_end), so agent_end does not repeat the last one.
+	let mirroredThisRun = false;
 	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
 	let toolActivityEnabled = false;
 	// Stream the assistant reply as an animated draft while it generates.
@@ -638,6 +641,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// must never be mirrored into the owner's chat topic (typing, drafts, the
 		// final reply, tool activity all key off this).
 		ownerRun = manager === null || !managerHoldsSession(mixedActive, polarity);
+		mirroredThisRun = false;
 		// Arm the interrupt for the running turn in BOTH modes, so a priority owner
 		// action can abort it immediately: /esc in mode 1, or /switch in either mode
 		// (which must not wait for a long consolidation/reply to finish).
@@ -677,7 +681,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// A manager run in mixed still pumps the connect queue (an owner message may
 		// be waiting behind the aborted moderation turn) but its text is NOT a reply
 		// to the owner — only an owner run delivers to the chat topic.
-		await connect?.onAgentEnd(event.messages, ownerRun);
+		// The run's messages were mirrored one by one as they ended; the agent_end
+		// fallback only fires when none of them was (an aborted or otherwise odd run),
+		// so an answer can never be lost.
+		await connect?.onAgentEnd(event.messages, ownerRun && !mirroredThisRun);
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
 		// don't feed it to the manager, and arm the idle timer that will hand the
 		// shared brain back to Telegram once the owner stays quiet.
@@ -748,6 +755,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (now - lastDraftAt < DRAFT_THROTTLE_MS) return;
 		lastDraftAt = now;
 		await connect.streamDraft(text);
+	});
+	// Deliver each assistant message as it completes, not just the run's last one:
+	// while working the model narrates, calls tools, answers, and often adds a
+	// trailing "done" — mirroring only the last text sent that trailing line and
+	// dropped the answer. This is also the live trace of it working.
+	pi.on("message_end", async (event) => {
+		if (!connect || !ownerRun) return;
+		const message = event.message as { role?: string; content?: unknown };
+		if (message.role !== "assistant") return;
+		const text = extractText(message.content as never);
+		if (!text?.trim()) return;
+		connect.endDraft();
+		mirroredThisRun = true;
+		await connect.deliverAssistant(text).catch(() => {});
 	});
 
 	// Mirror prompts typed at the Pi terminal into Telegram for a unified history.

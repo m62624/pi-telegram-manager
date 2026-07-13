@@ -264,19 +264,36 @@ export class ConnectController {
 	}
 
 	/**
-	 * Mirror the finished reply back to Telegram, then pump the next queued turn.
+	 * Deliver one assistant message as it completes.
 	 *
-	 * `deliver` is false for a run that is not the owner's (mixed mode: a manager
-	 * moderation turn shares this session, and its text belongs to the interlocutor,
-	 * never to the owner's chat). The queue is still pumped — an owner message may be
+	 * A run is not one message: working through a task the model narrates ("Google
+	 * blocked me, trying Bing"), calls tools, answers, and often adds a trailing
+	 * "done, browser closed". Mirroring only the run's LAST assistant text — what
+	 * agent_end used to do — delivered that trailing line and silently dropped the
+	 * answer itself. So each assistant message goes out when it ends, in order, which
+	 * is also the live trace of the model working.
+	 */
+	async deliverAssistant(text: string): Promise<void> {
+		if (!text.trim()) return;
+		await this.deps.outbound.sendMarkdown(this.target, text);
+	}
+
+	/**
+	 * Close out the finished run and pump the next queued turn.
+	 *
+	 * `fallbackReply` delivers the run's last assistant text, and is a SAFETY NET
+	 * only: `index.ts` passes false once anything was already mirrored message by
+	 * message (see {@link deliverAssistant}), and for a run that is not the owner's
+	 * (mixed: a manager moderation turn shares this session, and its text belongs to
+	 * the interlocutor). The queue is pumped either way — an owner message may be
 	 * waiting behind the turn that just ended.
 	 */
 	async onAgentEnd(
 		messages: readonly unknown[],
-		deliver = true,
+		fallbackReply = true,
 	): Promise<void> {
 		this.deps.abort.clear();
-		const reply = deliver ? lastAssistantReply(messages) : null;
+		const reply = fallbackReply ? lastAssistantReply(messages) : null;
 		if (reply) await this.deps.outbound.sendMarkdown(this.target, reply);
 		await this.dispatch();
 	}

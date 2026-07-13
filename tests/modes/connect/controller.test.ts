@@ -134,6 +134,27 @@ describe("ConnectController", () => {
 		expect(sendFollowUp.mock.calls[0][0]).toContain("are you there?");
 	});
 
+	it("delivers each assistant message, so an answer followed by a tool call is not lost", async () => {
+		// Regression: the model researched something, ANSWERED, then closed the browser
+		// and added "done, browser closed". agent_end mirrored only the LAST assistant
+		// text, so Telegram got the trailing line and the answer itself vanished.
+		const { controller, api } = setup();
+		await controller.deliverAssistant(
+			"id Software is not closing: 136 layoffs…",
+		);
+		await controller.deliverAssistant("Done, browser closed.");
+		// Nothing extra at the end of the run: the fallback is off once we mirrored.
+		await controller.onAgentEnd(
+			[{ role: "assistant", content: "Done, browser closed." }],
+			false,
+		);
+		const sent = api.sent.map((m) => m.rich_message?.markdown);
+		expect(sent).toEqual([
+			"id Software is not closing: 136 layoffs…",
+			"Done, browser closed.",
+		]);
+	});
+
 	it("does not send when the final message is not an assistant reply", async () => {
 		const { controller, api } = setup();
 		await controller.onAgentEnd([{ role: "user", content: "ignored" }]);
