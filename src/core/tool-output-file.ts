@@ -106,34 +106,3 @@ export function toolOutputFileName(toolName: string, at: number): string {
 		toolName.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 40) || "tool";
 	return `${safeTool}-${at}.log`;
 }
-
-/**
- * Where those files go. Defaults to the extension's own directory — never the
- * system temp dir, so the path is ours on every platform — and the owner may point
- * it anywhere with `assistant.toolOutputDir`.
- *
- * Both path flavours are accepted, because the same `settings.json` may be carried
- * between machines: POSIX (`/var/log/pi`, `~/logs`), Windows absolute (`C:\logs`,
- * `D:/logs`), and UNC (`\\server\share`). A leading `~` expands to the home
- * directory on either platform. Nothing is rewritten beyond that: a path is passed
- * to the filesystem as the user wrote it, and a Windows path on Linux fails as a
- * missing directory — an honest error — rather than being quietly "fixed" into
- * some other directory.
- */
-export function resolveToolOutputDir(
-	configured: string | undefined,
-	fallbackDir: string,
-	homeDir: string,
-): string {
-	const raw = configured?.trim();
-	if (!raw) return fallbackDir;
-	if (raw === "~") return homeDir;
-	// `~/x` and `~\x` — the second is what a Windows user will type by habit.
-	if (raw.startsWith("~/") || raw.startsWith("~\\")) {
-		const rest = raw.slice(2);
-		const separator =
-			homeDir.includes("\\") && !homeDir.includes("/") ? "\\" : "/";
-		return `${homeDir.replace(/[/\\]$/, "")}${separator}${rest}`;
-	}
-	return raw;
-}

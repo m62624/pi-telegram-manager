@@ -3,7 +3,6 @@ import {
 	byteLength,
 	fullOutputPath,
 	planAttachment,
-	resolveToolOutputDir,
 	toolOutputFileName,
 	wasTruncated,
 } from "../../src/core/tool-output-file";
@@ -117,59 +116,6 @@ describe("planAttachment", () => {
 				toolFileBytes: undefined,
 			}),
 		).toEqual({ attach: "text", text });
-	});
-});
-
-describe("resolveToolOutputDir", () => {
-	const FALLBACK = "/agent/extensions/pi-telegram-manager/tool-output";
-
-	it("defaults to the extension's own directory", () => {
-		expect(resolveToolOutputDir(undefined, FALLBACK, "/home/u")).toBe(FALLBACK);
-		expect(resolveToolOutputDir("   ", FALLBACK, "/home/u")).toBe(FALLBACK);
-	});
-
-	it("takes a POSIX path as written", () => {
-		expect(resolveToolOutputDir("/var/log/pi", FALLBACK, "/home/u")).toBe(
-			"/var/log/pi",
-		);
-		expect(resolveToolOutputDir("./logs", FALLBACK, "/home/u")).toBe("./logs");
-	});
-
-	it("takes a Windows path as written — drive, forward slashes, and UNC", () => {
-		// The same settings.json may travel between machines; none of these may be
-		// mangled on the way through.
-		expect(resolveToolOutputDir("C:\\logs\\pi", FALLBACK, "C:\\Users\\u")).toBe(
-			"C:\\logs\\pi",
-		);
-		expect(resolveToolOutputDir("D:/logs", FALLBACK, "C:\\Users\\u")).toBe(
-			"D:/logs",
-		);
-		expect(
-			resolveToolOutputDir("\\\\server\\share\\pi", FALLBACK, "C:\\Users\\u"),
-		).toBe("\\\\server\\share\\pi");
-	});
-
-	it("expands ~ on both platforms, with either slash", () => {
-		expect(resolveToolOutputDir("~", FALLBACK, "/home/u")).toBe("/home/u");
-		expect(resolveToolOutputDir("~/logs", FALLBACK, "/home/u")).toBe(
-			"/home/u/logs",
-		);
-		// A Windows user types the backslash out of habit; the home dir is Windows too.
-		expect(resolveToolOutputDir("~\\logs", FALLBACK, "C:\\Users\\u")).toBe(
-			"C:\\Users\\u\\logs",
-		);
-		expect(resolveToolOutputDir("~/logs", FALLBACK, "C:\\Users\\u")).toBe(
-			"C:\\Users\\u\\logs",
-		);
-	});
-
-	it("does not double a separator the home dir already ends with", () => {
-		expect(resolveToolOutputDir("~/logs", FALLBACK, "/home/u/")).toBe(
-			"/home/u/logs",
-		);
-		expect(resolveToolOutputDir("~\\logs", FALLBACK, "C:\\Users\\u\\")).toBe(
-			"C:\\Users\\u\\logs",
-		);
 	});
 });
 

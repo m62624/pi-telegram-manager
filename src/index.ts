@@ -49,10 +49,10 @@ import {
 import {
 	fullOutputPath,
 	planAttachment,
-	resolveToolOutputDir,
 	toolOutputFileName,
 } from "./core/tool-output-file";
 import type { TurnSavedFile } from "./core/turns";
+import { resolveUserDir } from "./core/user-path";
 import {
 	loadConnectInstructions,
 	loadManagerInstructions,
@@ -1721,11 +1721,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		const loadImages = (message: Message) =>
 			loadInlineImages(media, message, settings.files.maxBytes);
-		// Where inbound non-image files land: the configured dir, else the
-		// directory Pi runs in.
-		const downloadDir = settings.files.downloadDir
-			? expandHome(settings.files.downloadDir)
-			: process.cwd();
+		// Where inbound non-image files land — a file you send the bot, or one you
+		// REPLY to: the configured dir, else the directory Pi runs in. Same path parser
+		// as every other configurable location, so `~/x`, `C:\x` and `\\srv\share`
+		// mean the same thing everywhere.
+		const downloadDir = resolveUserDir(
+			settings.files.downloadDir,
+			process.cwd(),
+			homedir(),
+		);
 		// Save every non-image attachment to disk and report its absolute path,
 		// so the model can open it with its normal tools. Per-file errors are
 		// collected and surfaced in the prompt, not swallowed.
@@ -1838,7 +1842,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
 		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
-		toolOutputDir = resolveToolOutputDir(
+		toolOutputDir = resolveUserDir(
 			settings.assistant.toolOutputDir,
 			paths.toolOutputDir,
 			homedir(),

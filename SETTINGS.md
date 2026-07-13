@@ -154,7 +154,20 @@ A forward is not a message someone wrote to you — it is content pasted in from
 | --- | --- | --- | --- |
 | `files.maxBytes` | `52428800` (50 MiB) | replaces | Size cap for describing/downloading inbound attachments. |
 | `files.maxImagesPerTurn` | `10` | replaces | How many images one turn may carry to the model. Telegram delivers an album as separate messages (one photo each, up to 10) and this extension folds them into a single turn; Pi imposes no limit of its own, so this cap exists only to protect a small local context — each picture costs real tokens. `0` = no cap. |
-| `files.downloadDir` | Pi's working dir | replaces | Where files sent to the bot (Personal mode) are saved. Absolute or `~`-relative. |
+| `files.downloadDir` | Pi's working dir | replaces | Where files that arrive in Personal mode are saved — one you send, and one you **reply to** (including a file the bot itself sent). Default: the directory Pi runs in. Any path the parser below accepts. |
+
+### Writing a path
+
+Every path setting — `files.downloadDir`, [`assistant.toolOutputDir`](#the-full-output-of-a-tool-call), `instructionFiles` — accepts the same forms, so you never have to remember which one is fussy:
+
+| You write | It means |
+| --- | --- |
+| *(unset)* | That setting's default (for `downloadDir`, the directory Pi runs in). |
+| `~/logs`, `~\logs`, `~` | Your home directory — either slash, on either OS. |
+| `/var/log/pi`, `./out` | Used as written. |
+| `C:\logs`, `D:/logs`, `\\server\share` | Used as written. |
+
+Only `~` is ever rewritten. A path from another OS fails as a missing directory — an error you can read — rather than being quietly "corrected" into some other directory, which is how files end up somewhere nobody thinks to look.
 
 ---
 

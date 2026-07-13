@@ -3,12 +3,15 @@ import { join } from "node:path";
 import type { BridgeMode } from "../constants";
 import type { TelegramSettings } from "../settings/schema";
 import type { TelegramFs } from "../storage/fs";
+import { expandHomePath } from "./user-path";
 
-/** Expand a leading `~` (or `~/`) to the user's home directory. */
+/**
+ * Expand a leading `~` to the user's home directory. Delegates to the shared path
+ * parser, so an instruction file, a download dir and a tool-output dir all accept
+ * exactly the same thing — including `~\` from a Windows user.
+ */
 export function expandHome(path: string): string {
-	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return join(homedir(), path.slice(2));
-	return path;
+	return expandHomePath(path, homedir());
 }
 
 /**
