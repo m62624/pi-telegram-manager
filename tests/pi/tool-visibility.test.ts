@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ABOUT_TOOL_NAMES } from "../../src/core/about";
 import { TELEGRAM_TOOL_NAMES } from "../../src/core/attachments";
 import { managerHoldsSession } from "../../src/modes/manager/polarity";
 import { createToolMatcher } from "../../src/pi/tool-allow";
@@ -33,6 +34,28 @@ describe("visibleToolNames", () => {
 			"write",
 			"manager_reply",
 		]);
+	});
+
+	it("shows a tool BOTH groups claim, whichever one is active", () => {
+		// Live bug: `telegram_bot_about` is listed by connect AND manager, because it
+		// must work in every mode. Hiding by group alone let the INACTIVE group win —
+		// in personal mode the manager group hid a tool connect had just claimed, and
+		// the model reported it "not registered in this session".
+		const shared = ["read", "telegram_bot_about", "manager_reply"];
+		const bothGroups = groupMap({
+			connect: ["telegram_bot_about"],
+			manager: ["telegram_bot_about", "manager_reply"],
+		});
+
+		expect(visibleToolNames(shared, bothGroups, new Set(["connect"]))).toEqual([
+			"read",
+			"telegram_bot_about",
+		]);
+		expect(visibleToolNames(shared, bothGroups, new Set(["manager"]))).toEqual(
+			shared,
+		);
+		// Still hidden when neither mode is running.
+		expect(visibleToolNames(shared, bothGroups, new Set())).toEqual(["read"]);
 	});
 });
 
@@ -149,5 +172,96 @@ describe("createToolVisibility", () => {
 		expect(api.active).toEqual(["manager_reply"]);
 		visibility.setExclusive("manager", null);
 		expect(api.active).toEqual(["read", "manager_reply"]);
+	});
+});
+
+describe("the real group wiring (index.ts)", () => {
+	// Exactly what index.ts registers, so the sandbox is tested as it actually runs.
+	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
+	const MANAGER_GROUP = [
+		"manager_reply",
+		"manager_silent",
+		"manager_remember",
+		"manager_skip",
+		...ABOUT_TOOL_NAMES,
+	];
+	const ALL = [
+		"read",
+		"write",
+		"bash",
+		"ask_user",
+		...TELEGRAM_TOOL_NAMES,
+		...ABOUT_TOOL_NAMES,
+		"manager_reply",
+		"manager_silent",
+		"manager_remember",
+		"manager_skip",
+	];
+
+	function fakeApi(): ToolRegistryApi & { active: string[] } {
+		return {
+			active: [],
+			getAllTools: () => ALL.map((name) => ({ name })),
+			setActiveTools(next) {
+				this.active = next;
+			},
+		};
+	}
+
+	it("gives personal mode its own tools AND the about tool", () => {
+		// The bug this pins: `telegram_bot_about` is claimed by both groups, and the
+		// inactive manager group used to hide it from personal mode entirely.
+		const api = fakeApi();
+		const visibility = createToolVisibility(api, {
+			connect: CONNECT_GROUP,
+			manager: MANAGER_GROUP,
+		});
+		visibility.setActive("connect", true);
+
+		expect(api.active).toContain("telegram_bot_about");
+		expect(api.active).toContain("telegram_attach");
+		// The owner's own coding tools stay available: this is their machine.
+		expect(api.active).toContain("bash");
+		// The other mode's tools do not leak in.
+		expect(api.active).not.toContain("manager_reply");
+	});
+
+	it("gives the manager ONLY messaging + about — nothing from personal mode", () => {
+		const api = fakeApi();
+		const visibility = createToolVisibility(api, {
+			connect: CONNECT_GROUP,
+			manager: MANAGER_GROUP,
+		});
+		// The sandbox: an exclusive matcher over the manager group, as index.ts builds it.
+		visibility.setExclusive("manager", createToolMatcher(MANAGER_GROUP, []));
+		visibility.setActive("manager", true);
+
+		expect(api.active.sort()).toEqual([...MANAGER_GROUP].sort());
+		// Nothing that touches the owner's computer, and nothing of mode 1's.
+		for (const forbidden of [
+			"read",
+			"write",
+			"bash",
+			"ask_user",
+			"telegram_attach",
+		]) {
+			expect(api.active).not.toContain(forbidden);
+		}
+	});
+
+	it("keeps the sandbox closed even while personal mode is also active (mixed)", () => {
+		// Mixed, Telegram polarity: connect is active too, but an exclusive group wins.
+		const api = fakeApi();
+		const visibility = createToolVisibility(api, {
+			connect: CONNECT_GROUP,
+			manager: MANAGER_GROUP,
+		});
+		visibility.setExclusive("manager", createToolMatcher(MANAGER_GROUP, []));
+		visibility.setActive("connect", true);
+		visibility.setActive("manager", true);
+
+		expect(api.active).not.toContain("bash");
+		expect(api.active).not.toContain("telegram_attach");
+		expect(api.active).toContain("telegram_bot_about");
 	});
 });

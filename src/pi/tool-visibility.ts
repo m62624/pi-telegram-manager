@@ -35,15 +35,30 @@ export interface ToolRegistryApi {
 /** Named groups of gated tool names. */
 export type ToolGroups = Record<string, Iterable<string>>;
 
-/** Tool names hidden right now: those belonging to any inactive group. */
+/**
+ * Tool names hidden right now: those belonging to an inactive group AND to no
+ * active one.
+ *
+ * A tool may be listed by more than one group — `telegram_bot_about` belongs to
+ * both, because it must be reachable in every mode. Hiding by group alone made the
+ * inactive group win: in personal mode the (inactive) manager group hid a tool the
+ * (active) connect group had just claimed, and the model could not see it at all.
+ * Membership of an active group is a claim, and it beats the absence of one.
+ */
 export function hiddenToolNames(
 	groups: ReadonlyMap<string, ReadonlySet<string>>,
 	activeGroups: ReadonlySet<string>,
 ): Set<string> {
+	const claimed = new Set<string>();
+	for (const group of activeGroups) {
+		for (const name of groups.get(group) ?? []) claimed.add(name);
+	}
 	const hidden = new Set<string>();
 	for (const [group, names] of groups) {
 		if (activeGroups.has(group)) continue;
-		for (const name of names) hidden.add(name);
+		for (const name of names) {
+			if (!claimed.has(name)) hidden.add(name);
+		}
 	}
 	return hidden;
 }
