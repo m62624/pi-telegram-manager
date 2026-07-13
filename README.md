@@ -20,6 +20,8 @@ One bot account, one mode at a time. Each mode is a different job for the same m
 
 One Pi session runs two threads: your **terminal session** and Telegram moderation, with the **terminal always the priority**. While you are at the terminal, Telegram is deferred and nothing from it enters your session — no tokens, no confusion, and even a wake-word only queues, it never pulls the model off your work. Once your inference has been idle for `mixed.returnToTelegramMs` (default **8 min**), the brain moderates Telegram in the sub-mode you chose; the moment you type again it drops Telegram, aborts any in-flight reply, and restores your full tools. Your TUI stays clean — just a footer (`mixed · observer · coding`); the log of what it did while you were away lands in the **log** topic of your bot DM.
 
+Mixed is Personal **and** manager at once: the **chat** topic of your bot DM is a second keyboard for the very same session. Writing there is exactly like typing at the terminal — same priority, so it cancels the return timer, aborts a moderation turn in flight, and answers you with your full tools; the reply lands in both the terminal and the chat topic, and what you type at the terminal is mirrored into it. Moderation output never leaks there: the manager talks to the interlocutor and logs to the **log** topic.
+
 Start it with `/telegram-mixed` (it asks for observer or takeover — see below).
 
 ### 🤖 Personal — bridge your terminal to a DM

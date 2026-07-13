@@ -271,10 +271,20 @@ export class ConnectController {
 		this.deps.abort.set(abortTurn);
 	}
 
-	/** Mirror the finished reply back to Telegram, then pump the next queued turn. */
-	async onAgentEnd(messages: readonly unknown[]): Promise<void> {
+	/**
+	 * Mirror the finished reply back to Telegram, then pump the next queued turn.
+	 *
+	 * `deliver` is false for a run that is not the owner's (mixed mode: a manager
+	 * moderation turn shares this session, and its text belongs to the interlocutor,
+	 * never to the owner's chat). The queue is still pumped — an owner message may be
+	 * waiting behind the turn that just ended.
+	 */
+	async onAgentEnd(
+		messages: readonly unknown[],
+		deliver = true,
+	): Promise<void> {
 		this.deps.abort.clear();
-		const reply = lastAssistantReply(messages);
+		const reply = deliver ? lastAssistantReply(messages) : null;
 		if (reply) await this.deps.outbound.sendMarkdown(this.target, reply);
 		await this.dispatch();
 	}

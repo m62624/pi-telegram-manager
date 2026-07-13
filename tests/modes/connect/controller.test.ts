@@ -115,6 +115,25 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 
+	it("pumps the queue but delivers nothing for a run that is not the owner's", async () => {
+		// Mixed mode: a manager moderation turn shares this session. Its text answers
+		// the interlocutor, so it must never reach the owner's chat — but an owner
+		// message queued behind it still has to be released once the turn ends.
+		const { controller, api, sendFollowUp, setIdle } = setup();
+		setIdle(false);
+		await controller.onEvent(messageEvent("are you there?", 1));
+		setIdle(true);
+
+		await controller.onAgentEnd(
+			[{ role: "assistant", content: "a reply to the interlocutor" }],
+			false,
+		);
+
+		expect(api.sent.some((m) => m.rich_message?.markdown)).toBe(false);
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		expect(sendFollowUp.mock.calls[0][0]).toContain("are you there?");
+	});
+
 	it("does not send when the final message is not an assistant reply", async () => {
 		const { controller, api } = setup();
 		await controller.onAgentEnd([{ role: "user", content: "ignored" }]);

@@ -259,15 +259,48 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			manager?.isReviseTurn() ? RESOLVE_DRAFT_END_TURN_HINT : undefined,
 	});
 
+	/**
+	 * Prepend the connect system instructions so the agent knows it is bridged to
+	 * Telegram (files saved to disk, telegram_attach to send back), for Personal mode
+	 * and for mixed's coding polarity alike.
+	 *
+	 * The prepended block is kept byte-identical across calls (constant content + a
+	 * stable timestamp) so the provider's prompt cache holds over the whole shared
+	 * terminal session; the volatile date/time goes in a SEPARATE trailing message,
+	 * outside the cached prefix, so a fresh clock never invalidates the entire context
+	 * (which made a big terminal session re-prefill every turn).
+	 */
+	const withConnectBlock = <T>(messages: readonly T[]): unknown[] => {
+		if (!connect || !connectSystemBlock) return [...messages];
+		return [
+			{
+				role: "user",
+				content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
+				timestamp: 0,
+			},
+			...messages,
+			{
+				role: "user",
+				content: formatNowLine(Date.now(), connectTimezone),
+				timestamp: Date.now(),
+			},
+		];
+	};
+
 	// Rebuild the LLM context per mode: the manager replaces it with the active
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
 	// mode / no boundary → leave the context untouched.
 	pi.on("context", async (event) => {
 		const source = mixedContextSource(manager !== null, mixedActive, polarity);
 		// Coding polarity (mixed): the owner's real session messages, with the
-		// manager's Telegram turns filtered out so they never pollute the thread.
+		// manager's Telegram turns filtered out so they never pollute the thread. The
+		// owner may be driving this turn from the `chat` topic, so the bridge's system
+		// block belongs here exactly as it does in Personal mode.
 		if (source === "coding-filtered") {
-			return { messages: stripTelegramTurns(event.messages) } as never;
+			const stripped = stripTelegramTurns(event.messages);
+			return {
+				messages: withConnectBlock(contextReset.apply(stripped) ?? stripped),
+			} as never;
 		}
 		// Manager / mixed-telegram: replace context with the active chat's isolated
 		// history so the model sees only that one conversation.
@@ -279,28 +312,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			} as never;
 		}
 		const filtered = contextReset.apply(event.messages);
-		// Mode 1: prepend the connect system instructions so the agent knows it is
-		// bridged to Telegram (files saved to disk, telegram_attach to send back).
-		// The prepended block is kept byte-identical across calls (constant content +
-		// a stable timestamp) so the provider's prompt cache holds over the whole
-		// shared terminal session; the volatile date/time goes in a SEPARATE trailing
-		// message, outside the cached prefix, so a fresh clock never invalidates the
-		// entire context (which made a big terminal session re-prefill every turn).
+		// Mode 1: the owner's thread, with the bridge's system block.
 		if (connect && connectSystemBlock) {
 			return {
-				messages: [
-					{
-						role: "user",
-						content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
-						timestamp: 0,
-					},
-					...(filtered ?? event.messages),
-					{
-						role: "user",
-						content: formatNowLine(Date.now(), connectTimezone),
-						timestamp: Date.now(),
-					},
-				],
+				messages: withConnectBlock(filtered ?? event.messages),
 			} as never;
 		}
 		return filtered ? { messages: filtered } : {};
@@ -312,6 +327,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
+	// Whether the agent run in flight belongs to the owner's own thread (personal
+	// mode always; mixed only in the coding polarity). Set at agent_start — see there.
+	let ownerRun = false;
 	// Mirror agent tool calls to Telegram as collapsible blocks (mode 1).
 	let toolActivityEnabled = false;
 	// Stream the assistant reply as an animated draft while it generates.
@@ -556,6 +574,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			cancelMixedReturnTimer();
 			mixedActive = false;
 			polarity = "coding";
+			// Mixed owns the personal bridge too (it runs on the manager's client, which
+			// is already stopped above) — tear it down here, without touching the
+			// `connect` lifecycle record, which mixed never activated.
+			stopTyping();
+			connect = null;
+			connectSystemBlock = null;
+			connectTimezone = undefined;
+			toolActivityEnabled = false;
+			draftPreviewsEnabled = false;
+			contextReset.forget();
+			visibility.setActive("connect", false);
 			activeCtx?.ui.setStatus(STATUS_KEY, undefined);
 		}
 		await lifecycle.deactivate(wasMixed ? "mixed" : "manager");
@@ -566,6 +595,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const routeManagerEvent = async (event: TelegramEvent): Promise<void> => {
 		if (await handleStartCommand(event)) return;
 		if (await handleControl(event)) return;
+		// Mixed: the owner writing in their own bot DM is the personal bridge, not a
+		// managed conversation. It carries the same priority as the terminal — take
+		// the brain back for coding (aborting a moderation turn in flight) and hand
+		// the message to the ConnectController. The log topic is service output, so
+		// anything typed there is ignored.
+		if (
+			connect &&
+			(event.kind === "message" || event.kind === "edited_message") &&
+			event.fromId === ownerUserId &&
+			event.chatId === ownerUserId
+		) {
+			if (topics?.isLog(threadOf(event))) return;
+			await takeSessionForCoding();
+			await connect.onEvent(event);
+			return;
+		}
 		if (!manager) return;
 		if (event.kind === "business_connection") {
 			await manager.onBusinessConnection({
@@ -587,11 +632,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
 		managerTurnTools = [];
+		// Whose run is this? Personal mode: always the owner's. Mixed: only a coding
+		// turn is. Captured at the START of the run, because a mid-run owner action
+		// flips the polarity — the run itself stays what it was, and a manager run
+		// must never be mirrored into the owner's chat topic (typing, drafts, the
+		// final reply, tool activity all key off this).
+		ownerRun = manager === null || !managerHoldsSession(mixedActive, polarity);
 		// Arm the interrupt for the running turn in BOTH modes, so a priority owner
 		// action can abort it immediately: /esc in mode 1, or /switch in either mode
 		// (which must not wait for a long consolidation/reply to finish).
 		abort.set(() => ctx.abort());
-		startTyping();
+		if (ownerRun) startTyping();
 	});
 	// End the manager's agent run as soon as it has made the turn's terminal
 	// decision. A single manager tool does not end the agentic loop (a tool call
@@ -623,7 +674,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		abort.clear();
 		stopTyping();
 		connect?.endDraft();
-		await connect?.onAgentEnd(event.messages);
+		// A manager run in mixed still pumps the connect queue (an owner message may
+		// be waiting behind the aborted moderation turn) but its text is NOT a reply
+		// to the owner — only an owner run delivers to the chat topic.
+		await connect?.onAgentEnd(event.messages, ownerRun);
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
 		// don't feed it to the manager, and arm the idle timer that will hand the
 		// shared brain back to Telegram once the owner stays quiet.
@@ -666,7 +720,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
-		if (!connect || !toolActivityEnabled) return;
+		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
 			.sendToolActivity({ toolName: event.toolName, args: event.args })
 			.catch(() => {});
@@ -677,14 +731,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// edits or deletes a real message; the final reply is a fresh send in
 	// onAgentEnd, so the full history is preserved.
 	pi.on("message_start", (event) => {
-		if (!connect || !draftPreviewsEnabled) return;
+		if (!connect || !draftPreviewsEnabled || !ownerRun) return;
 		if ((event.message as { role?: string })?.role !== "assistant") return;
 		connect.beginDraft();
 		draftText = "";
 		lastDraftAt = 0;
 	});
 	pi.on("message_update", async (event) => {
-		if (!connect || !draftPreviewsEnabled) return;
+		if (!connect || !draftPreviewsEnabled || !ownerRun) return;
 		const text = extractText(
 			(event.message as { content?: unknown }).content as never,
 		);
@@ -709,12 +763,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// timer and, if the manager was mid-turn in the Telegram polarity, abort it
 		// so the owner never waits on a moderation reply. Our own Telegram injections
 		// arrive as "external" and are ignored here.
-		if (mixedActive && origin === "terminal") {
-			cancelMixedReturnTimer();
-			const wasTelegram = polarity === "telegram";
-			setPolarity("coding");
-			if (wasTelegram) await abort.abort();
-		}
+		if (mixedActive && origin === "terminal") await takeSessionForCoding();
 		return { action: "continue" };
 	});
 
@@ -797,33 +846,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			? event.message.message_thread_id
 			: undefined;
 
-	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
-	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
-	// control panel.
-	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
-		activeCtx = ctx;
-		if (connect) {
-			ctx.ui.notify("Telegram connect is already active.", "warning");
-			return;
-		}
-		const loaded = await loadSettingsAndToken(ctx);
-		if (!loaded) return;
-		const { settings, token } = loaded;
-		if (!settings.allowedUserId) {
-			ctx.ui.notify("Set allowedUserId in settings.json first.", "error");
-			return;
-		}
-		const allowedUserId = settings.allowedUserId;
-		ownerUserId = allowedUserId;
-		const activation = await lifecycle.activate({
-			mode: "connect",
-			chatId: String(allowedUserId),
-		});
-		if (!activation.ok) {
-			ctx.ui.notify(`Cannot connect: ${activation.reason}`, "error");
-			return;
-		}
-
+	/**
+	 * Build the personal (mode-1) runtime on an already-created bot client: the
+	 * outbound sender, media intake, and the ConnectController itself, plus its
+	 * system instructions. Shared by Personal mode and by mixed — where the owner's
+	 * `chat` topic IS a second keyboard for the same session, so the bridge must
+	 * behave identically there.
+	 */
+	const startConnectRuntime = async (
+		telegram: TelegramClient,
+		token: string,
+		settings: TelegramSettings,
+		ctx: ExtensionCommandContext,
+		allowedUserId: number,
+	): Promise<ConnectController> => {
 		// Assemble mode-1 instructions: bundled connect.md plus the user's
 		// global + connect override files (appended, never replacing defaults).
 		const connectOverride = await readInstructionFiles(fs, [
@@ -839,35 +875,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		connectTimezone = settings.timezone;
 
-		client = new TelegramClient({
-			token,
-			onEvent: async (event) => {
-				if (await handleControl(event)) return;
-				// The log topic is the bot talking to itself; anything the owner types
-				// there is not a prompt for the model (they'd use the chat topic).
-				if (event.kind === "message" && topics?.isLog(threadOf(event))) return;
-				await connect?.onEvent(event);
-			},
-			onError: (error) =>
-				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
-		});
-		await setupTopics(client.api, allowedUserId, settings, ctx);
 		// Warn once (not per-message) when native rich rendering isn't reaching
 		// Telegram and we degraded to plain text — so a tester can tell a real
 		// rich reply from a fallback one.
 		let richFallbackWarned = false;
-		const outbound = new OutboundSender(client.api as unknown as OutboundApi, {
-			onRichFallback: (error) => {
-				if (richFallbackWarned) return;
-				richFallbackWarned = true;
-				ctx.ui.notify(
-					`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
-					"warning",
-				);
+		const outbound = new OutboundSender(
+			telegram.api as unknown as OutboundApi,
+			{
+				onRichFallback: (error) => {
+					if (richFallbackWarned) return;
+					richFallbackWarned = true;
+					ctx.ui.notify(
+						`Native rich rendering unavailable — sending plain text instead (${String(error)}).`,
+						"warning",
+					);
+				},
 			},
-		});
+		);
 		const media = new MediaDownloader({
-			api: client.api as unknown as FileApi,
+			api: telegram.api as unknown as FileApi,
 			fetchBytes: fetchBytesFromUrl,
 			fileBaseUrl: fileBaseUrl(token),
 			maxBytes: settings.files.maxBytes,
@@ -919,7 +945,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);
 			}
-			await client?.sendDocument({ chatId: allowedUserId, ...input });
+			await telegram.sendDocument({ chatId: allowedUserId, ...input });
 		};
 		connect = new ConnectController({
 			allowedUserId,
@@ -970,6 +996,71 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		visibility.setActive("connect", true);
+		return connect;
+	};
+
+	/**
+	 * The owner just acted (typed at the terminal, or wrote in the `chat` topic) —
+	 * the priority signal in mixed mode. Take the shared brain back for coding at
+	 * once: cancel the return timer and, if the manager was mid-turn in the Telegram
+	 * polarity, abort it so the owner never waits on a moderation reply.
+	 */
+	const takeSessionForCoding = async (): Promise<void> => {
+		if (!mixedActive) return;
+		cancelMixedReturnTimer();
+		const wasTelegram = polarity === "telegram";
+		setPolarity("coding");
+		if (wasTelegram) await abort.abort();
+	};
+
+	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
+	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
+	// control panel.
+	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+		activeCtx = ctx;
+		if (connect) {
+			ctx.ui.notify("Telegram connect is already active.", "warning");
+			return;
+		}
+		const loaded = await loadSettingsAndToken(ctx);
+		if (!loaded) return;
+		const { settings, token } = loaded;
+		if (!settings.allowedUserId) {
+			ctx.ui.notify("Set allowedUserId in settings.json first.", "error");
+			return;
+		}
+		const allowedUserId = settings.allowedUserId;
+		ownerUserId = allowedUserId;
+		const activation = await lifecycle.activate({
+			mode: "connect",
+			chatId: String(allowedUserId),
+		});
+		if (!activation.ok) {
+			ctx.ui.notify(`Cannot connect: ${activation.reason}`, "error");
+			return;
+		}
+
+		client = new TelegramClient({
+			token,
+			onEvent: async (event) => {
+				if (await handleControl(event)) return;
+				// The log topic is the bot talking to itself; anything the owner types
+				// there is not a prompt for the model (they'd use the chat topic).
+				if (event.kind === "message" && topics?.isLog(threadOf(event))) return;
+				await connect?.onEvent(event);
+			},
+			onError: (error) =>
+				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
+		});
+		await setupTopics(client.api, allowedUserId, settings, ctx);
+		const bridge = await startConnectRuntime(
+			client,
+			token,
+			settings,
+			ctx,
+			allowedUserId,
+		);
 		void client.start();
 		// Publish the tappable command menu (no manual setup needed by the user).
 		void client.api
@@ -979,11 +1070,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
-		visibility.setActive("connect", true);
 		ctx.ui.setStatus(STATUS_KEY, `Telegram: connected (chat ${allowedUserId})`);
 		// Route through the Markdown pipeline (sendToChat), not notify(): notify
 		// HTML-escapes its string, so any `*`/`_` markup would show up literally.
-		await connect
+		await bridge
 			.sendToChat(
 				card("🔗", "Connected", [note("Bound to the Pi terminal session.")]),
 			)
@@ -1167,6 +1257,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				settings,
 				ctx,
 			);
+			// Mixed is personal + manager, literally: the same ConnectController runs on
+			// the manager's bot client, so the owner's `chat` topic is a second keyboard
+			// for the very same session — a message there is exactly a prompt typed at
+			// the terminal (and terminal prompts mirror back into it).
+			if (mixed) {
+				await startConnectRuntime(
+					managerClient,
+					token,
+					settings,
+					ctx,
+					settings.allowedUserId,
+				);
+			}
 		}
 		// Download an interlocutor message's inline images so the model can scan
 		// them (mode-2 vision); documents are never downloaded here (refused by the
