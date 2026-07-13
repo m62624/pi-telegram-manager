@@ -18,6 +18,12 @@ The question behind it: **can a small local model be genuinely useful in everyda
 
 The model runs **on your machine, in your own Telegram account**, and you pick how it behaves with a **mode**. This is a personal experiment — expect rough edges, bugs, and behavior that changes.
 
+### What this deliberately is not
+
+**One local model, one session. No sub-agents, no agent swarm, no orchestration layer, no cloud-scale machinery** — and that is a decision, not a gap waiting to be filled. Every one of those tricks assumes you can afford to spend context and calls freely; a single small local model cannot, and adding them would quietly break the very thing this extension is for. So instead of spawning a helper for each chat, one model handles them all, seeing exactly one conversation at a time.
+
+If you need it for a cloud model — parallel agents, a big context, a delegation layer — **fork it**. The code is MIT, the ports are injected, and the pieces you would replace (context building, the scheduler, the memory passes) are the ones deliberately kept small. It runs on cloud models as-is; it is simply not tuned for them, and it will not grow features that only make sense there.
+
 ---
 
 ## Install
