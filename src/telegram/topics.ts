@@ -1,33 +1,36 @@
 /**
  * Forum topics in the owner's private chat with the bot (Bot API 9.3).
  *
- * The owner's DM is one flat stream: personal replies, the manager's debug feed,
- * notices and mode panels all land in it. With Threaded Mode enabled for the bot
- * (the @BotFather Mini App — it is not in the classic Bot Settings keyboard) the DM
- * can be split into topics, and a bot may create them itself: `createForumTopic`
- * accepts a private chat, and every send method takes a `message_thread_id` there
- * (`getMe` reports the toggle as `has_topics_enabled`). We keep exactly two:
+ * The owner's DM is one flat stream: personal replies, the manager's feed, notices
+ * and mode panels all land in it. With Threaded Mode enabled for the bot (the
+ * @BotFather Mini App — it is not in the classic Bot Settings keyboard) the DM can
+ * be split into topics, and a bot may create them itself: `createForumTopic` accepts
+ * a private chat, and every send method takes a `message_thread_id` there (`getMe`
+ * reports the toggle as `has_topics_enabled`). We keep exactly two, split by WHOSE
+ * conversation it is, not by how chatty it is:
  *
- *  - `chat` — the conversation with the model (personal / mixed continuation);
- *  - `log`  — observability: the manager feed, tool activity, runtime notices.
+ *  - `personal` — you and the model: your prompts, its replies, and the full trace
+ *    of what it did for you (tool calls), in Personal mode and in mixed;
+ *  - `manager`  — the secretary side: the per-turn manager feed and runtime notices,
+ *    i.e. what the bot did for OTHER people.
  *
  * There is no API to LIST a chat's topics, so the two thread ids are persisted and
  * re-verified on start (a cheap `sendChatAction` into the thread): a topic the owner
  * deleted while the bot was off is simply recreated. Everything here is best-effort —
- * topic mode off, an old API server, or any error degrades to `undefined` thread ids,
- * which route every message to the plain DM exactly as before.
+ * Threaded Mode off, an old API server, or any error degrades to `undefined` thread
+ * ids, which route every message to the plain DM exactly as before.
  */
 import { withFileWriteLock } from "../storage/file-lock";
 import type { TelegramFs } from "../storage/fs";
 import { readJsonIfExists, writeJson } from "../storage/json";
 
 /** The two topics we maintain in the owner's DM. */
-export type TopicKind = "chat" | "log";
+export type TopicKind = "personal" | "manager";
 
 /** Topic icon colors, from the fixed palette Bot API allows. */
 const ICON_COLOR: Record<TopicKind, number> = {
-	chat: 7322096, // 0x6FB9F0 — blue
-	log: 16478047, // 0xFB6F5F — red
+	personal: 7322096, // 0x6FB9F0 — blue
+	manager: 16478047, // 0xFB6F5F — red
 };
 
 /** The subset of the bot API the router needs; keeps the fake in tests small. */
@@ -38,6 +41,11 @@ export interface TopicsApi {
 		name: string;
 		icon_color?: number;
 	}): Promise<{ message_thread_id: number }>;
+	editForumTopic(args: {
+		chat_id: number;
+		message_thread_id: number;
+		name?: string;
+	}): Promise<unknown>;
 	sendChatAction(args: {
 		chat_id: number;
 		message_thread_id?: number;
@@ -48,6 +56,16 @@ export interface TopicsApi {
 /** Persisted thread ids, scoped to the owner they were created for. */
 export interface TopicsState {
 	ownerChatId: number;
+	personal: number;
+	manager: number;
+}
+
+/**
+ * The pre-rename layout (`chat` / `log`). Read once so an existing pair of topics is
+ * ADOPTED and renamed in place rather than abandoned next to two fresh ones.
+ */
+interface LegacyTopicsState {
+	ownerChatId: number;
 	chat: number;
 	log: number;
 }
@@ -55,8 +73,8 @@ export interface TopicsState {
 export interface TopicsOptions {
 	/** Use topics at all. Off → the router is inert and everything stays in the DM. */
 	enabled: boolean;
-	chatName: string;
-	logName: string;
+	personalName: string;
+	managerName: string;
 }
 
 export interface TopicRouterDeps {
@@ -85,9 +103,9 @@ export class TopicRouter {
 		return this.state?.[kind];
 	}
 
-	/** Whether a thread id belongs to the log topic (owner input there is service noise). */
-	isLog(threadId?: number): boolean {
-		return threadId !== undefined && threadId === this.state?.log;
+	/** Whether a thread id is the manager topic (owner input there is service noise). */
+	isManager(threadId?: number): boolean {
+		return threadId !== undefined && threadId === this.state?.manager;
 	}
 
 	/** Whether topics are live (both threads resolved). */
@@ -108,24 +126,32 @@ export class TopicRouter {
 			const me = await this.deps.api.getMe();
 			if (!me.has_topics_enabled) {
 				this.deps.onFallback?.(
-					"Threaded Mode is off for this bot — using the plain DM. Turn it on in the @BotFather Mini App (open @BotFather, tap the menu button, pick this bot) to get separate chat/log topics.",
+					"Threaded Mode is off for this bot — using the plain DM. Turn it on in the @BotFather Mini App (open @BotFather, tap the menu button, pick this bot) to get separate personal/manager topics.",
 				);
 				return false;
 			}
 			const stored = await this.load();
-			const chat = await this.resolveTopic("chat", options.chatName, stored);
-			const log = await this.resolveTopic("log", options.logName, stored);
+			const personal = await this.resolveTopic(
+				"personal",
+				options.personalName,
+				stored,
+			);
+			const manager = await this.resolveTopic(
+				"manager",
+				options.managerName,
+				stored,
+			);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
-				chat,
-				log,
+				personal,
+				manager,
 			};
 			await this.save(state);
 			this.state = state;
 			return true;
 		} catch (error) {
 			this.deps.onFallback?.(
-				`Could not set up the chat/log topics — using the plain DM. (${String(error)})`,
+				`Could not set up the personal/manager topics — using the plain DM. (${String(error)})`,
 			);
 			return false;
 		}
@@ -139,14 +165,30 @@ export class TopicRouter {
 		this.state = null;
 	}
 
-	/** A stored topic that still accepts messages, else a freshly created one. */
+	/**
+	 * A stored topic that still accepts messages (renamed if its name changed), else a
+	 * freshly created one.
+	 */
 	private async resolveTopic(
 		kind: TopicKind,
 		name: string,
-		stored: TopicsState | null,
+		stored: { state: TopicsState; renamed: boolean } | null,
 	): Promise<number> {
-		const known = stored?.[kind];
-		if (known !== undefined && (await this.exists(known))) return known;
+		const known = stored?.state[kind];
+		if (known !== undefined && (await this.exists(known))) {
+			// An adopted topic from the old `chat`/`log` layout keeps its thread — and
+			// its history — under the new name.
+			if (stored?.renamed) {
+				await this.deps.api
+					.editForumTopic({
+						chat_id: this.deps.ownerChatId,
+						message_thread_id: known,
+						name,
+					})
+					.catch(() => {});
+			}
+			return known;
+		}
 		const created = await this.deps.api.createForumTopic({
 			chat_id: this.deps.ownerChatId,
 			name,
@@ -169,14 +211,40 @@ export class TopicRouter {
 		}
 	}
 
-	/** Persisted ids, but only if they were created for THIS owner. */
-	private async load(): Promise<TopicsState | null> {
-		const stored = await readJsonIfExists<TopicsState>(
+	/**
+	 * Persisted ids for THIS owner, in either layout. `renamed` marks the old
+	 * `chat`/`log` pair, whose topics are renamed in place when adopted.
+	 */
+	private async load(): Promise<{
+		state: TopicsState;
+		renamed: boolean;
+	} | null> {
+		const stored = await readJsonIfExists<TopicsState & LegacyTopicsState>(
 			this.deps.fs,
 			this.deps.path,
 		);
 		if (!stored || stored.ownerChatId !== this.deps.ownerChatId) return null;
-		return stored;
+		if (stored.personal !== undefined && stored.manager !== undefined) {
+			return {
+				state: {
+					ownerChatId: stored.ownerChatId,
+					personal: stored.personal,
+					manager: stored.manager,
+				},
+				renamed: false,
+			};
+		}
+		if (stored.chat !== undefined && stored.log !== undefined) {
+			return {
+				state: {
+					ownerChatId: stored.ownerChatId,
+					personal: stored.chat,
+					manager: stored.log,
+				},
+				renamed: true,
+			};
+		}
+		return null;
 	}
 
 	private async save(state: TopicsState): Promise<void> {

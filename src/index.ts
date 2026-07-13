@@ -606,7 +606,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			event.fromId === ownerUserId &&
 			event.chatId === ownerUserId
 		) {
-			if (topics?.isLog(threadOf(event))) return;
+			if (topics?.isManager(threadOf(event))) return;
 			await takeSessionForCoding();
 			await connect.onEvent(event);
 			return;
@@ -837,8 +837,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await topics.ensure();
 	};
 
-	const chatThread = (): number | undefined => topics?.thread("chat");
-	const logThread = (): number | undefined => topics?.thread("log");
+	const personalThread = (): number | undefined => topics?.thread("personal");
+	const managerThread = (): number | undefined => topics?.thread("manager");
 
 	/** The topic an inbound message was posted in (undefined without topics). */
 	const threadOf = (event: TelegramEvent): number | undefined =>
@@ -989,8 +989,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					Date.now(),
 				);
 			},
-			chatThread,
-			logThread,
+			chatThread: personalThread,
 			outbound,
 			abort,
 		});
@@ -1047,7 +1046,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				if (await handleControl(event)) return;
 				// The log topic is the bot talking to itself; anything the owner types
 				// there is not a prompt for the model (they'd use the chat topic).
-				if (event.kind === "message" && topics?.isLog(threadOf(event))) return;
+				if (event.kind === "message" && topics?.isManager(threadOf(event)))
+					return;
 				await connect?.onEvent(event);
 			},
 			onError: (error) =>
@@ -1398,7 +1398,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				if (chatId === null) return;
 				try {
 					await managerOutbound.notify(
-						{ chatId, messageThreadId: logThread() },
+						{ chatId, messageThreadId: managerThread() },
 						html,
 					);
 				} catch (error) {
@@ -1614,7 +1614,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the owner asked from a topic themselves, where the answer stays in that topic.
 	const sendSwitchPanel = async (
 		api: ControlApi,
-		threadId = chatThread(),
+		threadId = personalThread(),
 	): Promise<void> => {
 		if (ownerUserId === null) return;
 		const active = activeTarget();
@@ -1653,7 +1653,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			} else {
 				const sent = await api.sendMessage({
 					chat_id: ownerUserId,
-					message_thread_id: chatThread(),
+					message_thread_id: personalThread(),
 					text,
 				});
 				modePinMessageId = sent.message_id;
@@ -1708,7 +1708,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			const text = (event.message.text ?? "").trim();
 			if (isSwitchCommand(text)) {
-				await sendSwitchPanel(api, threadOf(event) ?? chatThread());
+				await sendSwitchPanel(api, threadOf(event) ?? personalThread());
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own
@@ -1718,7 +1718,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await api
 					.sendMessage({
 						chat_id: ownerUserId,
-						message_thread_id: threadOf(event) ?? chatThread(),
+						message_thread_id: threadOf(event) ?? personalThread(),
 						text: MANAGER_HELP_TEXT,
 						// No preview card — a help message should stay compact, and Telegram
 						// would otherwise card the last URL (the mirror) over the main repo.

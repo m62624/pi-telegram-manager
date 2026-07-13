@@ -70,13 +70,13 @@ export interface ConnectControllerDeps {
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
-	 * Topic threads in the owner's DM, resolved per send (they appear once the
-	 * router has created them, and vanish again on a fallback to the plain DM):
-	 * the conversation goes to `chat`, tool activity to `log` so the conversation
-	 * stays free of logs. Undefined → the plain DM, i.e. today's behaviour.
+	 * The owner's `personal` topic, resolved per send (it appears once the router has
+	 * created it, and vanishes again on a fallback to the plain DM). EVERYTHING of this
+	 * conversation goes there — prompts, replies, and the tool calls the model made for
+	 * the owner, which are part of watching it work, not manager noise. Undefined → the
+	 * plain DM, i.e. the pre-topics behaviour.
 	 */
 	chatThread?: () => number | undefined;
-	logThread?: () => number | undefined;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -125,14 +125,6 @@ export class ConnectController {
 		return {
 			chatId: this.deps.allowedUserId,
 			messageThreadId: this.deps.chatThread?.(),
-		};
-	}
-
-	/** Where observability output goes: the log topic, else the plain DM. */
-	private get logTarget(): OutboundTarget {
-		return {
-			chatId: this.deps.allowedUserId,
-			messageThreadId: this.deps.logThread?.(),
 		};
 	}
 
@@ -338,12 +330,13 @@ export class ConnectController {
 
 	/**
 	 * Surface an agent tool invocation to the bound chat as a collapsible block
-	 * (tool name + folded parameters). Best-effort: a formatting/send failure
-	 * must never interrupt the agent's turn.
+	 * (tool name + folded parameters) — it belongs with the conversation it serves, so
+	 * you can watch the model work. Best-effort: a formatting/send failure must never
+	 * interrupt the agent's turn.
 	 */
 	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
 		await this.deps.outbound
-			.sendMessages(this.logTarget, [toolActivityMessage(activity)])
+			.sendMessages(this.target, [toolActivityMessage(activity)])
 			.catch(() => {});
 	}
 

@@ -48,18 +48,19 @@ export interface TelegramSettings {
 	};
 	/**
 	 * Forum topics in the owner's private chat with the bot (Bot API 9.3): the DM is
-	 * split into a `chat` topic (the conversation with the model) and a `log` topic
-	 * (the manager feed, tool activity, notices), so observability never buries the
-	 * conversation. Requires topic mode for the bot (@BotFather → Bot Settings);
-	 * without it — or on any error — everything degrades to the plain single DM.
+	 * split by WHOSE conversation it is — a `personal` topic (you and the model: your
+	 * prompts, its replies, and the full trace of its tool calls) and a `manager` topic
+	 * (what the bot did for other people: the per-turn feed and runtime notices).
+	 * Requires Threaded Mode for the bot (the @BotFather Mini App); without it — or on
+	 * any error — everything degrades to the plain single DM.
 	 */
 	topics: {
 		/** Use topics when the bot supports them. Default true. */
 		enabled: boolean;
-		/** Name of the conversation topic. Default "chat". */
-		chatName: string;
-		/** Name of the observability topic. Default "log". */
-		logName: string;
+		/** Name of your own conversation topic. Default "personal". */
+		personalName: string;
+		/** Name of the secretary-side topic. Default "manager". */
+		managerName: string;
 	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
@@ -200,7 +201,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
 	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
 	mixed: { returnToTelegramMs: 480_000 },
-	topics: { enabled: true, chatName: "chat", logName: "log" },
+	topics: { enabled: true, personalName: "personal", managerName: "manager" },
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -401,8 +402,17 @@ export function normalizeSettings(
 		},
 		topics: {
 			enabled: asBoolean(topics.enabled, "topics.enabled", d.topics.enabled),
-			chatName: asString(topics.chatName, "topics.chatName", d.topics.chatName),
-			logName: asString(topics.logName, "topics.logName", d.topics.logName),
+			// Renamed from chatName/logName; an existing settings.json keeps working.
+			personalName: asString(
+				topics.personalName ?? topics.chatName,
+				"topics.personalName",
+				d.topics.personalName,
+			),
+			managerName: asString(
+				topics.managerName ?? topics.logName,
+				"topics.managerName",
+				d.topics.managerName,
+			),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),
 		connect: {

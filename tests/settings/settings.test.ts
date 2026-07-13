@@ -158,16 +158,27 @@ describe("normalizeSettings", () => {
 		).toBe(true);
 	});
 
-	it("defaults topics on, with chat/log names", () => {
+	it("defaults topics on, with personal/manager names", () => {
 		expect(normalizeSettings({}).topics).toEqual({
 			enabled: true,
-			chatName: "chat",
-			logName: "log",
+			personalName: "personal",
+			managerName: "manager",
 		});
 		expect(
-			normalizeSettings({ topics: { enabled: false, logName: "debug" } })
-				.topics,
-		).toEqual({ enabled: false, chatName: "chat", logName: "debug" });
+			normalizeSettings({
+				topics: { enabled: false, managerName: "secretary" },
+			}).topics,
+		).toEqual({
+			enabled: false,
+			personalName: "personal",
+			managerName: "secretary",
+		});
+	});
+
+	it("still honours the former topics.chatName / topics.logName keys", () => {
+		expect(
+			normalizeSettings({ topics: { chatName: "me", logName: "bot" } }).topics,
+		).toEqual({ enabled: true, personalName: "me", managerName: "bot" });
 	});
 
 	it("defaults strictReplyGuard on and reads an optional ownerName", () => {

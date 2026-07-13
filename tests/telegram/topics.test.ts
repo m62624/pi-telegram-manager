@@ -14,6 +14,7 @@ function fakeApi(overrides: Partial<TopicsApi> = {}) {
 				message_thread_id: nextThread++,
 			}),
 		),
+		editForumTopic: vi.fn(async () => ({})),
 		sendChatAction: vi.fn(async () => ({})),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
@@ -28,7 +29,11 @@ function router(api: TopicsApi, fs = new FakeFs(), onFallback = vi.fn()) {
 			fs,
 			path: PATH,
 			ownerChatId: OWNER,
-			options: { enabled: true, chatName: "chat", logName: "log" },
+			options: {
+				enabled: true,
+				personalName: "personal",
+				managerName: "manager",
+			},
 			onFallback,
 		}),
 	};
@@ -41,14 +46,14 @@ describe("TopicRouter", () => {
 		api = fakeApi();
 	});
 
-	it("creates both topics and routes each kind to its thread", async () => {
+	it("creates both topics (personal + manager) and routes each kind to its thread", async () => {
 		const { router: r } = router(api);
 		expect(await r.ensure()).toBe(true);
 		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
-		expect(r.thread("chat")).toBe(100);
-		expect(r.thread("log")).toBe(101);
-		expect(r.isLog(101)).toBe(true);
-		expect(r.isLog(100)).toBe(false);
+		expect(r.thread("personal")).toBe(100);
+		expect(r.thread("manager")).toBe(101);
+		expect(r.isManager(101)).toBe(true);
+		expect(r.isManager(100)).toBe(false);
 	});
 
 	it("reuses the persisted threads on the next run instead of creating new ones", async () => {
@@ -58,8 +63,8 @@ describe("TopicRouter", () => {
 		const r2 = router(second, fs).router;
 		expect(await r2.ensure()).toBe(true);
 		expect(second.createForumTopic).not.toHaveBeenCalled();
-		expect(r2.thread("chat")).toBe(100);
-		expect(r2.thread("log")).toBe(101);
+		expect(r2.thread("personal")).toBe(100);
+		expect(r2.thread("manager")).toBe(101);
 	});
 
 	it("recreates a topic the owner deleted while the bot was off", async () => {
@@ -76,8 +81,8 @@ describe("TopicRouter", () => {
 		expect(await r2.ensure()).toBe(true);
 		expect(second.createForumTopic).toHaveBeenCalledTimes(1);
 		// A fresh topic id (the fake hands out 100 again), not a stale one.
-		expect(r2.thread("chat")).toBe(100);
-		expect(r2.thread("log")).toBe(101);
+		expect(r2.thread("personal")).toBe(100);
+		expect(r2.thread("manager")).toBe(101);
 	});
 
 	it("falls back to the plain DM when the bot has no topic mode", async () => {
@@ -85,8 +90,8 @@ describe("TopicRouter", () => {
 		const { router: r, onFallback } = router(noTopics);
 		expect(await r.ensure()).toBe(false);
 		expect(r.active).toBe(false);
-		expect(r.thread("chat")).toBeUndefined();
-		expect(r.thread("log")).toBeUndefined();
+		expect(r.thread("personal")).toBeUndefined();
+		expect(r.thread("manager")).toBeUndefined();
 		expect(onFallback.mock.calls[0][0]).toContain("BotFather");
 		expect(noTopics.createForumTopic).not.toHaveBeenCalled();
 	});
@@ -99,7 +104,7 @@ describe("TopicRouter", () => {
 		});
 		const { router: r, onFallback } = router(broken);
 		expect(await r.ensure()).toBe(false);
-		expect(r.thread("log")).toBeUndefined();
+		expect(r.thread("manager")).toBeUndefined();
 		expect(onFallback.mock.calls[0][0]).toContain("plain DM");
 	});
 
@@ -110,11 +115,15 @@ describe("TopicRouter", () => {
 			fs,
 			path: PATH,
 			ownerChatId: OWNER,
-			options: { enabled: false, chatName: "chat", logName: "log" },
+			options: {
+				enabled: false,
+				personalName: "personal",
+				managerName: "manager",
+			},
 		});
 		expect(await r.ensure()).toBe(false);
 		expect(api.getMe).not.toHaveBeenCalled();
-		expect(r.thread("chat")).toBeUndefined();
+		expect(r.thread("personal")).toBeUndefined();
 	});
 
 	it("ignores threads persisted for a different owner", async () => {
@@ -126,7 +135,11 @@ describe("TopicRouter", () => {
 			fs,
 			path: PATH,
 			ownerChatId: 999,
-			options: { enabled: true, chatName: "chat", logName: "log" },
+			options: {
+				enabled: true,
+				personalName: "personal",
+				managerName: "manager",
+			},
 		});
 		expect(await r.ensure()).toBe(true);
 		expect(other.createForumTopic).toHaveBeenCalledTimes(2);
@@ -137,6 +150,22 @@ describe("TopicRouter", () => {
 		await r.ensure();
 		r.fallBack();
 		expect(r.active).toBe(false);
-		expect(r.thread("log")).toBeUndefined();
+		expect(r.thread("manager")).toBeUndefined();
+	});
+
+	it("adopts and renames the old chat/log pair instead of creating new topics", async () => {
+		// The topics were first shipped as `chat`/`log`; a rename must keep the same
+		// threads (and their history) rather than leave two orphans behind.
+		const fs = new FakeFs();
+		await fs.writeText(
+			PATH,
+			JSON.stringify({ ownerChatId: OWNER, chat: 11, log: 12 }),
+		);
+		const { router: r } = router(api, fs);
+		expect(await r.ensure()).toBe(true);
+		expect(api.createForumTopic).not.toHaveBeenCalled();
+		expect(api.editForumTopic).toHaveBeenCalledTimes(2);
+		expect(r.thread("personal")).toBe(11);
+		expect(r.thread("manager")).toBe(12);
 	});
 });
