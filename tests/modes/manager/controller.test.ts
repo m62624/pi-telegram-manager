@@ -593,6 +593,35 @@ describe("ManagerController", () => {
 		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
+	it("takeover: a frozen chat ignores even a wake-word until the owner is away", async () => {
+		// The freeze used to be dead state — nothing read it — so a wake-word from the
+		// interlocutor pulled the bot straight back into a chat the owner had just
+		// taken over. Now the owner keeps the wheel until they go quiet again.
+		const { controller, triggerAgent, clock } = await setup("takeover", [
+			"llm",
+		]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("I've got this one"),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hey llm, what do you think?", 5, 2),
+		});
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+
+		// The owner stays silent through the window: the freeze lapses and the chat is
+		// served — the question is not lost, only deferred.
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
 	it("takeover: the bot re-engages after the owner-reply window lapses", async () => {
 		const { controller, triggerAgent, clock } = await setup("takeover");
 		await controller.onBusinessMessage({

@@ -72,10 +72,10 @@ Through a Telegram **Secretary** connection (the feature Telegram formerly calle
 
 | Sub-mode | Once the window expires | While you are answering | Pick it when |
 | --- | --- | --- | --- |
-| 👁️ **Observer** | **Stays quiet unless it is spoken to.** It replies only when someone addresses it by name / as an AI / bot, or when you or the interlocutor explicitly ask it to answer. An ordinary unanswered question is *not* enough — the co-pilot does not put words in your mouth. | It keeps reading, nothing more. You can also **summon it**: put a wake-word in your own message and it steps in on that chat. | You are around. You want a bot that answers when addressed and stays out of everything else. **The safe default — start here.** |
-| 🎛️ **Takeover** | **Carries the conversation.** It answers the interlocutor as you would, moving the thread forward whenever they need an answer and you have stayed silent. | The moment you write manually, the chat is **frozen**: the bot goes quiet on it and does not act again until you are away (the next expiring window releases the freeze). | You are away and want the conversation carried, not merely watched. |
+| 👁️ **Observer** | **Stays quiet unless it is spoken to.** It replies only when someone addresses it by name / as an AI / bot, or when you or the interlocutor explicitly ask it to answer. An ordinary unanswered question is *not* enough — the co-pilot does not put words in your mouth. | It keeps reading, and stays available: a wake-word from the interlocutor still reaches it, and you can **summon it yourself** by putting a wake-word in your own message. | You are around. You want a bot that answers when addressed and stays out of everything else. **The safe default — start here.** |
+| 🎛️ **Takeover** | **Carries the conversation.** It answers the interlocutor as you would, moving the thread forward whenever they need an answer and you have stayed silent. | You take the wheel: the chat is **frozen**. The bot stays out of it entirely — not even a wake-word pulls it back — until you go quiet again for one window (5 min), which releases the freeze. | You are away and want the conversation carried, not merely watched. |
 
-Both obey the same silence rules — small talk between other people, reactions and acknowledgements are not answered, and the bot never replies to *you* (your messages are context, not prompts). The difference is not *whether it waits* (both wait) but **what counts as its business** once it gets the turn.
+Both obey the same silence rules — small talk between other people, reactions and acknowledgements are not answered, and the bot never replies to *you* (your messages are context, not prompts). Two real differences, then: **what counts as its business** once it gets the turn, and **what your own message does** — in observer it can call the bot in, in takeover it shuts the bot out.
 
 Start it with `/telegram-manager`; it asks for the sub-mode. Mixed uses the same two.
 
@@ -118,9 +118,11 @@ Messages from many people arrive at once; the model handles **one chat per turn*
 
 ### The owner-reply window — your first chance (in BOTH sub-modes)
 
-A message is **held** for [`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **5 min**) before the bot may touch it — in observer *and* in takeover. If **you** answer in that time, the bot drops that batch silently and never repeats you. Takeover does not skip this wait; what it changes is that your manual message also **freezes** the chat (the bot stays out of it until you are away again), while observer simply keeps reading.
+A message is **held** for [`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **5 min**) before the bot may touch it — in observer *and* in takeover. If **you** answer in that time, the bot drops that batch silently and never repeats you.
 
-Two things skip the wait: a **wake-word** (see below), and a chat that is already the active one — a reply of yours in a live back-and-forth continues immediately rather than waiting five minutes again.
+Takeover does not skip this wait. What it adds is the **freeze**: your manual message means you have taken the chat over, so the bot stays out of it completely — even a wake-word from the interlocutor does not pull it back in. The freeze lifts when you have been quiet for one window, and the messages that arrived meanwhile are then served: deferred, not lost. Observer never freezes — there you are *expected* to be answering, and the bot is expected to stay quiet anyway.
+
+Two things skip the wait: a **wake-word** (see below), and a chat that is already the active one — a follow-up in a live back-and-forth continues immediately rather than waiting five minutes again.
 
 ### Wake-words — how the bot knows it is being addressed
 

@@ -720,6 +720,15 @@ export class ManagerController {
 		// (selectCatchUpChats), which reasons off true timestamps, decides which
 		// stale chats are still worth answering.
 		if (now - messageTime > this.deps.liveFreshnessMs) return;
+		// TAKEOVER only: the owner stepped into this chat, so they are at the wheel and
+		// the bot stays out of it — not even a wake-word pulls it back in. The window is
+		// still armed, because its expiry (the owner going quiet again) is exactly what
+		// releases the freeze. Observer never freezes: there the owner is expected to be
+		// answering, and the bot's whole job is to stay quiet unless spoken to.
+		if (this.gate.isFrozen(chatId)) {
+			this.gate.onInterlocutorMessage(chatId);
+			return;
+		}
 		this.unserved.add(chatId);
 		// Landed while this chat's turn was mid-flight: flag it so turn end reconsiders
 		// against this newer message instead of sending a now-stale reply blind.
@@ -1009,6 +1018,10 @@ export class ManagerController {
 	 */
 	async onTick(): Promise<void> {
 		for (const chatId of this.gate.onTick()) {
+			// A chat released by the window (or by a takeover freeze lapsing) has an
+			// unanswered message by definition — the gate only returns chats with a
+			// pending batch.
+			this.unserved.add(chatId);
 			this.scheduler.onMessage(chatId);
 		}
 		this.scheduler.onTick();
