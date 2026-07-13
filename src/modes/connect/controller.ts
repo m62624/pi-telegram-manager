@@ -26,7 +26,10 @@ import { MessageQueue, type QueueItem } from "../../core/queue";
 import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
-import { buildRichHtmlMessage, thinking } from "../../telegram/rich-builder";
+import {
+	buildRichHtmlMessage,
+	type RichHtml,
+} from "../../telegram/rich-builder";
 import {
 	type ToolCallActivity,
 	toolActivityMessage,
@@ -561,18 +564,18 @@ export class ConnectController {
 	}
 
 	/**
-	 * Show the animated placeholder for what the agent is doing right now (`label`),
-	 * opening a draft if the turn has not started streaming text yet. This is NOT the
-	 * model's reasoning — the SDK exposes none; it is the live activity line that fills
-	 * the silence between the prompt and the first token, and it disappears with the
-	 * draft. Best-effort, exactly like {@link streamDraft}.
+	 * Push the turn's live trace into the draft: finished steps as plain lines, the
+	 * current one animated. This is NOT the model's reasoning — the SDK exposes none;
+	 * it is what the agent is DOING, filling the silence between the prompt and the
+	 * first token, and it disappears with the draft. Best-effort, like
+	 * {@link streamDraft}.
 	 */
-	async streamThinking(label: string): Promise<void> {
-		if (!label.trim()) return;
+	async streamThinking(html: RichHtml): Promise<void> {
+		if (!html.html.trim()) return;
 		this.beginDraft();
 		await this.flushMirror();
 		await this.deps.outbound
-			.draft(this.target, this.draftId, buildRichHtmlMessage(thinking(label)))
+			.draft(this.target, this.draftId, buildRichHtmlMessage(html))
 			.catch(() => {});
 	}
 

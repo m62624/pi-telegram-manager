@@ -165,7 +165,8 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
-import { toolActivityLabel } from "./telegram/tool-activity";
+import { ThinkingLog } from "./telegram/thinking-log";
+import { toolActivityHint } from "./telegram/tool-activity";
 import {
 	placeOfOwnerMessage,
 	TopicRouter,
@@ -350,13 +351,13 @@ const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
 const DRAFT_THROTTLE_MS = 700;
 /**
- * A streaming draft expires after ~30s, so the placeholder is re-sent well inside
- * that window — otherwise a tool that runs longer than half a minute would leave
- * the chat silent exactly when the agent is busiest.
+ * The trace is re-sent on this beat. Two clocks demand it: a streaming draft
+ * expires ~30s after its last update (so a long tool would leave the chat blank
+ * exactly when the agent is busiest), and the running step counts its own elapsed
+ * seconds, which would otherwise sit frozen. Re-sending the same draft id animates
+ * in place, so this is invisible — the number just ticks.
  */
-const THINKING_REFRESH_MS = 12_000;
-/** What the placeholder says before the first tool call: the model is sampling. */
-const THINKING_START_LABEL = "Thinking…";
+const THINKING_REFRESH_MS = 3_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -507,9 +508,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let toolActivityEnabled = false;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
-	// What the agent is doing right now, shown in the draft's animated placeholder
-	// until the first token of the reply arrives. Null = no placeholder in flight.
-	let thinkingLabel: string | null = null;
+	// The turn's live trace — the steps taken so far and the one running — shown in
+	// the draft until the first token of the reply arrives.
+	const thinkingLog = new ThinkingLog();
+	// Whether a trace is currently in the draft (so a finished turn knows to erase it).
+	let thinkingUp = false;
 	let thinkingTimer: ReturnType<typeof setInterval> | null = null;
 	let draftText = "";
 	let lastDraftAt = 0;
@@ -724,7 +727,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connect !== null && draftPreviewsEnabled && ownerRun;
 
 	const stopThinking = (): void => {
-		thinkingLabel = null;
+		thinkingUp = false;
+		thinkingLog.clear();
 		if (thinkingTimer) {
 			clearInterval(thinkingTimer);
 			thinkingTimer = null;
@@ -732,19 +736,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Show what the agent is doing now, and keep it alive: a draft expires after
-	 * ~30s, so a long-running tool would leave the chat blank mid-turn without the
-	 * refresh. Re-sending the SAME draft id animates in place, so the refresh is
-	 * invisible — no flicker.
+	 * Push the trace into the draft, and keep it alive. Two clocks are at work: a
+	 * draft expires ~30s after its last update, and the running step shows its own
+	 * elapsed seconds — both want a refresh well under half a minute. Re-sending the
+	 * SAME draft id animates in place, so refreshing is invisible: no flicker, and the
+	 * timer simply ticks.
 	 */
-	const showThinking = (label: string): void => {
+	const showThinking = (): void => {
 		if (!thinkingAllowed()) return;
-		thinkingLabel = label;
-		void connect?.streamThinking(label);
+		thinkingUp = true;
+		void connect?.streamThinking(thinkingLog.html(Date.now()));
 		if (thinkingTimer) return;
 		thinkingTimer = setInterval(() => {
-			if (thinkingLabel === null) return;
-			void connect?.streamThinking(thinkingLabel);
+			if (!thinkingUp) return;
+			void connect?.streamThinking(thinkingLog.html(Date.now()));
 		}, THINKING_REFRESH_MS);
 	};
 
@@ -955,7 +960,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			startTyping();
 			// Fill the silence between the prompt and the first token: until a tool is
 			// called, the only true thing to say is that the model is sampling.
-			showThinking(THINKING_START_LABEL);
+			thinkingLog.clear();
+			showThinking();
 		}
 	});
 	// End the manager's agent run as soon as it has made the turn's terminal
@@ -990,7 +996,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// A placeholder still up when the run ends means no reply text ever streamed —
 		// an abort (/esc), an error, or a run that only called tools. Nothing will
 		// overwrite it, so erase it; otherwise it keeps animating until it expires.
-		const placeholderWasUp = thinkingLabel !== null;
+		const placeholderWasUp = thinkingUp;
 		stopThinking();
 		if (placeholderWasUp) {
 			await connect?.clearDraft();
@@ -1050,11 +1056,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
-		// The live placeholder rides the draft, not the cards, so it updates even when
-		// the tool CARDS are switched off — `showThinking` applies its own gate.
-		showThinking(
-			toolActivityLabel({ toolName: event.toolName, args: event.args }),
-		);
+		// The live trace rides the draft, not the cards, so it updates even when the
+		// tool CARDS are switched off — `showThinking` applies its own gate.
+		thinkingLog.start({
+			callId: event.toolCallId,
+			toolName: event.toolName,
+			hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
+			startedAt: Date.now(),
+		});
+		showThinking();
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
 			.sendToolActivity(
@@ -1068,6 +1078,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// a run of wrenches shows at a glance which step failed — instead of every card
 	// looking identical and having to be expanded to find out.
 	pi.on("tool_execution_end", async (event) => {
+		// Close the step in the live trace first: it ticks (or crosses) even when the
+		// cards are off, and it must stop counting seconds the moment the tool returns.
+		if (thinkingUp) {
+			thinkingLog.finish(event.toolCallId, Date.now(), event.isError);
+			showThinking();
+		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
 			.completeToolActivity(event.toolCallId, event.result, event.isError)

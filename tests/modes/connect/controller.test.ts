@@ -6,6 +6,7 @@ import {
 	type ConnectControllerDeps,
 } from "../../../src/modes/connect/controller";
 import { OutboundSender } from "../../../src/telegram/outbound";
+import { RichHtml, thinking } from "../../../src/telegram/rich-builder";
 import {
 	classifyUpdate,
 	type TelegramEvent,
@@ -336,7 +337,7 @@ describe("ConnectController", () => {
 	it("animates the thinking placeholder into the streaming text on ONE draft", async () => {
 		const { controller, api } = setup();
 		// The placeholder opens the draft itself — no beginDraft() beforehand.
-		await controller.streamThinking("bash — npm test");
+		await controller.streamThinking(thinking("bash — npm test"));
 		expect(api.drafts).toHaveLength(1);
 		expect(api.drafts[0].rich_message.html).toBe(
 			"<tg-thinking>bash — npm test</tg-thinking>",
@@ -353,7 +354,7 @@ describe("ConnectController", () => {
 
 	it("erases the placeholder on an aborted turn instead of letting it expire", async () => {
 		const { controller, api } = setup();
-		await controller.streamThinking("Thinking…");
+		await controller.streamThinking(thinking("Thinking…"));
 		const draftId = api.drafts[0].draft_id;
 
 		await controller.clearDraft();
@@ -366,12 +367,12 @@ describe("ConnectController", () => {
 		expect(api.drafts).toHaveLength(2);
 	});
 
-	it("escapes text in the placeholder and ignores an empty label", async () => {
+	it("escapes text in the placeholder and ignores empty markup", async () => {
 		const { controller, api } = setup();
-		await controller.streamThinking("   ");
+		await controller.streamThinking(RichHtml.raw("  "));
 		expect(api.drafts).toHaveLength(0);
 
-		await controller.streamThinking('grep — <b>&"x"');
+		await controller.streamThinking(thinking('grep — <b>&"x"'));
 		expect(api.drafts[0].rich_message.html).toBe(
 			'<tg-thinking>grep — &lt;b&gt;&amp;"x"</tg-thinking>',
 		);
