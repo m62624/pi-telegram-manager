@@ -33,7 +33,11 @@ import { AbortRegistry } from "./core/abort";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
-import { backgroundNowMessage, formatNowLine } from "./core/datetime";
+import {
+	backgroundNowMessage,
+	formatClock,
+	formatNowLine,
+} from "./core/datetime";
 import { expandHome, readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -461,6 +465,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the owner.
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
+	// The configured zone, for the clock the mode pin carries. Set on every mode start.
+	let activeTimezone: string | undefined;
 
 	// Mixed mode: the manager runtime coexists with the owner's coding thread in
 	// ONE session. `polarity` says whose turn the shared brain is serving right
@@ -475,9 +481,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let mixedReturnTimer: ReturnType<typeof setTimeout> | null = null;
 	// The pinned "current mode" indicator in the owner's DM: the message id we pin
 	// once and then edit in place on every mode change (so switches never spam new
-	// pins), plus the mode it currently shows (to skip redundant edits).
+	// pins).
 	let modePinMessageId: number | null = null;
-	let modePinTarget: PanelMode | null = null;
 	/**
 	 * The pin lives in the owner's DM, not in this process: without persisting its id
 	 * a restarted Pi forgot it and pinned a SECOND message ("Закреплённое сообщение
@@ -499,9 +504,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		).catch(() => null);
 		if (stored && stored.ownerChatId === ownerChatId) {
 			modePinMessageId = stored.messageId;
-			// The mode it shows is unknown after a restart, so the first update always
-			// rewrites the text rather than assuming it already matches.
-			modePinTarget = null;
 		}
 	};
 
@@ -946,15 +948,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
-		if (connect) {
-			await connect
-				.sendToChat(
-					card("🔌", "Pi session closed", [
-						note("The bridge is no longer active."),
-					]),
-				)
-				.catch(() => {});
-		}
+		// No goodbye card: the pinned mode line is the one place that says whether the
+		// bridge is up, and it now flips to "Stopped" here. A card said the same thing
+		// once, then stayed in the chat saying it forever.
+		if (connect || manager) await updateModePin("stop");
 	});
 
 	// Both mode launchers load settings, surface any warnings, and need the bot
@@ -965,6 +962,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<{ settings: TelegramSettings; token: string } | null> => {
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
+		activeTimezone = settings.timezone;
 		const token = resolveSecret(settings.botToken);
 		if (!token) {
 			ctx.ui.notify(
@@ -1987,12 +1985,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	// Keep a pinned message at the top of the owner's DM showing the active mode, so
 	// the current mode is always visible without running a command. Pinned once, then
-	// edited in place on every change (no new pins per switch); "stop" shows the bot
-	// is off. Best-effort — never blocks a mode start/stop.
+	// edited in place (no new pins per switch); "stop" shows the bot is off.
+	//
+	// It carries the time it last changed, which is not decoration: a reconnect in the
+	// SAME mode is a real event for the person reading it ("is it up again?"), and
+	// without a clock the pin would be rewritten with identical text and look frozen.
+	// Best-effort — never blocks a mode start/stop.
 	const modePinText = (target: PanelMode): string => {
-		if (target === "stop")
-			return "📌 Bot mode: ⏹️ Stopped\nUse /switch to start a mode.";
-		return `📌 Bot mode: ${switchLabel(target)}\nUse /switch to change.`;
+		const at = formatClock(Date.now(), activeTimezone);
+		if (target === "stop") {
+			return `📌 Bot mode: ⏹️ Stopped\nStopped: ${at}\nUse /switch to start a mode.`;
+		}
+		return `📌 Bot mode: ${switchLabel(target)}\nActive since: ${at}\nUse /switch to change.`;
 	};
 
 	/**
@@ -2040,7 +2044,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		};
 
 		try {
-			if (modePinMessageId !== null && modePinTarget !== target) {
+			if (modePinMessageId !== null) {
 				// Edit the pin that is already there — a new mode is not a new message. A
 				// pin per switch is what once buried the chat under numbered pins.
 				try {
@@ -2076,12 +2080,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						.catch(() => {});
 				}
 			}
-			modePinTarget = target;
 		} catch {
 			// Unreachable chat: forget the pin so the next update rebuilds it from
 			// scratch rather than editing an id that may no longer mean anything.
 			modePinMessageId = null;
-			modePinTarget = null;
 			await fs.removeFile(paths.modePinPath).catch(() => {});
 		}
 	};
