@@ -213,6 +213,45 @@ const TOPICS_SETUP_NOTICE = [
 	"notice stops.",
 ].join("\n");
 
+/**
+ * Sent when Secretary Mode is off for the bot: the manager cannot receive a single
+ * business chat, so it would just sit there looking broken.
+ */
+const SECRETARY_SETUP_NOTICE = [
+	"⛔ Secretary Mode is OFF for this bot, so it cannot be connected to your",
+	"account — the manager will never receive a chat.",
+	"",
+	"Turn it on: @BotFather → /mybots → this bot → Bot Settings →",
+	"Secretary Mode (formerly Business Mode) → Turn on.",
+	"",
+	`Setup steps: ${SETUP_GUIDE_URL}`,
+].join("\n");
+
+/**
+ * Sent when the bot IS connected but was not granted the right to reply: it reads
+ * every chat and can answer none of them — the silence looks exactly like a bug.
+ */
+const REPLY_RIGHT_NOTICE = [
+	"⛔ This bot is connected to your account but is NOT allowed to reply.",
+	"It can read your chats and answer nothing.",
+	"",
+	"Fix it in Telegram: Settings → Business / Secretary → Chatbots →",
+	"this bot → allow it to reply to messages.",
+	"",
+	`Setup steps: ${SETUP_GUIDE_URL}`,
+].join("\n");
+
+/** Sent when no Secretary connection exists yet: the bot has no chats to manage. */
+const NOT_CONNECTED_NOTICE = [
+	"ℹ️ This bot is not connected to your account yet, so the manager has no",
+	"chats to work with.",
+	"",
+	"Connect it: Telegram → Settings → Business / Secretary → Chatbots →",
+	"add this bot and pick which chats it may access (and let it reply).",
+	"",
+	`Setup steps: ${SETUP_GUIDE_URL}`,
+].join("\n");
+
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 /** How long a single connection-watchdog probe (getMe) may take before it counts as failed. */
@@ -936,6 +975,56 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await topics.ensure();
 	};
 
+	/**
+	 * Tell the owner what the bot was NOT given, in the DM where they will actually
+	 * see it. A missing toggle is invisible from the inside: the manager simply never
+	 * receives a chat, or receives them and cannot answer — both look like a bug in
+	 * this extension rather than a setting nobody flipped. Checked on every manager /
+	 * mixed start; best-effort, never blocks the start.
+	 */
+	const checkSecretarySetup = async (
+		api: unknown,
+		ownerChatId: number,
+		store: BusinessStore,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		const control = api as ControlApi & {
+			getMe(): Promise<{ can_connect_to_business?: boolean }>;
+		};
+		const warn = async (text: string): Promise<void> => {
+			ctx.ui.notify(text.split("\n")[0] ?? text, "warning");
+			await control
+				.sendMessage({
+					chat_id: ownerChatId,
+					text,
+					link_preview_options: { is_disabled: true },
+				})
+				.catch(() => {});
+		};
+		try {
+			const me = await control.getMe();
+			if (!me.can_connect_to_business) {
+				await warn(SECRETARY_SETUP_NOTICE);
+				return;
+			}
+			const connections = await store.all();
+			const enabled = connections.filter((c) => c.isEnabled);
+			if (enabled.length === 0) {
+				// A connection can also arrive moments later (the update is inbound), so
+				// this is a hint, not a verdict — hence the softer wording.
+				await warn(NOT_CONNECTED_NOTICE);
+				return;
+			}
+			// `canReply` is undefined on older connections we stored before the field
+			// existed; only an explicit false is a real problem.
+			if (enabled.every((c) => c.canReply === false)) {
+				await warn(REPLY_RIGHT_NOTICE);
+			}
+		} catch {
+			// A probe failure is not worth blocking a mode start over.
+		}
+	};
+
 	const personalThread = (): number | undefined => topics?.thread("personal");
 	const managerThread = (): number | undefined => topics?.thread("manager");
 
@@ -1403,6 +1492,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				managerClient.api,
 				settings.allowedUserId,
 				settings,
+				ctx,
+			);
+			// The manager lives or dies by two things nobody can see from inside the bot:
+			// Secretary Mode, and the right to reply. Say so if either is missing.
+			await checkSecretarySetup(
+				managerClient.api,
+				settings.allowedUserId,
+				businessStore,
 				ctx,
 			);
 			// Mixed is personal + manager, literally: the same ConnectController runs on
