@@ -12,13 +12,53 @@ export type ChatAuthor = "interlocutor" | "owner" | "bot";
 
 export interface ChatMessageRecord {
 	author: ChatAuthor;
+	/**
+	 * The author's OWN words — never the text of a message they replied to or a
+	 * quote they picked from it. Those live in {@link ChatMessageRecord.context},
+	 * because everything downstream (the model's transcript, and above all the
+	 * evidence check that guards the contact's memory) must be able to tell what a
+	 * person actually said from what they merely pointed at.
+	 */
 	text: string;
+	/**
+	 * Cross-message context lines (reply, quote, forward origin, cross-chat reply)
+	 * as rendered by `buildContextLines` — words that belong to SOMEONE ELSE.
+	 */
+	context?: string;
+	/** The body was forwarded: `text` is the origin's words, not the sender's. */
+	forwarded?: boolean;
 	timestamp: number;
 	senderId?: string;
 	senderName?: string;
 	messageId?: number;
 	/** Attachment kind, if the message carried media. */
 	kind?: string;
+}
+
+/** A pre-`context` record: the context lines were merged into `text`. */
+const LEGACY_CONTEXT_LINE =
+	/^\[(?:reply|replying|answering|quoting|forwarded)\b[^\n]*$/i;
+const LEGACY_FORWARD_LINE = /^\[forwarded\b/i;
+
+/**
+ * What this author actually SAID — the only text that may serve as evidence for
+ * a fact about them.
+ *
+ * Empty for a forward (they wrote none of it, they passed it on). For records
+ * written before `context` existed, the context lines sit at the head of `text`
+ * and are stripped here, so old transcripts cannot keep feeding someone else's
+ * quoted words to the memory pass as if they were the speaker's own.
+ */
+export function ownWords(record: ChatMessageRecord): string {
+	if (record.forwarded) return "";
+	if (record.context !== undefined) return record.text.trim();
+	const lines = record.text.split("\n");
+	let start = 0;
+	while (start < lines.length && LEGACY_CONTEXT_LINE.test(lines[start])) {
+		if (LEGACY_FORWARD_LINE.test(lines[start])) return "";
+		start += 1;
+	}
+	return lines.slice(start).join("\n").trim();
 }
 
 /**

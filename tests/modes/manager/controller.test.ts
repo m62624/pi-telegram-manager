@@ -1,12 +1,13 @@
 import type { BusinessConnection, Message } from "@grammyjs/types";
 import { describe, expect, it, vi } from "vitest";
 import { ManualClock } from "../../../src/core/timers";
+import { buildIsolatedMessages } from "../../../src/modes/manager/context-isolation";
 import {
 	ManagerController,
 	type ManagerControllerDeps,
 } from "../../../src/modes/manager/controller";
 import { createBusinessStore } from "../../../src/storage/business-store";
-import { createChatStore } from "../../../src/storage/chat-store";
+import { createChatStore, ownWords } from "../../../src/storage/chat-store";
 import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
@@ -726,9 +727,15 @@ describe("ManagerController", () => {
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
 		const interlocutor = ctx?.find((m) => m.content.includes("yes, that one"));
+		// The speaker is the prefix; the message they answered hangs below, marked as
+		// context — never as `Owner: "the blue one?"`, which reads as Owner speaking.
 		expect(interlocutor?.content).toContain(
-			'[reply to Owner]: "the blue one?"',
+			"Interlocutor (Alice): yes, that one",
 		);
+		expect(interlocutor?.content).toContain(
+			'↳ [answering an earlier message by Owner, which said: "the blue one?"]',
+		);
+		expect(interlocutor?.content).not.toContain('Owner]: "');
 	});
 
 	it("queues a second chat (per-user) while the first is active", async () => {
@@ -1556,5 +1563,109 @@ describe("ManagerController owner identity without a stored connection", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ManagerController — whose words are whose", () => {
+	// The bug this pins down: a reply carries the text of the message it answers.
+	// That quoted text used to be stored INSIDE the replier's own line, so the model
+	// read the person being answered as the one speaking, and the memory pass took
+	// the owner's quoted words as proof of a fact about the contact.
+	const replyToOwner = (text: string): Message =>
+		({
+			message_id: 3,
+			date: 0,
+			chat: { id: 42, type: "private", first_name: "Alice" },
+			from: { id: 5, is_bot: false, first_name: "Alice" },
+			text,
+			reply_to_message: {
+				message_id: 2,
+				date: 0,
+				chat: { id: 42, type: "private", first_name: "Alice" },
+				from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+				text: "my name is Alex and I run a bakery",
+			},
+		}) as Message;
+
+	it("keeps the quoted message out of the replier's own words", async () => {
+		const { controller, deps } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: replyToOwner("nice"),
+		});
+		const [record] = await deps.chatStore.all("42");
+		expect(record.text).toBe("nice");
+		expect(record.text).not.toContain("bakery");
+		expect(record.context).toContain("bakery");
+		// The evidence a fact about Alice may rest on is "nice" — nothing else. Before
+		// the fix, "Alex" and "bakery" sat in her line and confirmed facts about HER.
+		expect(ownWords(record)).toBe("nice");
+	});
+
+	it("marks a forwarded body as somebody else's words", async () => {
+		const { controller, deps } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				message_id: 4,
+				date: 0,
+				chat: { id: 42, type: "private", first_name: "Alice" },
+				from: { id: 5, is_bot: false, first_name: "Alice" },
+				text: "I am a doctor in Berlin",
+				forward_origin: {
+					type: "user",
+					date: 0,
+					sender_user: { id: 77, is_bot: false, first_name: "Bob" },
+				},
+			} as Message,
+		});
+		const [record] = await deps.chatStore.all("42");
+		expect(record.forwarded).toBe(true);
+		// Alice passed Bob's message along; she never claimed to be a doctor.
+		expect(ownWords(record)).toBe("");
+	});
+
+	it("shows the owner's reply as the OWNER speaking, with the quote below it", async () => {
+		const { controller, deps } = await setup("takeover");
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("here you go"),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: {
+				message_id: 101,
+				date: 0,
+				chat: { id: 42, type: "private", first_name: "Alice" },
+				from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+				text: "did you get the signatures?",
+				reply_to_message: {
+					message_id: 1,
+					date: 0,
+					chat: { id: 42, type: "private", first_name: "Alice" },
+					from: { id: 5, is_bot: false, first_name: "Alice" },
+					text: "<photo>",
+				},
+			} as Message,
+		});
+		const records = await deps.chatStore.all("42");
+		const owner = records.find((r) => r.author === "owner");
+		expect(owner?.text).toBe("did you get the signatures?");
+		const messages = buildIsolatedMessages({ records });
+		const line = messages.find((m) =>
+			m.content.includes("did you get the signatures?"),
+		);
+		// The question is the OWNER's. Alice's name appears only in the context line.
+		expect(line?.content).toContain("Owner: did you get the signatures?");
+		expect(line?.content).toContain("↳ [answering an earlier message by Alice");
+		expect(line?.content).not.toContain('Alice]: "');
 	});
 });

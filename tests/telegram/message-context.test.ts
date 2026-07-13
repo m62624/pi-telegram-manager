@@ -190,9 +190,9 @@ describe("buildContextLines (integration with the extractor)", () => {
 			),
 		);
 		expect(lines).toEqual([
-			"[forwarded from: Bob]",
-			'[reply to Carol]: "the whole thing"',
-			'[quoting]: "the whole"',
+			"[forwarded — the text below was written by Bob, not by the sender]",
+			'[answering an earlier message by Carol, which said: "the whole thing"]',
+			'[quoting that message: "the whole"]',
 		]);
 	});
 });

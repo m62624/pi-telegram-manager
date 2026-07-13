@@ -73,9 +73,12 @@ export function buildIsolatedMessages(
 		messages.push({ role: "user", content: input.boundary.trim() });
 	}
 	for (const record of input.records) {
-		const text = record.text?.trim();
-		if (!text) continue;
+		const text = record.text?.trim() ?? "";
+		// A message can be pure context — a reply carrying nothing but a photo — and
+		// still matters: it is the turn the next one answers.
+		if (!text && !record.context?.trim()) continue;
 		if (record.author === "bot") {
+			if (!text) continue;
 			messages.push({ role: "assistant", content: text });
 		} else {
 			const label =
@@ -85,7 +88,18 @@ export function buildIsolatedMessages(
 			// point `manager_reply.reply_to` at the exact message it answers.
 			const tag =
 				record.messageId !== undefined ? `[#${record.messageId}] ` : "";
-			messages.push({ role: "user", content: `${tag}${who}: ${text}` });
+			// The speaker is the prefix, and nothing else. Context (what they replied
+			// to, what they quoted, who wrote a forward) hangs BELOW the line, marked
+			// as such — inlined ahead of the words it read as the speaker's name.
+			const context = record.context?.trim();
+			const trailer = context
+				? `\n${context
+						.split("\n")
+						.map((line) => `  ↳ ${line}`)
+						.join("\n")}`
+				: "";
+			const spoken = text ? `${who}: ${text}` : `${who}:`;
+			messages.push({ role: "user", content: `${tag}${spoken}${trailer}` });
 			if (record.author === "interlocutor")
 				lastInterlocutorIndex = messages.length - 1;
 		}

@@ -137,7 +137,7 @@ export function createInterrogationTools(sink: ProbeSink): ToolDefinition[] {
 		name: "manager_candidates",
 		label: "Manager Candidates",
 		description:
-			"Consolidation step 2. List every durable fact stated in this chat. For EACH item set subject (interlocutor/owner/other), durable (false for a passing mood, location, or 'today I…'), and kind (identity/preference/agreement/context). Only the interlocutor's own words count — do not attribute the owner's or the bot's statements to them.",
+			"Consolidation step 2. List every durable fact stated in this chat. For EACH item set subject (interlocutor/owner/other), durable (false for a passing mood, location, or 'today I…'), and kind (identity/preference/agreement/context). Only the interlocutor's own words count — never the owner's or the bot's, and never text a '↳' line marks as quoted, answered or forwarded: those are someone else's words carried inside their message.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -201,7 +201,7 @@ export function createInterrogationTools(sink: ProbeSink): ToolDefinition[] {
 		name: "manager_verify",
 		label: "Manager Verify",
 		description:
-			"Consolidation step 3. Verify the ONE fact shown to you. Set keep=true only if it is genuinely about the interlocutor and durable, and provide evidence_quote — a short exact quote from THEIR message that supports it. Otherwise keep=false.",
+			"Consolidation step 3. Verify the ONE fact shown to you. Set keep=true only if it is genuinely about the interlocutor and durable, and provide evidence_quote — a short exact quote of what THEY typed. A quote lifted from a '↳' line (someone else's message they replied to, quoted or forwarded) is not their words and will be rejected. Otherwise keep=false.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -282,14 +282,14 @@ export function currentProbe(state: InterrogationState): {
 		case "candidates":
 			return {
 				tool: "manager_candidates",
-				directive: `[Step 2 of 3. List every durable fact about ${name} stated in this chat by calling manager_candidates. For each item set subject, durable, and kind. Only ${name}'s own words count — never attribute the owner's or the bot's statements to them.]`,
+				directive: `[Step 2 of 3. List every durable fact about ${name} stated in this chat by calling manager_candidates. For each item set subject, durable, and kind. Only ${name}'s own words count: the speaker of a line is its prefix and nothing else, and a '↳' line under it holds words written by SOMEONE ELSE (quoted, answered or forwarded). Never attribute the owner's, the bot's, or a quoted person's statements to ${name}.]`,
 			};
 		case "verify": {
 			const candidate = state.queue[state.cursor];
 			const text = candidate ? candidate.text : "";
 			return {
 				tool: "manager_verify",
-				directive: `[Step 3 of 3 — fact ${state.cursor + 1} of ${state.queue.length}. Verify ONLY this fact about ${name}: "${text}". Call manager_verify with keep=true only if it is genuinely about ${name} and durable, plus evidence_quote — a short exact quote from ${name}'s own message. Otherwise keep=false.]`,
+				directive: `[Step 3 of 3 — fact ${state.cursor + 1} of ${state.queue.length}. Verify ONLY this fact about ${name}: "${text}". Call manager_verify with keep=true only if it is genuinely about ${name} and durable, plus evidence_quote — a short exact quote of what ${name} TYPED, never a quote taken from a '↳' line (those words are someone else's). Otherwise keep=false.]`,
 			};
 		}
 		default:
