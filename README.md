@@ -61,8 +61,6 @@ Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc`
 
 Through a Telegram **Secretary** connection (formerly called **Business**), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat.
 
-> 🎛️ **It answers for you when you don't — and gets out of the way the moment you do.**
-
 Start it with `/telegram-manager`. There is nothing to choose: the behaviour below is the whole mode.
 
 #### The algorithm, in full
