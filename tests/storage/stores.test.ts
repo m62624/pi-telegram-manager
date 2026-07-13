@@ -3,6 +3,7 @@ import { createBusinessStore } from "../../src/storage/business-store";
 import {
 	type ChatMessageRecord,
 	createChatStore,
+	ownWords,
 } from "../../src/storage/chat-store";
 import { createContactStore } from "../../src/storage/contact-store";
 import { createTelegramPaths } from "../../src/storage/paths";
@@ -228,5 +229,65 @@ describe("contact-store", () => {
 		const fs = new FakeFs();
 		const store = createContactStore(fs, paths);
 		await expect(store.clearAllFacts()).resolves.toBeUndefined();
+	});
+});
+
+describe("ownWords", () => {
+	const record = (over: Partial<ChatMessageRecord>): ChatMessageRecord => ({
+		author: "interlocutor",
+		text: "",
+		timestamp: 1,
+		...over,
+	});
+
+	it("is what the author typed, never the message they answered", () => {
+		expect(
+			ownWords(
+				record({
+					text: "nice",
+					context:
+						'[answering an earlier message by Owner, which said: "the rate is 60"]',
+				}),
+			),
+		).toBe("nice");
+	});
+
+	it("is empty for a forward — none of it is theirs", () => {
+		expect(
+			ownWords(
+				record({
+					text: "a long article somebody else wrote",
+					forwarded: true,
+					context:
+						"[forwarded — the text below was written by Alice, not by the sender]",
+				}),
+			),
+		).toBe("");
+	});
+
+	it("strips the context a legacy record merged into its text", () => {
+		// Pre-`context` records kept the quoted message inside the speaker's own line,
+		// which is how the owner's words became "evidence" for facts about a contact.
+		const legacy = record({
+			text: '[answering an earlier message by Owner, which said: "the rate is 60"]\nnice',
+		});
+		expect(ownWords(legacy)).toBe("nice");
+		expect(ownWords(legacy)).not.toContain("the rate is 60");
+	});
+
+	it("keeps nothing from a legacy forward", () => {
+		expect(
+			ownWords(
+				record({
+					text: "[forwarded from: Alice]\nsomething Alice wrote",
+				}),
+			),
+		).toBe("");
+	});
+
+	it("leaves an ordinary message untouched", () => {
+		expect(ownWords(record({ text: "I live in Berlin" }))).toBe(
+			"I live in Berlin",
+		);
 	});
 });

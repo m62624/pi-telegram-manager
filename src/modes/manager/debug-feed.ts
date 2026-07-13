@@ -15,7 +15,6 @@ import {
 	details,
 	inlineCode,
 	italic,
-	link,
 	paragraph,
 	preformatted,
 	RichHtml,

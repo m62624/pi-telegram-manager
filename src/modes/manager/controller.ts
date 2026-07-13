@@ -38,7 +38,11 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
-import type { ChatMessageRecord, ChatStore } from "../../storage/chat-store";
+import {
+	type ChatMessageRecord,
+	type ChatStore,
+	ownWords,
+} from "../../storage/chat-store";
 import type { ConsolidationQueue } from "../../storage/consolidation-queue";
 import type {
 	ContactFact,
@@ -383,13 +387,17 @@ function messageText(message: Message): string {
 }
 
 /**
- * Prefix a stored message with its cross-message context (forward origin, reply,
- * quote, cross-chat reply) so the model sees the same context in the manager as
- * in mode 1. Empty context leaves the text untouched.
+ * The cross-message context of a stored message (forward origin, reply, quote,
+ * cross-chat reply), kept APART from the author's own words.
+ *
+ * It used to be prefixed onto the stored text. That merged someone else's words
+ * into the speaker's line, and two things broke: the model read `Owner: [reply to
+ * Alice]: "…"` as ALICE speaking, and the memory pass accepted a quote lifted from
+ * a reply as proof of what the interlocutor had said about themselves.
  */
-function withMessageContext(message: Message, text: string): string {
+function messageContext(message: Message): string | undefined {
 	const lines = buildContextLines(extractMessageContext(message));
-	return lines.length > 0 ? `${lines.join("\n")}\n${text}` : text;
+	return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
 /**
@@ -699,10 +707,9 @@ export class ManagerController {
 			if (!forwardDropped || forward?.justHitLimit) {
 				await this.deps.chatStore.append(chatId, {
 					author: "owner",
-					text: withMessageContext(
-						input.message,
-						forwardBody(stripBotMarker(text)),
-					),
+					text: forwardBody(stripBotMarker(text)),
+					context: messageContext(input.message),
+					forwarded: input.message.forward_origin !== undefined,
 					timestamp: messageTime,
 					senderId: ownerId,
 					messageId,
@@ -762,7 +769,7 @@ export class ManagerController {
 		const media = forwardDropped
 			? { note: "", kind: undefined }
 			: await this.ingestMedia(chatId, input.message);
-		const baseText = withMessageContext(input.message, forwardBody(text));
+		const baseText = forwardBody(text);
 		const storedText = media.note
 			? baseText
 				? `${media.note} ${baseText}`
@@ -771,6 +778,8 @@ export class ManagerController {
 		await this.deps.chatStore.append(chatId, {
 			author: "interlocutor",
 			text: storedText,
+			context: messageContext(input.message),
+			forwarded: input.message.forward_origin !== undefined,
 			timestamp: messageTime,
 			senderId: from ? String(from.id) : undefined,
 			senderName: contactName,
@@ -1456,9 +1465,14 @@ export class ManagerController {
 			chatId,
 			this.deps.rememberMessages,
 		);
+		// Their OWN words only. A reply quotes the message it answers and a forward
+		// carries a stranger's text: both used to sit inside the interlocutor's
+		// stored line, so the evidence check confirmed "facts" about them out of
+		// words the owner or the bot had written.
 		return records
 			.filter((record) => record.author === "interlocutor")
-			.map((record) => record.text);
+			.map((record) => ownWords(record))
+			.filter((line) => line.length > 0);
 	}
 
 	/**

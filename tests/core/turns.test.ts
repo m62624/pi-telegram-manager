@@ -26,20 +26,33 @@ describe("buildHeader", () => {
 });
 
 describe("buildReplyLine", () => {
-	it("quotes the replied-to text with its author", () => {
+	it("names the message being answered, and whose words the quote is", () => {
 		expect(buildReplyLine({ author: "Bob", text: "earlier" })).toBe(
-			'[reply to Bob]: "earlier"',
+			'[answering an earlier message by Bob, which said: "earlier"]',
+		);
+	});
+
+	it('never writes the quoted party as a speaker (`Name: "text"`)', () => {
+		// The old shape was `[reply to Bob]: "earlier"`, which a small model read as
+		// BOB talking — the exact confusion that made the manager answer the owner's
+		// own reply as if the person they were answering had asked it.
+		expect(buildReplyLine({ author: "Bob", text: "earlier" })).not.toContain(
+			'Bob]: "',
 		);
 	});
 
 	it("omits the author when unknown", () => {
-		expect(buildReplyLine({ text: "earlier" })).toBe('[reply]: "earlier"');
+		expect(buildReplyLine({ text: "earlier" })).toBe(
+			'[answering an earlier message, which said: "earlier"]',
+		);
 	});
 
 	it("truncates a long quote with an ellipsis", () => {
 		const long = "x".repeat(REPLY_QUOTE_MAX + 50);
 		const line = buildReplyLine({ text: long });
-		expect(line).toBe(`[reply]: "${"x".repeat(REPLY_QUOTE_MAX)}…"`);
+		expect(line).toBe(
+			`[answering an earlier message, which said: "${"x".repeat(REPLY_QUOTE_MAX)}…"]`,
+		);
 	});
 
 	it("is empty without a reply", () => {
@@ -73,7 +86,7 @@ describe("buildPromptTurn", () => {
 			text: "hello there",
 		});
 		expect(turn).toBe(
-			'[telegram|from:Alice|chat:General]\n[reply to Bob]: "before"\n[attachments: photo]\n\nhello there',
+			'[telegram|from:Alice|chat:General]\n[answering an earlier message by Bob, which said: "before"]\n[attachments: photo]\n\nhello there',
 		);
 	});
 

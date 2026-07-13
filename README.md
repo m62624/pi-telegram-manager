@@ -216,7 +216,7 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 ```json
 {
   "botToken": "123456:ABC-your-bot-token",
-  "allowedUserId": 419332999,
+  "allowedUserId": 123456789,
   "manager": { "ownerName": "Alex" }
 }
 ```

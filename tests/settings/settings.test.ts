@@ -199,10 +199,10 @@ describe("normalizeSettings", () => {
 		expect(normalizeSettings({}).manager.strictReplyGuard).toBe(true);
 		expect(normalizeSettings({}).manager.ownerName).toBeUndefined();
 		const s = normalizeSettings({
-			manager: { strictReplyGuard: false, ownerName: "Mansur" },
+			manager: { strictReplyGuard: false, ownerName: "Alex" },
 		});
 		expect(s.manager.strictReplyGuard).toBe(false);
-		expect(s.manager.ownerName).toBe("Mansur");
+		expect(s.manager.ownerName).toBe("Alex");
 	});
 });
 

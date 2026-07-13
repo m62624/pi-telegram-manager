@@ -101,27 +101,34 @@ export function buildReplyLine(reply: TurnReplyContext | undefined): string {
 	if (!reply) return "";
 	const quote = truncate(reply.text, REPLY_QUOTE_MAX);
 	const author = reply.author ? sanitizeAttribute(reply.author) : "";
-	return author ? `[reply to ${author}]: "${quote}"` : `[reply]: "${quote}"`;
+	// Never `Name: "text"` — that is exactly how a SPEAKER is written, and a small
+	// model reads the person being answered as the one talking. The line names the
+	// message being answered, and says whose words the quote is.
+	return author
+		? `[answering an earlier message by ${author}, which said: "${quote}"]`
+		: `[answering an earlier message, which said: "${quote}"]`;
 }
 
-/** The `[forwarded from: X]` line, or empty when the message is not a forward. */
+/** The forward-origin line, or empty when the message is not a forward. */
 export function buildForwardLine(forwardedFrom: string | undefined): string {
 	if (!forwardedFrom) return "";
-	return `[forwarded from: ${sanitizeAttribute(forwardedFrom)}]`;
+	// The body of a forward was written by its origin, not by the sender: say so,
+	// or the model credits the sender with words they merely passed along.
+	return `[forwarded — the text below was written by ${sanitizeAttribute(forwardedFrom)}, not by the sender]`;
 }
 
-/** The `[quoting]: "excerpt"` line for a partial quote, or empty. */
+/** The partial-quote line for the excerpt the sender picked, or empty. */
 export function buildQuoteLine(quote: string | undefined): string {
 	if (!quote?.trim()) return "";
-	return `[quoting]: "${truncate(quote, REPLY_QUOTE_MAX)}"`;
+	return `[quoting that message: "${truncate(quote, REPLY_QUOTE_MAX)}"]`;
 }
 
-/** The `[replying to: a photo from channel X]` line for a cross-chat reply, or empty. */
+/** The cross-chat reply line ("a photo from channel X"), or empty. */
 export function buildExternalReplyLine(
 	externalReply: string | undefined,
 ): string {
 	if (!externalReply) return "";
-	return `[replying to: ${sanitizeAttribute(externalReply)}]`;
+	return `[answering ${sanitizeAttribute(externalReply)}]`;
 }
 
 /**
