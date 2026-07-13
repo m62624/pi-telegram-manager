@@ -1175,22 +1175,23 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
 	 * message is taken as personal: the reply lands in the fresh `personal` topic.
 	 *
-	 * A message with NO thread is not "unexpected": Telegram simply did not say which
-	 * topic it belongs to, which is the normal shape of an inbound message in a bot DM.
-	 * Re-checking on those meant three API calls per message the owner typed — and
-	 * proved nothing. A topic that really is gone is caught where it matters: the send
-	 * fails, and that path recreates it.
+	 * A message with NO thread is one typed OUTSIDE the topics — the "All" view, where
+	 * Telegram itself labels the input box "message outside a topic". Live proof: a
+	 * message typed inside `personal` arrives with `message_thread_id` set to it and
+	 * `is_topic_message=true`, so the absence is not silence, it is the answer. Such a
+	 * message is brought over too, since the answer to it goes to `personal` and the
+	 * conversation there must not read as the bot talking to itself.
 	 */
 	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
 		if (!topics?.active) return true;
 		const thread = threadOf(event);
 		reportTopicRouting(event);
-		if (thread === undefined || thread === personalThread()) return true;
+		if (thread === personalThread()) return true;
 		if (thread === managerThread()) return false;
-		// Written in some other topic — the "All" view, a topic the owner made, the
-		// plain DM after they deleted ours. The topics may also be gone entirely, so
-		// re-check them first; then bring the message itself over.
-		await topics.revalidate();
+		// Somewhere else: the "All" view, a topic the owner made, the plain DM after
+		// they deleted ours. The topics may also be gone entirely, so re-check them
+		// (recreating whatever is missing) before bringing the message over.
+		if (thread !== undefined) await topics.revalidate();
 		await mirrorIntoPersonal(event);
 		return true;
 	};
@@ -1205,10 +1206,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * it differently), so the message is copied over instead. A forward is plain and
 	 * works everywhere: `personal` then holds the question and its answer, in order.
 	 *
+	 * Only a real prompt is copied: an edit would arrive as a second copy of a message
+	 * already there, and a command (/clear, /help) is an instruction to the bridge, not
+	 * something the conversation needs a record of.
+	 *
 	 * Best-effort — a failed forward must never swallow the prompt itself.
 	 */
 	const mirrorIntoPersonal = async (event: TelegramEvent): Promise<void> => {
-		if (event.kind !== "message" && event.kind !== "edited_message") return;
+		if (event.kind !== "message") return;
+		if ((event.message.text ?? "").startsWith("/")) return;
 		const api = controlApi();
 		const personal = personalThread();
 		if (!api || personal === undefined) return;
