@@ -71,21 +71,21 @@ Both sub-modes obey the same silence rules — small talk between other people, 
 
 Start it with `/telegram-manager`; it asks for the sub-mode. Mixed uses the same two.
 
-### 🔀 Mixed — coding and Telegram in one brain
+### 🔀 Mixed — Personal **and** manager, in one session
 
-One Pi session runs two things: **your work** and **Telegram moderation**. Two "polarities" take turns, and **you are always the priority**:
+Mixed is not a third behaviour. It is the two modes above **running at once on one brain**: Personal (you and the model) plus the secretary manager (the model and everyone else). The whole design is about **who gets the model right now**, and the answer is always: **you do**.
 
-- **coding** — you are at the keyboard. The manager may not run a turn. Telegram messages are stored and deferred, nothing from them enters your context or costs you tokens, and even a wake-word does not preempt you (it only marks that chat ready). Your full tools are available.
-- **telegram** — you have gone quiet. The brain moderates the ready chats in the sub-mode you picked, inside the messaging sandbox (no `read`/`write`/`bash` — those exist only while you hold the terminal).
+**While you are working, you are the priority.** You can work from the **terminal** or from the **personal** topic of your bot DM — they are the same session and rank exactly the same, so answering from your phone is not "the Telegram side", it is you. While you hold the brain:
 
-The switch between them:
+- other people's messages are **stored and deferred**, and nothing from them enters your context or costs you tokens;
+- even a wake-word does **not** pull the model off your work — it only marks that chat as ready to be answered later;
+- you keep your **full tools** (`read`/`write`/`bash`), because the sandbox only applies while the model is moderating.
 
-- **You type → coding, instantly.** Any prompt from you cancels the return timer, aborts a moderation turn in flight (you never wait on it), and restores your tools. The interrupted work is not lost — an unanswered chat is picked up again, an unfinished memory pass resumes.
-- **You go quiet → back to Telegram.** When your inference *finishes*, an idle timer starts ([`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode), default **8 min**). It counts from the moment the turn ends, not while it runs, and any new prompt cancels it. When it elapses, the brain moderates.
+**When you stop, it goes back to Telegram.** The clock starts *after the model's inference finishes* — not while it is thinking. If nothing new comes from **you** and nothing more comes from **the model** for [`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode) (default **8 minutes**), the brain switches to Telegram and answers whoever needs an answer, in the sub-mode you picked (observer or takeover). Any message from you cancels the countdown.
 
-Mixed is Personal **and** manager at once: the **personal** topic of your bot DM is a second keyboard for the very same session, with the same priority as the terminal. Writing there is exactly like typing in Pi. Moderation output never leaks into it — the manager talks to the interlocutor and reports into the **manager** topic.
+**When you come back, you take the brain immediately.** A prompt from you — terminal or personal topic — aborts a moderation turn in flight, so you never wait on it. Nothing is lost: an unanswered chat is picked up again next time, and an interrupted memory pass resumes where it stopped.
 
-Your TUI stays clean: one footer line (`mixed · observer · coding`) telling you which polarity holds the brain.
+Moderation never leaks into your side: what the bot writes to other people goes to them, and the account of what it did lands in the **manager** topic. Your TUI stays clean — one footer line (`mixed · observer · coding`) tells you who holds the brain right now.
 
 Start it with `/telegram-mixed` (it asks for observer or takeover).
 
