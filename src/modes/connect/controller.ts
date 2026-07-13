@@ -403,6 +403,11 @@ export class ConnectController {
 		}
 		// /start (incl. the Secretary deep link /start bizChat…) always shows the
 		// privacy/compliance reminder, so the terms are surfaced on first contact.
+		//
+		// In the live wiring the router answers /start before the controller ever sees
+		// it (it also re-posts the mode pin, which only the router can do). This stays as
+		// the controller's own guarantee: whatever drives it, /start is never handed to
+		// the model as a prompt, and the terms are never skipped.
 		if (START_COMMANDS.has(command.name)) {
 			await this.sendToChat(COMPLIANCE_NOTICE);
 			return true;

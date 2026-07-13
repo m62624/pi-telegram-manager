@@ -1570,6 +1570,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = new TelegramClient({
 			token,
 			onEvent: async (event) => {
+				// /start is the way back in after the owner deletes the chat — it is what
+				// re-posts the pinned mode line, so it must be handled here exactly as the
+				// manager and mixed routers handle it. Personal mode used to skip this and
+				// let the ConnectController answer /start on its own: the terms came back,
+				// but the pin never did — in the one mode where a wiped chat is most likely.
+				if (await handleStartCommand(event)) return;
 				if (await handleControl(event)) return;
 				// The manager topic is service output; everything else the owner types is
 				// the conversation (and repairs the topics if they were deleted).
