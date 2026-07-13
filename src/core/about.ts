@@ -1,5 +1,5 @@
 /**
- * The `about` tool: what this extension IS, answered from bundled documents rather
+ * The `telegram_bot_about` tool: what this extension IS, answered from bundled documents rather
  * than from whatever the model remembers about itself.
  *
  * Two problems it solves. First, a model asked "what bot are you?" improvises — it
@@ -22,7 +22,7 @@ import { defineTool, type ToolDefinition } from "../pi/sdk";
 import type { TelegramFs } from "../storage/fs";
 
 /** Names of the tools defined here — fed to the visibility gate. */
-export const ABOUT_TOOL_NAMES = ["about"] as const;
+export const ABOUT_TOOL_NAMES = ["telegram_bot_about"] as const;
 
 /** The pages a caller may ask for. `current_settings` is owner-only. */
 export const ABOUT_TOPICS = [
@@ -60,8 +60,8 @@ export interface AboutToolDeps {
 	/**
 	 * Claim one read of this turn's budget; false once it is spent.
 	 *
-	 * `about` is not a terminal tool: in manager mode the turn ends when the model
-	 * calls `manager_reply` or `manager_silent`, so a model that kept calling `about`
+	 * `telegram_bot_about` is not a terminal tool: in manager mode the turn ends when the model
+	 * calls `manager_reply` or `manager_silent`, so a model that kept calling `telegram_bot_about`
 	 * would never decide anything and would spin. A few reads are plenty to answer
 	 * "what are you?" — after that the model has what it needs and must speak.
 	 */
@@ -87,7 +87,7 @@ function fail(text: string) {
  */
 export const SETTINGS_REFUSAL =
 	"Refused: the owner's configuration is not shared with anyone but the owner. " +
-	"You may still explain what the bot IS and how it works — call `about` with " +
+	"You may still explain what the bot IS and how it works — call `telegram_bot_about` with " +
 	"topic 'project', 'modes' or 'privacy' — but do not describe, guess at, or " +
 	"hint at the owner's settings, file paths, or machine.";
 
@@ -102,12 +102,12 @@ export const ABOUT_CALLS_PER_TURN = 3;
 export const BUDGET_SPENT =
 	`You have already read ${ABOUT_CALLS_PER_TURN} pages this turn. That is enough: ` +
 	"answer the person now with what you have, using this mode's normal tools. Do not " +
-	"call `about` again in this turn.";
+	"call `telegram_bot_about` again in this turn.";
 
 export function createAboutTools(deps: AboutToolDeps): ToolDefinition[] {
 	const about = defineTool({
-		name: "about",
-		label: "About this bot",
+		name: "telegram_bot_about",
+		label: "About this Telegram bot",
 		description:
 			"Explain what this bot and extension are, from the project's own documentation. " +
 			"Call this ONLY when someone asks about the bot itself — what you are, who made " +

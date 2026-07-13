@@ -742,8 +742,34 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		updateMixedFooter();
 	};
 
-	const sendFollowUp = async (content: PromptContent): Promise<void> => {
+	/**
+	 * Hand a prompt to the agent — and only ever while the session is REALLY idle.
+	 *
+	 * `sendUserMessage` starts a turn when the agent is idle and QUEUES otherwise. A
+	 * queued message is not safe: on any abort the TUI calls
+	 * `restoreQueuedMessagesToEditor`, which empties the queue into the editor, where
+	 * it sits waiting for a human to press Enter. The manager aborts at the end of
+	 * every turn (to stop the model re-sampling its decision), so anything queued was
+	 * reliably diverted into the editor instead of being answered — which is exactly
+	 * the "it ends up in the editor" we kept seeing.
+	 *
+	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
+	 * still finishing, so a message sent from that handler (the queue pump does exactly
+	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
+	 * we ask it, not ourselves.
+	 *
+	 * The messages themselves are never at risk: they wait in OUR queues (the connect
+	 * MessageQueue, the manager's scheduler) until the agent can actually take one.
+	 */
+	const deliverPrompt = async (content: PromptContent): Promise<void> => {
+		if (activeCtx && !activeCtx.isIdle()) {
+			await activeCtx.waitForIdle().catch(() => {});
+		}
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
+	};
+
+	const sendFollowUp = async (content: PromptContent): Promise<void> => {
+		await deliverPrompt(content);
 	};
 
 	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
@@ -1068,6 +1094,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// Only cap a manager turn. In mixed mode's coding polarity the owner is
 		// running the turn — never abort it on the manager's stale decision flag.
 		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
+		// Never abort ON TOP of a queued message. An abort makes the TUI empty the
+		// queue into the terminal editor (`restoreQueuedMessagesToEditor`), where the
+		// message stops being a Telegram turn and becomes text waiting for a human to
+		// press Enter. `deliverPrompt` keeps the queue empty, so this should not
+		// happen — but the cost of being wrong is a conversation silently stranded in
+		// an editor, and the cost of skipping the abort is one extra sample.
+		if (ctx.hasPendingMessages()) return;
 		// Consolidation now walks its whole interrogation in ONE agent run: step the
 		// state machine here (no per-probe abort) and abort only when it asks — live
 		// conversation work is waiting, or the interrogation is already done and the
@@ -2244,7 +2277,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				// Tag every injected Telegram turn in mixed mode so the coding-polarity
 				// context filter can strip it from the owner's thread.
 				const content = mixedActive ? tagTelegramPrompt(prompt) : prompt;
-				pi.sendUserMessage(content, { deliverAs: "followUp" });
+				// Through `deliverPrompt`, so a turn injected while the session is still
+				// settling cannot land in the SDK queue — from which the next abort would
+				// dump it into the terminal editor instead of answering anyone.
+				await deliverPrompt(content);
 			},
 			// Business connections reject the rich-message API, so mode-2 replies go out
 			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
