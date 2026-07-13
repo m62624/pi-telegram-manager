@@ -66,16 +66,27 @@ Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc`
 
 Through a Telegram **Secretary** connection (the feature Telegram formerly called **Business**; same Bot API), the bot reads your conversations with **many different people** and decides, message by message, whether to reply **on your behalf**. One agent multiplexes every chat.
 
-**Neither sub-mode ever replies immediately.** In both, an incoming message is held for the owner-reply window ([`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **5 min**) — **you** get first crack, always. Answer inside it and the bot drops that batch and never repeats you. Only if the window runs out in your silence is the conversation handed to the model. (Two things skip the wait: a wake-word, and a chat that is already the live one it just replied in.)
+It runs in one of two sub-modes. In one sentence:
 
-**What the sub-mode changes is what the model does once it gets the chat:**
+> 👁️ **Observer stays silent until it is called.**  🎛️ **Takeover keeps talking until it is thrown out.**
 
-| Sub-mode | Once the window expires | While you are answering | Pick it when |
-| --- | --- | --- | --- |
-| 👁️ **Observer** | **Stays quiet unless it is spoken to.** It replies only when someone addresses it by name / as an AI / bot, or when you or the interlocutor explicitly ask it to answer. An ordinary unanswered question is *not* enough — the co-pilot does not put words in your mouth. | It keeps reading, and stays available: a wake-word from the interlocutor still reaches it, and you can **summon it yourself** by putting a wake-word in your own message. | You are around. You want a bot that answers when addressed and stays out of everything else. **The safe default — start here.** |
-| 🎛️ **Takeover** | **Carries the conversation.** It answers the interlocutor as you would, moving the thread forward whenever they need an answer and you have stayed silent. | You take the wheel: the chat is **frozen**. The bot stays out of it entirely — not even a wake-word pulls it back — until you go quiet again for one window (5 min), which releases the freeze. | You are away and want the conversation carried, not merely watched. |
+That is the whole difference, and everything below is just the detail of it.
 
-Both obey the same silence rules — small talk between other people, reactions and acknowledgements are not answered, and the bot never replies to *you* (your messages are context, not prompts). Two real differences, then: **what counts as its business** once it gets the turn, and **what your own message does** — in observer it can call the bot in, in takeover it shuts the bot out.
+**First, what is the SAME in both** — most of the behaviour, in fact:
+
+- **Neither ever replies immediately.** An incoming message is held for the owner-reply window ([`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **5 min**): **you** get first crack, always. Answer inside it and the bot drops that batch and never repeats you. Only if the window runs out in your silence is the chat handed to the model.
+- Neither answers small talk between other people, reactions, or acknowledgements — and neither ever replies to *you* (your messages are context, not prompts).
+- Same memory, same per-chat isolation, same scheduler. In mixed, both lose their tools while serving other people (the sandbox).
+
+**Now the three things that actually differ:**
+
+| | 👁️ **Observer** | 🎛️ **Takeover** |
+| --- | --- | --- |
+| **What it treats as its business** once the chat reaches it | Only what is **addressed to it** — by name, as an AI / LLM / bot, or an explicit "answer this" from you or the interlocutor. An ordinary unanswered question is **not** enough: the co-pilot does not put words in your mouth. | **The conversation itself.** Whenever the interlocutor needs an answer and you have stayed silent, it answers as you would and keeps the thread moving. |
+| **What YOUR message does** in that chat | **Calls it in.** Nothing is frozen; put a wake-word in your own message and the bot steps into that chat for you. | **Throws it out.** The chat is **frozen**: you have taken the wheel, so the bot stays out of it entirely — until you have been quiet for one window, which releases the freeze. |
+| **A wake-word from the interlocutor** | Always reaches it — that is exactly what it waits for. | Reaches it **unless the chat is frozen**: while you hold that chat, not even being called by name pulls the bot back in. Those messages are served once the freeze lifts — deferred, not lost. |
+
+**Pick by where you are.** Around and answering yourself → **observer**: it covers what is aimed at it and stays out of the rest. **The safe default — start here.** Away and want the conversation carried, not merely watched → **takeover**; the moment you come back and write, it steps aside.
 
 Start it with `/telegram-manager`; it asks for the sub-mode. Mixed uses the same two.
 
