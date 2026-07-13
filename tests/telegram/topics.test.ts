@@ -5,8 +5,8 @@ import { FakeFs } from "../helpers/fake-fs";
 const OWNER = 42;
 const PATH = "/topics.json";
 
-function fakeApi(overrides: Partial<TopicsApi> = {}) {
-	let nextThread = 100;
+function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
+	let nextThread = firstThread;
 	return {
 		getMe: vi.fn(async () => ({ has_topics_enabled: true })),
 		createForumTopic: vi.fn(
@@ -16,6 +16,9 @@ function fakeApi(overrides: Partial<TopicsApi> = {}) {
 		),
 		editForumTopic: vi.fn(
 			async (_args: { message_thread_id: number; name?: string }) => ({}),
+		),
+		deleteForumTopic: vi.fn(
+			async (_args: { chat_id: number; message_thread_id: number }) => ({}),
 		),
 		...overrides,
 	} satisfies TopicsApi & Record<string, unknown>;
@@ -303,5 +306,91 @@ describe("TopicRouter.recreate", () => {
 		expect(await r.recreate("manager")).toBeUndefined();
 		expect(r.active).toBe(false);
 		expect(r.thread("manager")).toBeUndefined();
+	});
+});
+
+// A topic that lives on stops accepting ordinary messages from the phone: they are
+// posted OUTSIDE it, with no message_thread_id, while a topic created minutes earlier
+// takes them fine. Nothing announces when a topic goes that way, so every session
+// simply starts in a fresh one — these tests pin down what happens to the old one.
+describe("TopicRouter: a fresh personal topic every session", () => {
+	/** One session: adopt what is on disk, rotate, and say whether a conversation happened. */
+	async function session(fs: FakeFs, firstThread: number, spoke: boolean) {
+		const api = fakeApi({}, firstThread);
+		const r = router(api, fs).router;
+		await r.ensure();
+		await r.startSession();
+		if (spoke) await r.markUsed();
+		return { api, router: r };
+	}
+
+	it("leaves the topic it just created alone — it is already fresh", async () => {
+		const fs = new FakeFs();
+		const { api, router: r } = await session(fs, 100, false);
+
+		// personal + manager, and nothing else: no second topic, no delete, no rename.
+		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+		expect(api.deleteForumTopic).not.toHaveBeenCalled();
+		expect(r.thread("personal")).toBe(100);
+	});
+
+	it("archives a personal that holds a conversation, and drops the previous archive", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true); // personal 100, and the owner spoke in it
+
+		const second = await session(fs, 200, true); // rotates: personal 200, archive 100
+		expect(second.router.thread("personal")).toBe(200);
+		expect(second.api.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (archive)",
+			}),
+		);
+		expect(second.api.deleteForumTopic).not.toHaveBeenCalled();
+
+		const third = await session(fs, 300, true); // rotates: personal 300, archive 200
+		expect(third.api.deleteForumTopic).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+		expect(third.api.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 200,
+				name: "personal (archive)",
+			}),
+		);
+	});
+
+	it("deletes a personal nobody spoke in, and leaves the archive alone", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true); // a real conversation in 100
+		await session(fs, 200, false); // rotates: personal 200 (archive 100), nothing said
+
+		// A restart after a silent session: 200 is thrown away with its creation notice,
+		// and the conversation in 100 must NOT be pushed out of the archive by it.
+		const third = await session(fs, 300, false);
+		expect(third.api.deleteForumTopic).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ message_thread_id: 200 }),
+		);
+		expect(third.api.editForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal (archive)" }),
+		);
+		expect(third.router.thread("personal")).toBe(300);
+	});
+
+	it("keeps the session's topic when a fresh one cannot be created", async () => {
+		const fs = new FakeFs();
+		await session(fs, 100, true);
+
+		const api = fakeApi({}, 200);
+		api.createForumTopic.mockRejectedValue(new Error("429: Too Many Requests"));
+		const r = router(api, fs).router;
+		await r.ensure();
+		await r.startSession();
+
+		expect(r.thread("personal")).toBe(100);
+		expect(api.deleteForumTopic).not.toHaveBeenCalled();
+		expect(api.editForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ name: "personal (archive)" }),
+		);
 	});
 });

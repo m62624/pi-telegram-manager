@@ -277,6 +277,22 @@ Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/se
 
 ---
 
+## Why the `personal` topic is new every session
+
+Start a mode and you get a **fresh `personal` topic**; the one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted. So the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind — its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
+
+That is not a filing preference. It is the only defence we have against a bug we could not otherwise survive.
+
+A topic that has been around for a while stops accepting ordinary messages **from the phone**. You open it in Telegram for Android, you type, the app shows your message inside the topic — and it is not there. Telegram posted it *outside* the topics, into the general chat. The bot receives it with **no `message_thread_id`** at all, which is indistinguishable from a message you deliberately typed in the "All" view. Meanwhile Telegram Desktop, in the same topic, on the same account, behaves perfectly: `message_thread_id` set, `is_topic_message: true`, message where it belongs. And a *reply* from the same phone lands inside the topic, because a reply names its target explicitly.
+
+We measured it rather than guessed: the same text, sent into a minutes-old topic and into a weeks-old one, from the same phone. The new topic took it. The old one did not.
+
+There is no signal for this. Nothing in the API says a topic has gone that way, and "no thread id" cannot be read as "the topic is broken" — it is also the perfectly normal shape of a message typed outside the topics. So the bot does not try to detect it. It simply never keeps a topic long enough for it to happen: **one session, one topic.** Your history is not lost — it is one chip to the left, in `personal (archive)`.
+
+If you use the bot only from Telegram Desktop, none of this affects you; the rotation is harmless there.
+
+---
+
 ## Development
 
 ```bash

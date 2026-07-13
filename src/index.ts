@@ -934,6 +934,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!text?.trim()) return;
 		connect.endDraft();
 		mirroredThisRun = true;
+		notePersonalActivity();
 		await connect.deliverAssistant(text).catch(() => {});
 	});
 
@@ -943,6 +944,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.on("input", async (event) => {
 		const origin = classifyInputSource(event.source);
 		if (connect && shouldMirrorToTelegram(origin)) {
+			notePersonalActivity();
 			await connect.mirrorTerminalInput(event.text).catch(() => {});
 		}
 		// Mixed mode: a prompt the owner typed at the terminal is the priority
@@ -1031,6 +1033,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 		});
 		await topics.ensure();
+	};
+
+	/**
+	 * Start this session in a brand-new `personal` topic (see TopicRouter.startSession
+	 * for what we measured and why). Only where the conversation actually lives: personal
+	 * and mixed. The manager never talks in `personal` — it only pins the mode line there
+	 * — so rotating on its start would burn topics for nothing.
+	 */
+	const rotatePersonalTopic = async (): Promise<void> => {
+		if (!topics?.active) return;
+		await topics.startSession();
+	};
+
+	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
+	const notePersonalActivity = (): void => {
+		void topics?.markUsed().catch(() => {});
 	};
 
 	/**
@@ -1194,6 +1212,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const thread = threadOf(event);
 		reportTopicRouting(event);
 		if (thread === managerThread()) return false;
+		notePersonalActivity();
 		if (isOutsidePersonal(event)) {
 			// A topic we do not know may be one the owner made — or ours, deleted and
 			// replaced. Re-check them (recreating whatever is gone) before answering.
@@ -1585,6 +1604,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
+		await rotatePersonalTopic();
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
 		// Publish the tappable command menu (no manual setup needed by the user).
@@ -1778,6 +1798,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// for the very same session — a message there is exactly a prompt typed at
 			// the terminal (and terminal prompts mirror back into it).
 			if (mixed) {
+				await rotatePersonalTopic();
 				await startConnectRuntime(
 					managerClient,
 					token,

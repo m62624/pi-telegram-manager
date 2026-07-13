@@ -28,6 +28,11 @@ import { readJsonIfExists, writeJson } from "../storage/json";
 /** The two topics we maintain in the owner's DM. */
 export type TopicKind = "personal" | "manager";
 
+/** The name the outgoing `personal` is renamed to when it is kept. */
+export function archiveName(personalName: string): string {
+	return `${personalName} (archive)`;
+}
+
 /** Topic icon colors, from the fixed palette Bot API allows. */
 const ICON_COLOR: Record<TopicKind, number> = {
 	personal: 7322096, // 0x6FB9F0 — blue
@@ -47,6 +52,10 @@ export interface TopicsApi {
 		message_thread_id: number;
 		name?: string;
 	}): Promise<unknown>;
+	deleteForumTopic(args: {
+		chat_id: number;
+		message_thread_id: number;
+	}): Promise<unknown>;
 }
 
 /**
@@ -59,6 +68,10 @@ export interface TopicsState {
 	personal: number;
 	manager: number;
 	names?: Record<TopicKind, string>;
+	/** The previous session's `personal`, kept to read back (see {@link TopicRouter.startSession}). */
+	archive?: number;
+	/** Whether anything was actually said in the current `personal` this session. */
+	used?: boolean;
 }
 
 /**
@@ -96,6 +109,13 @@ export interface TopicRouterDeps {
  */
 export class TopicRouter {
 	private state: TopicsState | null = null;
+	/**
+	 * Whether `personal` was created by THIS `ensure` (a first run, or a topic the owner
+	 * deleted). Such a topic is already brand new, so {@link startSession} leaves it
+	 * alone instead of replacing it with another one — and the chat is spared a pair of
+	 * "topic created" notices on every first start.
+	 */
+	private personalIsFresh = false;
 
 	constructor(private readonly deps: TopicRouterDeps) {}
 
@@ -137,6 +157,7 @@ export class TopicRouter {
 				options.personalName,
 				stored,
 			);
+			this.personalIsFresh = personal !== stored?.personal;
 			const manager = await this.resolveTopic(
 				"manager",
 				options.managerName,
@@ -150,6 +171,14 @@ export class TopicRouter {
 					personal: options.personalName,
 					manager: options.managerName,
 				},
+				// Carried, not rebuilt: which topic is the archive, and whether the current
+				// `personal` holds a conversation, is what the next session's rotation
+				// decides on (see startSession). A topic we had to recreate here is new and
+				// empty by definition, so it starts unused.
+				...(stored?.archive !== undefined ? { archive: stored.archive } : {}),
+				...(personal === stored?.personal && stored?.used
+					? { used: true }
+					: {}),
 			};
 			await this.save(state);
 			this.state = state;
@@ -168,6 +197,92 @@ export class TopicRouter {
 	 */
 	fallBack(): void {
 		this.state = null;
+	}
+
+	/**
+	 * Remember that the conversation actually happened in this `personal` — so the
+	 * next session archives it instead of throwing it away. Called on anything the
+	 * owner says and anything the bot answers; NOT on the mode pin, which is furniture.
+	 */
+	async markUsed(): Promise<void> {
+		const state = this.state;
+		if (!state || state.used) return;
+		this.state = { ...state, used: true };
+		await this.save(this.state);
+	}
+
+	/**
+	 * Open a fresh `personal` for this session, and decide what becomes of the old one.
+	 *
+	 * A topic ages badly. The one we carried for weeks stopped accepting ordinary
+	 * messages from the Android client — they were posted OUTSIDE it, with no
+	 * `message_thread_id`, while replies (which name their target explicitly) still
+	 * landed inside; Desktop never noticed. A topic created minutes earlier worked
+	 * perfectly from the same phone. We cannot see when a topic goes stale, and there
+	 * is no signal to check for, so we do not try: every session simply starts in a
+	 * topic that is new, and none lives long enough to rot.
+	 *
+	 * What happens to the outgoing one is decided by whether anything was SAID in it:
+	 *  - it holds a conversation → it becomes the archive (renamed), and the previous
+	 *    archive is deleted, so exactly one past session is kept;
+	 *  - it holds nothing but its own creation notice (a restart where you never wrote)
+	 *    → it is deleted outright, taking that notice with it, and the archive is left
+	 *    alone. Otherwise a couple of silent restarts would push a real conversation out
+	 *    of the archive with empty topics.
+	 *
+	 * Best-effort: if anything here fails, the session keeps the topic it already has.
+	 */
+	async startSession(): Promise<void> {
+		const state = this.state;
+		if (!state || !this.deps.options.enabled) return;
+		// Just created (first run, or the owner deleted it): it IS the fresh topic this
+		// method exists to provide, and replacing it would only litter the chat with a
+		// second "topic created" notice.
+		if (this.personalIsFresh) return;
+		const { options } = this.deps;
+		let fresh: number;
+		try {
+			const created = await this.deps.api.createForumTopic({
+				chat_id: this.deps.ownerChatId,
+				name: options.personalName,
+				icon_color: ICON_COLOR.personal,
+			});
+			fresh = created.message_thread_id;
+		} catch {
+			return; // no fresh topic — carry on in the one we have
+		}
+		const outgoing = state.personal;
+		let archive = state.archive;
+		if (state.used) {
+			if (archive !== undefined) await this.deleteTopic(archive);
+			await this.deps.api
+				.editForumTopic({
+					chat_id: this.deps.ownerChatId,
+					message_thread_id: outgoing,
+					name: archiveName(options.personalName),
+				})
+				.catch(() => {});
+			archive = outgoing;
+		} else {
+			await this.deleteTopic(outgoing);
+		}
+		const next: TopicsState = {
+			...state,
+			personal: fresh,
+			used: false,
+			...(archive !== undefined ? { archive } : {}),
+		};
+		this.state = next;
+		await this.save(next);
+	}
+
+	private async deleteTopic(threadId: number): Promise<void> {
+		await this.deps.api
+			.deleteForumTopic({
+				chat_id: this.deps.ownerChatId,
+				message_thread_id: threadId,
+			})
+			.catch(() => {});
 	}
 
 	/**
@@ -298,6 +413,8 @@ export class TopicRouter {
 				personal: stored.personal,
 				manager: stored.manager,
 				names: stored.names,
+				...(stored.archive !== undefined ? { archive: stored.archive } : {}),
+				...(stored.used !== undefined ? { used: stored.used } : {}),
 			};
 		}
 		if (stored.chat !== undefined && stored.log !== undefined) {
