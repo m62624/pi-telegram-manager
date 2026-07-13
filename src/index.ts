@@ -187,20 +187,16 @@ interface ControlApi {
 		message_id: number;
 		reply_markup?: InlineKeyboardMarkup;
 	}): Promise<unknown>;
-	editMessageText(payload: {
-		chat_id: number;
-		message_id: number;
-		text: string;
-	}): Promise<unknown>;
 	pinChatMessage(payload: {
 		chat_id: number;
 		message_id: number;
 		disable_notification?: boolean;
 	}): Promise<unknown>;
-	/** Used to see whether the mode pin is still the chat's pinned message. */
-	getChat(payload: {
+	/** Removes the previous mode pin, so only one is ever in the chat. */
+	deleteMessage(payload: {
 		chat_id: number;
-	}): Promise<{ pinned_message?: { message_id: number } }>;
+		message_id: number;
+	}): Promise<unknown>;
 }
 
 /**
@@ -2055,23 +2051,23 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Bring the mode pin up to date: the message says the right mode, and it is
-	 * actually PINNED.
+	 * Announce the mode in the owner's DM as a single pinned message.
 	 *
-	 * The owner's DM is theirs, so the pin is not ours to assume: they may unpin it,
-	 * or delete the message outright, and the bot has to cope with both without
-	 * littering the chat with a second pin. Hence three separate checks rather than
-	 * a single edit:
+	 * This used to edit the message in place. That cannot be made reliable: clearing
+	 * the chat wipes the owner's copy while Telegram goes on accepting edits to that
+	 * message id and still reports it as the chat's pinned message — so the bot edited
+	 * a ghost, concluded all was well, and posted nothing. An empty chat, no error, no
+	 * pin. "The message exists" and "the owner can see it" are simply not the same
+	 * fact, and nothing in the Bot API tells them apart.
 	 *
-	 *  - the TEXT is only rewritten when the mode actually changed (an edit with the
-	 *    same text fails with "message is not modified", which we must not mistake
-	 *    for a dead message);
-	 *  - a dead message ("message to edit not found") is re-created on the spot, not
-	 *    at some later switch, so the pin comes back right away;
-	 *  - the PIN itself is re-asserted from what the chat reports, so unpinning it by
-	 *    hand simply gets it pinned again on the next mode start — and an already-
-	 *    pinned message is left alone, which is what keeps the chat from collecting a
-	 *    "pinned a message" service line every time.
+	 * So the pin is not maintained, it is REPLACED: delete the one we posted last (if
+	 * it is still there), post a new one, pin it. Connecting, switching and stopping
+	 * are each a real event the person should see arrive, the chat never collects more
+	 * than one mode message, and an owner who unpinned or deleted it needs no special
+	 * case — the next update simply posts one that exists.
+	 *
+	 * Best-effort: never blocks a mode start or stop, but a failure is reported rather
+	 * than swallowed.
 	 */
 	const updateModePin = async (target: PanelMode): Promise<void> => {
 		if (ownerUserId === null) return;
@@ -2081,8 +2077,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const owner = ownerUserId;
 		const text = modePinText(target);
 
-		// Post the pin message, repairing the personal topic if it turns out to be gone
-		// (deleting the chat takes the topics with it).
+		// Post into the personal topic, rebuilding it when it turns out to be gone
+		// (deleting the chat takes its topics with it).
 		const post = async (): Promise<number> => {
 			try {
 				const sent = await api.sendMessage({
@@ -2103,7 +2099,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 		};
 
-		const create = async (): Promise<void> => {
+		try {
+			if (modePinMessageId !== null) {
+				// Already gone (deleted by hand, or with the chat): that is the normal
+				// case, not an error — we are about to replace it anyway.
+				await api
+					.deleteMessage({ chat_id: owner, message_id: modePinMessageId })
+					.catch(() => {});
+				await forgetModePin();
+			}
 			const messageId = await post();
 			modePinMessageId = messageId;
 			await saveModePin(owner, messageId);
@@ -2121,56 +2125,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						"warning",
 					);
 				});
-		};
-
-		try {
-			if (modePinMessageId !== null) {
-				// Edit the pin that is already there — a new mode is not a new message. A
-				// pin per switch is what once buried the chat under numbered pins.
-				try {
-					await api.editMessageText({
-						chat_id: owner,
-						message_id: modePinMessageId,
-						text,
-					});
-				} catch (error) {
-					// Same text already: nothing to do. Anything else means the message is
-					// gone, and a fresh one takes its place.
-					if (!/message is not modified/i.test(String(error))) {
-						await forgetModePin();
-					}
-				}
-			}
-			if (modePinMessageId === null) {
-				await create();
-				return;
-			}
-			// Still there — but is it still PINNED? The owner may have unpinned it.
-			const pinned = await api
-				.getChat({ chat_id: owner })
-				.then((chat) => chat.pinned_message?.message_id)
-				.catch(() => modePinMessageId);
-			if (pinned === modePinMessageId) return;
-			try {
-				await api.pinChatMessage({
-					chat_id: owner,
-					message_id: modePinMessageId,
-					disable_notification: true,
-				});
-			} catch {
-				// The message we know cannot be pinned: it is not really there any more
-				// (the owner deleted it, or cleared the chat) even though Telegram let us
-				// edit it. Pinning it again would pin nothing, so post a fresh one.
-				await forgetModePin();
-				await create();
-			}
 		} catch (error) {
-			// Forget the pin so the next update rebuilds it from scratch rather than
-			// editing an id that may no longer mean anything — and do not fail silently:
-			// a missing pin with no explanation is exactly what sent us looking here.
 			await forgetModePin();
 			activeCtx?.ui.notify(
-				`Could not update the mode pin: ${String(error)}`,
+				`Could not announce the mode in Telegram: ${String(error)}`,
 				"warning",
 			);
 		}
