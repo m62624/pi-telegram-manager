@@ -377,6 +377,82 @@ describe("ConnectController", () => {
 		);
 	});
 
+	it("completes a tool card in place instead of posting a second message", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: { command: "npm test" } },
+			"call-1",
+		);
+		expect(api.sent).toHaveLength(1);
+		const cardId = api.sent[0].rich_message ? 1000 : 0; // first id handed out
+		expect(api.sent[0].rich_message.html).not.toContain("✅");
+
+		await controller.completeToolActivity("call-1", "611 passed", false);
+		// The card was edited, not duplicated.
+		expect(api.sent).toHaveLength(1);
+		expect(api.edits).toHaveLength(1);
+		expect(api.edits[0].message_id).toBe(cardId);
+		expect(api.edits[0].rich_message.html).toContain("✅");
+		expect(api.edits[0].rich_message.html).toContain("611 passed");
+		// The arguments survive the edit: the end event does not carry them.
+		expect(api.edits[0].rich_message.html).toContain("npm test");
+	});
+
+	it("marks a failed call with a cross and folds its error in", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "exit 1" },
+			"c",
+		);
+		await controller.completeToolActivity("c", "boom", true);
+		expect(api.edits[0].rich_message.html).toContain("❌");
+		expect(api.edits[0].rich_message.html).toContain("boom");
+	});
+
+	it("ignores a result for a call it has no card for", async () => {
+		const { controller, api } = setup();
+		await controller.completeToolActivity("never-sent", "x", false);
+		expect(api.edits).toHaveLength(0);
+	});
+
+	it("completes each card only once", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity({ toolName: "ls" }, "c");
+		await controller.completeToolActivity("c", "ok", false);
+		await controller.completeToolActivity("c", "ok", false);
+		expect(api.edits).toHaveLength(1);
+	});
+
+	it("closes cards left open by an aborted turn as cancelled", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity(
+			{ toolName: "bash", args: "sleep 60" },
+			"a",
+		);
+		await controller.sendToolActivity({ toolName: "read", args: "f.ts" }, "b");
+		await controller.completeToolActivity("b", "contents", false);
+
+		// /esc: the turn ends and "a" never returns.
+		await controller.cancelOpenToolCards();
+		expect(api.edits).toHaveLength(2);
+		expect(api.edits[1].rich_message.html).toContain("⏹️");
+		expect(api.edits[1].rich_message.html).toContain("sleep 60");
+
+		// Nothing is left to cancel a second time.
+		await controller.cancelOpenToolCards();
+		expect(api.edits).toHaveLength(2);
+	});
+
+	it("survives an edit the API refuses — the running card simply stands", async () => {
+		const { controller, api } = setup();
+		await controller.sendToolActivity({ toolName: "ls" }, "c");
+		api.failEdit = true;
+		await expect(
+			controller.completeToolActivity("c", "ok", false),
+		).resolves.toBeUndefined();
+		expect(api.edits).toHaveLength(0);
+	});
+
 	it("uses a fresh draft id for the next message", async () => {
 		const { controller, api } = setup();
 		controller.beginDraft();

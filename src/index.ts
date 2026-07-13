@@ -965,6 +965,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		} else {
 			connect?.endDraft();
 		}
+		// A card still open here belongs to a call that never returned — the turn was
+		// aborted under it. Nothing will ever complete it, so close it as cancelled
+		// instead of leaving it wearing the running state.
+		await connect?.cancelOpenToolCards();
 		// A manager run in mixed still pumps the connect queue (an owner message may
 		// be waiting behind the aborted moderation turn) but its text is NOT a reply
 		// to the owner — only an owner run delivers to the chat topic.
@@ -1021,7 +1025,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		await connect
-			.sendToolActivity({ toolName: event.toolName, args: event.args })
+			.sendToolActivity(
+				{ toolName: event.toolName, args: event.args },
+				event.toolCallId,
+			)
+			.catch(() => {});
+	});
+
+	// The call returned: finish its card in place with ✅/❌ and the folded output, so
+	// a run of wrenches shows at a glance which step failed — instead of every card
+	// looking identical and having to be expanded to find out.
+	pi.on("tool_execution_end", async (event) => {
+		if (!connect || !toolActivityEnabled || !ownerRun) return;
+		await connect
+			.completeToolActivity(event.toolCallId, event.result, event.isError)
 			.catch(() => {});
 	});
 

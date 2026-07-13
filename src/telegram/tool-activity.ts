@@ -13,17 +13,34 @@
  */
 import type { InputRichMessage } from "@grammyjs/types";
 import {
+	bold,
 	buildRichHtmlMessage,
 	details,
+	divider,
 	inlineCode,
 	preformatted,
 	RichHtml,
 } from "./rich-builder";
 
+/**
+ * How the call ended. `running` is the card as first posted; the same card is then
+ * edited in place to `ok` or `error`, so a chat full of wrenches tells you at a
+ * glance which step failed instead of making you expand every one of them.
+ *
+ * `cancelled` is the card of a call that never returned — the turn was aborted
+ * (/esc) under it. Without it, an interrupted card would sit there wearing the
+ * running state forever, claiming work that stopped.
+ */
+export type ToolStatus = "running" | "ok" | "error" | "cancelled";
+
 /** An agent tool invocation to surface in Telegram (structural, SDK-agnostic). */
 export interface ToolCallActivity {
 	toolName: string;
 	args?: unknown;
+	/** Defaults to `running` — the state a card is posted in. */
+	status?: ToolStatus;
+	/** The tool's output, folded into the card once it has one. */
+	result?: unknown;
 }
 
 export interface ToolActivityOptions {
@@ -33,12 +50,24 @@ export interface ToolActivityOptions {
 	maxArgChars?: number;
 	/** Longest single-line hint shown after the tool name in the summary. */
 	maxHintChars?: number;
+	/** Max characters of the folded result before truncation. */
+	maxResultChars?: number;
 	/** Override the summary's primary-argument hint (well-known tools by default). */
 	describeArgs?: (activity: ToolCallActivity) => string | undefined;
 }
 
 const DEFAULT_MAX_ARG_CHARS = 3500;
 const DEFAULT_MAX_HINT_CHARS = 56;
+/** Results are output, not input: a build log dwarfs its command, so cap it harder. */
+const DEFAULT_MAX_RESULT_CHARS = 2500;
+
+/** The status mark that trails the summary line. `running` carries none — it is the default state. */
+const STATUS_MARK: Record<ToolStatus, string> = {
+	running: "",
+	ok: " ✅",
+	error: " ❌",
+	cancelled: " ⏹️",
+};
 
 /** Tools whose primary string argument is shell source, shown as a `bash` block. */
 const SHELL_TOOLS = new Set(["bash", "shell", "sh", "run"]);
@@ -151,12 +180,39 @@ export function toolActivityHtml(
 			),
 		);
 	}
+	summaryParts.push(RichHtml.raw(STATUS_MARK[activity.status ?? "running"]));
 	const summary = RichHtml.join(summaryParts);
-	const body = renderToolBody(
+	const blocks: RichHtml[] = [
+		renderToolBody(activity, options.maxArgChars ?? DEFAULT_MAX_ARG_CHARS),
+	];
+	const result = renderToolResult(
 		activity,
-		options.maxArgChars ?? DEFAULT_MAX_ARG_CHARS,
+		options.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS,
 	);
-	return details(summary, [body], options.open ?? false);
+	if (result) blocks.push(divider(), result);
+	return details(summary, blocks, options.open ?? false);
+}
+
+/**
+ * Render the tool's output under its parameters, inside the SAME folded block —
+ * one card per call, not two messages. A string stays a string (a shell log is not
+ * JSON and must not be quoted like one); anything else is pretty-printed, and both
+ * are escaped by `preformatted`, so a result full of `<`, `&` or braces cannot
+ * break the markup around it. An empty result renders nothing at all.
+ */
+function renderToolResult(
+	activity: ToolCallActivity,
+	maxChars: number,
+): RichHtml | null {
+	const { result } = activity;
+	if (result === undefined || result === null) return null;
+	const text = formatToolArgs(result, maxChars);
+	if (!text.trim()) return null;
+	const language = typeof result === "string" ? undefined : "json";
+	return RichHtml.join([
+		bold(activity.status === "error" ? "Error" : "Result"),
+		preformatted(text, language),
+	]);
 }
 
 /**

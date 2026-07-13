@@ -72,6 +72,13 @@ export interface OutboundApi {
 	sendRichMessageDraft(
 		args: TargetArgs & { draft_id: number; rich_message: InputRichMessage },
 	): Promise<unknown>;
+	/** Rewrite an already-sent rich message in place (Bot API 10.1). */
+	editMessageText(
+		args: TargetArgs & {
+			message_id: number;
+			rich_message: InputRichMessage;
+		},
+	): Promise<unknown>;
 	sendChatAction(args: TargetArgs & { action: ChatAction }): Promise<unknown>;
 }
 
@@ -229,6 +236,32 @@ export class OutboundSender {
 			replyParameters = undefined;
 		}
 		return ids;
+	}
+
+	/**
+	 * Rewrite a message we already sent — used to complete a tool card with its
+	 * outcome instead of posting a second message about it. Best-effort by design:
+	 * an edit that fails (message too old, identical content, rich edit unsupported)
+	 * leaves the original card standing, which is still true, just less informative.
+	 * Returns whether the edit landed.
+	 */
+	async editRich(
+		target: OutboundTarget,
+		messageId: number,
+		message: InputRichMessage,
+	): Promise<boolean> {
+		if (isEmptyRich(message)) return false;
+		try {
+			await this.api.editMessageText({
+				...targetArgs(target),
+				message_id: messageId,
+				rich_message: message,
+			});
+			return true;
+		} catch (error) {
+			this.onRichFallback?.(error);
+			return false;
+		}
 	}
 
 	/** Send a short notice; plain strings are HTML-escaped, built `RichHtml` is passed through. */

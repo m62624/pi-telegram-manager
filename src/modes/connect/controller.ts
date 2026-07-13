@@ -158,6 +158,11 @@ export class ConnectController {
 	private draftId = 0;
 	/** Monotonic source of draft ids, so each message animates as its own draft. */
 	private draftCounter = 0;
+	/** Tool cards awaiting their outcome: toolCallId → the message to edit, and what it said. */
+	private readonly toolCards = new Map<
+		string,
+		{ messageId: number; activity: ToolCallActivity }
+	>();
 	/** Albums still being collected: media_group_id → the queued turn it folds into. */
 	private readonly albums = new Map<string, string>();
 	private readonly albumTimers = new Map<string, unknown>();
@@ -612,12 +617,70 @@ export class ConnectController {
 	 * (tool name + folded parameters) — it belongs with the conversation it serves, so
 	 * you can watch the model work. Best-effort: a formatting/send failure must never
 	 * interrupt the agent's turn.
+	 *
+	 * The card is posted `running` and remembered by `callId`, so
+	 * {@link completeToolActivity} can finish it in place once the tool returns.
 	 */
-	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
+	async sendToolActivity(
+		activity: ToolCallActivity,
+		callId?: string,
+	): Promise<void> {
 		await this.flushMirror();
-		await this.deps.outbound
+		const ids = await this.deps.outbound
 			.sendMessages(this.target, [toolActivityMessage(activity)])
+			.catch(() => [] as number[]);
+		const messageId = ids[0];
+		if (callId === undefined || messageId === undefined) return;
+		this.toolCards.set(callId, { messageId, activity });
+	}
+
+	/**
+	 * Finish the card for a call that has returned: rewrite it with a ✅ or ❌ and its
+	 * output folded in, rather than posting a second message about it. Re-rendered
+	 * from the REMEMBERED activity, because the end event carries no arguments — a
+	 * card rebuilt without them would silently lose the command it ran.
+	 *
+	 * An unknown call id (cards disabled mid-turn, a card that failed to send) is a
+	 * no-op, and so is a failed edit — the running card stays, which is still true.
+	 */
+	async completeToolActivity(
+		callId: string,
+		result: unknown,
+		isError: boolean,
+	): Promise<void> {
+		const card = this.toolCards.get(callId);
+		if (!card) return;
+		this.toolCards.delete(callId);
+		await this.deps.outbound
+			.editRich(
+				this.target,
+				card.messageId,
+				toolActivityMessage({
+					...card.activity,
+					status: isError ? "error" : "ok",
+					result,
+				}),
+			)
 			.catch(() => {});
+	}
+
+	/**
+	 * Close out every card still waiting for a result. A call interrupted by /esc
+	 * never fires its end event, so its card would otherwise keep the running state
+	 * forever — claiming work that stopped. Mark them cancelled and forget them.
+	 */
+	async cancelOpenToolCards(): Promise<void> {
+		const open = [...this.toolCards.values()];
+		this.toolCards.clear();
+		for (const card of open) {
+			await this.deps.outbound
+				.editRich(
+					this.target,
+					card.messageId,
+					toolActivityMessage({ ...card.activity, status: "cancelled" }),
+				)
+				.catch(() => {});
+		}
 	}
 
 	/** Pending (not yet dispatched) turn count — for footer/status. */

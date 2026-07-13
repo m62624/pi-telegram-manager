@@ -167,3 +167,103 @@ describe("toolActivityLabel", () => {
 		expect(label).not.toContain("\n");
 	});
 });
+
+describe("tool card status and result", () => {
+	it("posts without a mark and completes with a tick", () => {
+		expect(
+			toolActivityHtml({ toolName: "bash", args: { command: "ls" } }).html,
+		).not.toContain("✅");
+
+		const done = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "ls" },
+			status: "ok",
+			result: "a.ts\nb.ts",
+		}).html;
+		expect(done).toContain("✅");
+		expect(done).toContain("<b>Result</b>");
+		expect(done).toContain("a.ts\nb.ts");
+	});
+
+	it("marks a failure and titles its output as an error", () => {
+		const failed = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "exit 1" },
+			status: "error",
+			result: "command failed",
+		}).html;
+		expect(failed).toContain("❌");
+		expect(failed).toContain("<b>Error</b>");
+		expect(failed).not.toContain("<b>Result</b>");
+	});
+
+	it("marks a call the abort caught mid-flight", () => {
+		const cancelled = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "sleep 60" },
+			status: "cancelled",
+		}).html;
+		expect(cancelled).toContain("⏹️");
+		// Nothing came back, so there is no result section to show.
+		expect(cancelled).not.toContain("<b>Result</b>");
+	});
+
+	it("escapes a result that would otherwise break the markup", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "a.html" },
+			status: "ok",
+			result: '<script>alert("x")</script> & </details>',
+		}).html;
+		expect(html).toContain("&lt;script&gt;");
+		expect(html).toContain("&amp;");
+		// The card's own structure survives: exactly one details block, still closed.
+		expect(html.match(/<details/g)).toHaveLength(1);
+		expect(html.endsWith("</details>")).toBe(true);
+	});
+
+	it("keeps a structured result as JSON and a string result as text", () => {
+		const json = toolActivityHtml({
+			toolName: "grep",
+			args: { pattern: "x" },
+			status: "ok",
+			result: { matches: 3 },
+		}).html;
+		expect(json).toContain('<pre><code class="language-json">');
+		expect(json).toContain('"matches": 3');
+
+		const text = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "echo hi" },
+			status: "ok",
+			result: "hi",
+		}).html;
+		// A shell log is not JSON and must not be quoted like one.
+		expect(text).toContain("<pre>hi</pre>");
+	});
+
+	it("truncates a huge result instead of blowing the message limit", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "bash",
+				args: { command: "cat big" },
+				status: "ok",
+				result: "x".repeat(9000),
+			},
+			{ maxResultChars: 100 },
+		).html;
+		expect(html).toContain("… (truncated)");
+		expect(html.length).toBeLessThan(1000);
+	});
+
+	it("shows no result section when the tool returned nothing", () => {
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "a" },
+			status: "ok",
+			result: "",
+		}).html;
+		expect(html).toContain("✅");
+		expect(html).not.toContain("<b>Result</b>");
+	});
+});
