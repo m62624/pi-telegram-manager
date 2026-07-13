@@ -1223,19 +1223,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Say ONCE per run what Telegram actually reports about the topic of an owner
-	 * message. Which topic an inbound message belongs to is the one thing we cannot
-	 * verify from here — clients disagree, and a wrong guess is what made the bot
-	 * quote every message. So the raw fields are printed rather than assumed.
+	 * Say what Telegram actually reports about the topic of an owner message — once
+	 * per distinct thread, so writing from a second place says so and a conversation
+	 * does not repeat it.
+	 *
+	 * Where an inbound message was typed is the one thing we cannot verify from here.
+	 * The API says `message_thread_id` is set "for supergroups and private chats", yet
+	 * the messages we saw live carried none — and assuming the absence meant "typed
+	 * elsewhere" is what made the bot quote every word the owner wrote. So the raw
+	 * fields are printed rather than guessed at.
 	 */
-	let topicRoutingReported = false;
+	const topicRoutingReported = new Set<number | "none">();
 	const reportTopicRouting = (event: TelegramEvent): void => {
-		if (topicRoutingReported) return;
 		if (event.kind !== "message") return;
-		topicRoutingReported = true;
 		const message = event.message;
+		const key = message.message_thread_id ?? "none";
+		if (topicRoutingReported.has(key)) return;
+		topicRoutingReported.add(key);
 		activeCtx?.ui.notify(
-			`Telegram topics: your message reports message_thread_id=${message.message_thread_id ?? "none"}, ` +
+			`Telegram topics: your message reports message_thread_id=${key}, ` +
 				`is_topic_message=${message.is_topic_message ?? false} — personal topic is ${personalThread() ?? "none"}.`,
 		);
 	};
