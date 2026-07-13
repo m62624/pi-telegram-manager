@@ -2,6 +2,10 @@
 
 # pi-telegram-manager
 
+<p align="center">
+  <img src="assets/icon.webp" alt="pi-telegram-manager icon" width="120">
+</p>
+
 An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram — as your own assistant on your phone, and as a secretary that answers other people on your behalf. The model runs **on your machine, in your own Telegram account**.
 
 > ⚖️ **Terms & responsibility — read before using.** The bot is **yours**, not this project's: you create it in @BotFather and connect it to Telegram, and Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers) then bind **you** — *"'you' refers to you, the developer"*, and the Telegram account holding the bot's credentials answers for what it does. So they apply to running your own bot, not to reading this repository. Also: the [Privacy Policy](https://telegram.org/privacy) and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business).

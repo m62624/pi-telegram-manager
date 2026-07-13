@@ -19,15 +19,19 @@
 	"type": "module",
 	"main": "src/index.ts",
 	"files": [
+		"assets/*.webp",
 		"src/**/*.ts",
 		"!src/**/*.test.ts",
+		"src/**/*.md",
 		"README.md",
+		"SETTINGS.md",
 		"LICENSE"
 	],
 	"pi": {
 		"extensions": [
 			"./src/index.ts"
-		]
+		],
+		"image": "https://raw.githubusercontent.com/m62624/pi-telegram-manager/main/assets/icon.webp"
 	},
 	"license": "MIT",
 	"scripts": {
