@@ -78,7 +78,13 @@ Your DM with the bot works better as two topics: **chat** (the conversation with
 
 > `@BotFather` → open the **Mini App** (tap the menu button next to the message field) → *select your bot* → **Threaded Mode** → **on**
 
-⚠️ It is **not** in the classic `/mybots` → **Bot Settings** keyboard — that menu has no such row. The toggle lives only in the newer BotFather Mini App. `getMe` then reports `has_topics_enabled: true`, which is exactly what this extension checks.
+⚠️ It is **not** in the classic `/mybots` → **Bot Settings** keyboard — that menu has no such row. The toggle lives only in the newer BotFather Mini App, under **Thread Settings**. `getMe` then reports `has_topics_enabled: true`, which is exactly what this extension checks.
+
+| Open the Mini App | Turn on Threaded Mode |
+| --- | --- |
+| <img src="assets/threaded-mode-1-open-mini-app.jpg" alt="The BotFather Mini App button, left of the message field" width="320"> | <img src="assets/threaded-mode-2-toggle.jpg" alt="Thread Settings → Threaded Mode, on" width="320"> |
+
+Leave **Disallow users to create new threads** off — the extension creates the `chat` and `log` topics itself, and you may want to add your own.
 
 Without it everything still works: the bot falls back to one flat DM (and you may want `manager.log: false` there, since the feed is chatty). Mute the **log** topic by hand if you don't want its notifications — Telegram gives bots no API for that. Rename the topics with `topics.chatName` / `topics.logName`, or turn the whole thing off with `topics.enabled: false`.
 
