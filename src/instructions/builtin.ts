@@ -58,6 +58,7 @@ export async function loadManagerInstructions(input: {
 }): Promise<ManagerInstructions> {
 	const common = await readBuiltin(input.fs, "manager-common.md");
 	const stance = await readBuiltin(input.fs, "manager.md");
+	const disclosure = await readBuiltin(input.fs, "manager-disclosure.md");
 	const firstDefault = await readBuiltin(input.fs, "manager-first-message.md");
 	const reopenDefault = await readBuiltin(input.fs, "manager-reopen.md");
 
@@ -80,6 +81,12 @@ export async function loadManagerInstructions(input: {
 		);
 	}
 	if (input.overrideText?.trim()) parts.push(input.overrideText.trim());
+	// LAST, and after the override on purpose. The bot answers strangers on a real
+	// person's behalf, so the one thing it must never do is pass for that person —
+	// and the instruction that says so has to survive whatever the operator adds
+	// above it, the way the last word in a prompt tends to. Everything else here is
+	// theirs to rewrite; this is not, and no setting reaches it.
+	if (disclosure) parts.push(disclosure);
 
 	return {
 		base: parts.filter(Boolean).join("\n\n"),
