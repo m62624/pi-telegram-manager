@@ -10,7 +10,7 @@
  *    message is held for `ownerReplyWindowMs` (5 min) so the owner gets first
  *    crack; only if the owner stays silent does the chat become ready;
  *  - the {@link ChatScheduler} — one active chat at a time, never-replied chats
- *    first, plus a `continueWindowMs` (1:30) continuation window from the bot's
+ *    first, plus a `continueWindowMs` (2:00) continuation window from the bot's
  *    reply that keeps a chat active while the conversation is live.
  *
  * A chat is only handed a turn while it has an unanswered interlocutor message
@@ -1107,7 +1107,7 @@ export class ManagerController {
 			}
 		}
 		if (text) {
-			// Replied: keep the chat active and arm the 1:30 continuation window.
+			// Replied: keep the chat active and arm the 2:00 continuation window.
 			this.scheduler.onReplied();
 		} else {
 			// Silent (or guard-dropped): release the chat and promote the next.

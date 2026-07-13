@@ -8,7 +8,7 @@
  *
  *  - Chats are served FIFO by the arrival of their first message.
  *  - After the bot replies to the active chat, a continuation window
- *    (`continueWindowMs`, ~1:30) is armed. If the interlocutor writes again
+ *    (`continueWindowMs`, ~2:00) is armed. If the interlocutor writes again
  *    within it, their chat stays active and the window re-arms; if the window
  *    expires, the active slot is released and the next queued chat is promoted.
  *
@@ -40,7 +40,7 @@ export interface TickResult {
 }
 
 export interface ChatSchedulerOptions {
-	/** Continuation/priority window in ms (plan default 90000 = 1:30). */
+	/** Continuation/priority window in ms (default 120000 = 2:00). */
 	continueWindowMs: number;
 	clock?: Clock;
 }

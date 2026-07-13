@@ -65,7 +65,7 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 | --- | --- | --- | --- |
 | `manager.ownerName` | — | replaces | Your display name, so the bot can introduce itself as "{name}'s assistant" on first contact. |
 | `manager.ownerReplyWindowMs` | `300000` (5 min) | replaces | How long a first message from someone is held so **you** can answer before the bot may. |
-| `manager.continueWindowMs` | `90000` (1:30) | replaces | After the bot replies, how long the chat stays "live" (a new message keeps it active instead of re-queuing). Also governs when things are quiet enough to resume memory consolidation. |
+| `manager.continueWindowMs` | `120000` (2:00) | replaces | After the bot replies, how long the chat stays "live" (a new message keeps it active instead of re-queuing). Also governs when things are quiet enough to resume memory consolidation. |
 | `manager.liveFreshnessMs` | `120000` (2 min) | replaces | A message older than this (by its true send time) is recorded for context but does **not** wake a live reply cycle — so a redelivered old backlog never "wakes" the bot. |
 | `manager.catchUpWindowMs` | `36000000` (10 h) | replaces | On activation, the bot may answer for you in a waiting chat only if its last message is newer than this. |
 | `manager.reopenAfterMs` | `86400000` (24 h) | replaces | A chat resuming after this much silence is re-greeted. `0` disables re-greeting. |
@@ -138,7 +138,7 @@ Tuned for a **local model** answering over minutes, not milliseconds. Slower har
 | Window | Default | Meaning |
 | --- | --- | --- |
 | Owner-reply | 5 min | you get first crack at a new message |
-| Continuation | 1 min 30 s | how long a chat stays "live" after a reply |
+| Continuation | 2 min | how long a chat stays "live" after a reply |
 | Live freshness | 2 min | older messages are backlog, not a live trigger |
 | Consolidation quiet | 30 min | idle wait before updating memory about a chat |
 | Mixed return | 8 min | idle after a terminal turn before the brain returns to Telegram |

@@ -92,13 +92,13 @@ Every branch of this is enforced in **code**. The model is only ever asked the q
   ─────────────────────────────────────────────────────────────────────────
   ✓ TURN  →  the model is given ONE chat and must end with ONE tool:
              manager_reply (answer)  ·  manager_silent (nothing was asked)
-             then that chat keeps a 1:30 fast lane, so a live back-and-forth
+             then that chat keeps a 2:00 fast lane, so a live back-and-forth
              is not made to wait five minutes over again
 ```
 
 **A message of yours also does three things**, none of which is "answer me":
 
-1. **closes the 1:30 fast lane** in that chat — you are present, so the bot goes back to letting you answer first;
+1. **closes the 2:00 fast lane** in that chat — you are present, so the bot goes back to letting you answer first;
 2. **holds any draft it was writing** right then: it is reconsidered against what you just said, and sent, refined, or dropped — never fired off over your head;
 3. **and nothing else.** It does not switch the bot off in that chat: the next message from that person arms a new window, and if you let that one hang, the bot answers it.
 
@@ -144,7 +144,7 @@ The decision rules are in [the algorithm above](#the-algorithm-in-full). This is
 Messages from many people arrive at once; the model handles **one chat per turn**, so it is never confused about who it is talking to. The scheduler picks the next chat by:
 
 1. **never-replied chats first** — someone who has not heard back yet outranks an ongoing conversation;
-2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **1:30**) — right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
+2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **2:00**) — right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
 
 ### Wake-words — how the bot knows it is being addressed
 

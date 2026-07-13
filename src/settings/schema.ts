@@ -68,7 +68,7 @@ export interface TelegramSettings {
 		instructionFiles: string[];
 	};
 	manager: {
-		/** Continuation/priority window (ms). Default 90000 (1:30). */
+		/** Continuation/priority window (ms). Default 120000 (2:00). */
 		continueWindowMs: number;
 		/** Owner-reply window (ms). Default 300000 (5 min). */
 		ownerReplyWindowMs: number;
@@ -220,7 +220,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
-		continueWindowMs: 90_000,
+		continueWindowMs: 120_000,
 		ownerReplyWindowMs: 300_000,
 		catchUpWindowMs: 36_000_000,
 		allowedTools: [],
