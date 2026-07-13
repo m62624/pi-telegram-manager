@@ -2,9 +2,16 @@
 
 ## Reporting a vulnerability
 
-Open a [private security advisory](https://github.com/m62624/pi-telegram-manager/security/advisories/new)
-on GitHub, or email the address in the commit history. Please do not open a public
-issue for anything that could be used against someone's account before it is fixed.
+Everything happens on GitHub — there is no mailing address to write to.
+
+- **Something exploitable** → open a [private security advisory](https://github.com/m62624/pi-telegram-manager/security/advisories/new).
+  It is visible only to the maintainer until a fix ships. Please use it rather than a
+  public issue for anything that could be turned against someone's account.
+- **A fix you already have** → open a pull request. If it closes a security hole,
+  say so in the PR and skip the exploit details; the reasoning can move to a private
+  advisory.
+- **Anything else** — a bug, a hardening idea, a question about the threat model →
+  a normal issue is fine.
 
 What is in scope: anything that leaks the bot token, exposes one contact's messages
 or memory to another, or lets a message from a stranger drive the tool-calling side
@@ -50,12 +57,21 @@ Two things are deliberately not configurable in the code I publish (see
    with;
 2. asked whether it is a bot, it says yes.
 
-These live in a bundled instruction block appended **after** any user instructions,
-so no `settings.json` reaches them. A fork can of course delete that file — that is
-what "open source" means. What it cannot do is make that my software or my doing:
-whoever removed the disclosure and pointed a bot at real people is the one who did
-it, and under Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers)
-the developer is "you" — the person whose account holds the bot's credentials.
+**This is the project's own rule, not Telegram's.** The [Bot Developer Terms](https://telegram.org/tos/bot-developers)
+do not require you to tell people they are talking to a bot; what they require is
+that you represent your bot's services truthfully and never conceal its activity
+from the business account it serves. The disclosure is here because the manager
+writes to people who believe they are writing to a human being, and because the
+duty to tell them is moving in one direction everywhere else (the EU AI Act's
+transparency rules, for one). Rules aside: a person who does not know they are
+talking to a machine never agreed to talk to one.
+
+The block lives in a bundled instruction file appended **after** any user
+instructions, so no `settings.json` reaches it. A fork can of course delete that
+file — that is what "open source" means. What it cannot do is make that my software
+or my doing: whoever removed the disclosure and pointed a bot at real people is the
+one who did it, and under the same Terms the developer is "you" — the person whose
+account holds the bot's credentials.
 
 ## What the bot is allowed to do on your machine
 
