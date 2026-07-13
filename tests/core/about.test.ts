@@ -137,11 +137,14 @@ describe("about tool", () => {
 		expect(textOf(blocked)).toContain("answer the person now");
 	});
 
-	it("tells the model to call it only when asked about the bot", async () => {
+	it("tells the model to call it — never to answer about the bot from memory", async () => {
 		const { about } = await setup();
-		expect(about.description).toContain("ONLY when someone asks about the bot");
-		expect(about.description).toContain(
-			"Do NOT call it for ordinary conversation",
-		);
+		const description = about.description as string;
+		expect(description).toContain("never answer from memory");
+		expect(description).toContain("Do NOT call it for ordinary conversation");
+		// Live failure: the model reached for `planner_about` and described the wrong
+		// software, because "about" is a name several extensions claim.
+		expect(description).toContain("planner_about");
+		expect(description).toMatch(/never substitute/i);
 	});
 });

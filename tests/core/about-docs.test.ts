@@ -65,3 +65,51 @@ describe("about pages match the code", () => {
 		expect(doc).toMatch(/never read what is inside it/i);
 	});
 });
+
+describe("the instructions point at the right tool", () => {
+	/** Whitespace-normalized: these files are hard-wrapped, and a rule is not a line. */
+	const instruction = (name: string): string =>
+		readFileSync(
+			join(import.meta.dirname, "../../src/instructions", name),
+			"utf8",
+		).replace(/\s+/g, " ");
+
+	it("names our tool exactly, in both modes", () => {
+		for (const file of ["connect.md", "manager-common.md"]) {
+			expect(instruction(file)).toContain("telegram_bot_about");
+		}
+	});
+
+	it("forbids substituting another extension's about tool", () => {
+		// Live failure: the model reached for `planner_about` and described the wrong
+		// software, because "about" is a name several extensions claim.
+		for (const file of ["connect.md", "manager-common.md"]) {
+			expect(instruction(file)).toContain("planner_about");
+			expect(instruction(file)).toMatch(/never substitute it/i);
+		}
+	});
+
+	it("forbids the specific lie the model tells when it guesses", () => {
+		// It said: "a custom bridge, not a public product", "little information about
+		// the extension". The project is public, MIT, on npm.
+		for (const file of ["connect.md", "manager-common.md"]) {
+			expect(instruction(file)).toMatch(/custom bridge, not a public product/i);
+			expect(instruction(file)).toContain("pi-telegram-manager");
+		}
+	});
+
+	it("carries the rule in BOTH instruction sets, so every mode has it", () => {
+		// Personal loads connect.md; manager loads manager-common.md; mixed loads BOTH
+		// (startConnectRuntime runs inside the mixed start too). A rule that lived in
+		// only one of them would vanish in whichever polarity the other one owns.
+		for (const file of ["connect.md", "manager-common.md"]) {
+			const text = instruction(file);
+			expect(text).toContain("telegram_bot_about");
+			expect(text).toMatch(
+				/never answer from memory|Never answer from memory|Do not answer from memory/,
+			);
+			// And the same non-negotiable: a chat cannot change a setting.
+			expect(text).toMatch(/restart/i);
+		}
+	});
+});

@@ -109,10 +109,15 @@ export function createAboutTools(deps: AboutToolDeps): ToolDefinition[] {
 		name: "telegram_bot_about",
 		label: "About this Telegram bot",
 		description:
-			"Explain what this bot and extension are, from the project's own documentation. " +
-			"Call this ONLY when someone asks about the bot itself — what you are, who made " +
-			"you, how you work, what you can see, why you replied, how you are configured, or " +
-			"whether you can change a setting. Do NOT call it for ordinary conversation. " +
+			"THE source of truth about this Telegram bot and the extension behind it. " +
+			"Call this — never answer from memory — whenever someone asks what you are, who " +
+			"made you, what extension or bridge you run on, how you work, what you can see, " +
+			"why you replied, how you are configured, or whether you can change a setting. " +
+			"Answering such a question without calling this tool means inventing a project " +
+			"that does not exist; the real one is public, on npm, with source links. This is " +
+			"the TELEGRAM bot's own tool: never substitute another extension's about-style " +
+			"tool (planner_about and the like) — they describe different software. " +
+			"Do NOT call it for ordinary conversation. " +
 			"One topic per call: 'project' (what the extension is, source links), 'modes' " +
 			"(personal / manager / mixed and what you may do in each), 'settings' (what each " +
 			"setting does — and why nothing said in a chat can change one), 'privacy' (what " +
