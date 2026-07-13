@@ -52,19 +52,25 @@ export interface ManagerFeedEntry {
 }
 
 /**
- * A best-effort `tg://` deep link that opens the owner's private chat with an
- * interlocutor — jumping to a specific message when one is known — so a log card
- * is tappable straight to the conversation. Experimental: some Telegram clients
- * ignore `message_id` (or the scheme) for a private chat, so callers keep the raw
- * id visible as a fallback. Returns undefined without a numeric user id.
+ * A deep link that opens the owner's private chat with an interlocutor, so a log
+ * card is tappable straight to the conversation.
+ *
+ * `https://t.me/<username>` is preferred: it is the only form every client honours.
+ * Without a public username we fall back to `tg://openmessage`, which jumps to the
+ * exact message when one is known but is ignored by some clients — hence the raw id
+ * stays visible next to the link. Returns undefined when neither is available.
  */
-export function telegramChatDeepLink(
-	userId?: string,
-	messageId?: number,
-): string | undefined {
-	if (!userId || !/^\d+$/.test(userId)) return undefined;
-	const base = `tg://openmessage?user_id=${userId}`;
-	return messageId !== undefined ? `${base}&message_id=${messageId}` : base;
+export function telegramChatDeepLink(contact: {
+	userId?: string;
+	username?: string;
+	messageId?: number;
+}): string | undefined {
+	if (contact.username) return `https://t.me/${contact.username}`;
+	if (!contact.userId || !/^\d+$/.test(contact.userId)) return undefined;
+	const base = `tg://openmessage?user_id=${contact.userId}`;
+	return contact.messageId !== undefined
+		? `${base}&message_id=${contact.messageId}`
+		: base;
 }
 
 /** Trim overlong text, marking how much was cut so nothing looks silently lost. */
@@ -148,7 +154,11 @@ export function buildManagerFeed(entry: ManagerFeedEntry): RichHtml {
 	// The chat id is a tappable deep link (best-effort) to open the conversation at
 	// the answered message, with the raw id kept as the visible fallback.
 	const chatIdCode = inlineCode(`#${log.chatId}`);
-	const deepLink = telegramChatDeepLink(log.userId, log.replyToMessageId);
+	const deepLink = telegramChatDeepLink({
+		userId: log.userId,
+		username: log.username,
+		messageId: log.replyToMessageId,
+	});
 	const detailRows: RichHtml[] = [
 		paragraph(
 			RichHtml.join([
