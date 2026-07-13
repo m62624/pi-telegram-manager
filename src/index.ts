@@ -507,6 +507,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	/**
+	 * Drop what we know about the pin, so the next update posts a fresh one.
+	 *
+	 * Needed because "the message still exists" and "the owner can still see it" are
+	 * different facts: clearing the chat wipes the owner's copy while Telegram keeps
+	 * accepting edits to that message id — so the bot would go on editing a message
+	 * nobody can read.
+	 */
+	const forgetModePin = async (): Promise<void> => {
+		modePinMessageId = null;
+		await fs.removeFile(paths.modePinPath).catch(() => {});
+	};
+
 	const saveModePin = async (
 		ownerChatId: number,
 		messageId: number,
@@ -2068,21 +2081,46 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const owner = ownerUserId;
 		const text = modePinText(target);
 
+		// Post the pin message, repairing the personal topic if it turns out to be gone
+		// (deleting the chat takes the topics with it).
+		const post = async (): Promise<number> => {
+			try {
+				const sent = await api.sendMessage({
+					chat_id: owner,
+					message_thread_id: personalThread(),
+					text,
+				});
+				return sent.message_id;
+			} catch (error) {
+				if (!topics?.active || !TopicRouter.isMissingThread(error)) throw error;
+				const thread = await topics.recreate("personal");
+				const sent = await api.sendMessage({
+					chat_id: owner,
+					message_thread_id: thread,
+					text,
+				});
+				return sent.message_id;
+			}
+		};
+
 		const create = async (): Promise<void> => {
-			const sent = await api.sendMessage({
-				chat_id: owner,
-				message_thread_id: personalThread(),
-				text,
-			});
-			modePinMessageId = sent.message_id;
+			const messageId = await post();
+			modePinMessageId = messageId;
+			await saveModePin(owner, messageId);
 			await api
 				.pinChatMessage({
 					chat_id: owner,
-					message_id: sent.message_id,
+					message_id: messageId,
 					disable_notification: true,
 				})
-				.catch(() => {});
-			await saveModePin(owner, sent.message_id);
+				.catch((error) => {
+					// It is still a readable message, just not pinned — say so rather than
+					// leave the owner wondering why the mode is not shown at the top.
+					activeCtx?.ui.notify(
+						`Sent the mode message but could not pin it: ${String(error)}`,
+						"warning",
+					);
+				});
 		};
 
 		try {
@@ -2099,34 +2137,42 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					// Same text already: nothing to do. Anything else means the message is
 					// gone, and a fresh one takes its place.
 					if (!/message is not modified/i.test(String(error))) {
-						modePinMessageId = null;
-						await fs.removeFile(paths.modePinPath).catch(() => {});
+						await forgetModePin();
 					}
 				}
 			}
 			if (modePinMessageId === null) {
 				await create();
-			} else {
-				// Still there — but is it still PINNED? The owner may have unpinned it.
-				const pinned = await api
-					.getChat({ chat_id: owner })
-					.then((chat) => chat.pinned_message?.message_id)
-					.catch(() => modePinMessageId);
-				if (pinned !== modePinMessageId) {
-					await api
-						.pinChatMessage({
-							chat_id: owner,
-							message_id: modePinMessageId,
-							disable_notification: true,
-						})
-						.catch(() => {});
-				}
+				return;
 			}
-		} catch {
-			// Unreachable chat: forget the pin so the next update rebuilds it from
-			// scratch rather than editing an id that may no longer mean anything.
-			modePinMessageId = null;
-			await fs.removeFile(paths.modePinPath).catch(() => {});
+			// Still there — but is it still PINNED? The owner may have unpinned it.
+			const pinned = await api
+				.getChat({ chat_id: owner })
+				.then((chat) => chat.pinned_message?.message_id)
+				.catch(() => modePinMessageId);
+			if (pinned === modePinMessageId) return;
+			try {
+				await api.pinChatMessage({
+					chat_id: owner,
+					message_id: modePinMessageId,
+					disable_notification: true,
+				});
+			} catch {
+				// The message we know cannot be pinned: it is not really there any more
+				// (the owner deleted it, or cleared the chat) even though Telegram let us
+				// edit it. Pinning it again would pin nothing, so post a fresh one.
+				await forgetModePin();
+				await create();
+			}
+		} catch (error) {
+			// Forget the pin so the next update rebuilds it from scratch rather than
+			// editing an id that may no longer mean anything — and do not fail silently:
+			// a missing pin with no explanation is exactly what sent us looking here.
+			await forgetModePin();
+			activeCtx?.ui.notify(
+				`Could not update the mode pin: ${String(error)}`,
+				"warning",
+			);
 		}
 	};
 
@@ -2147,6 +2193,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				link_preview_options: { is_disabled: true },
 			})
 			.catch(() => {});
+		// The owner pressing Start means their chat begins again — after deleting it,
+		// that is the only way back in. Everything we remember about the pin describes
+		// a message they can no longer see, while Telegram still accepts edits to it,
+		// so the bot would silently keep editing a ghost and pin nothing. Post a fresh
+		// pin instead, showing whatever mode is actually running.
+		if (event.fromId === ownerUserId && event.chatId === ownerUserId) {
+			await forgetModePin();
+			await updateModePin(activeTarget());
+		}
 		return true;
 	};
 
