@@ -147,6 +147,7 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
+import { TopicRouter, type TopicsApi } from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
 import { managerBannerLines } from "./ui/manager-banner";
 
@@ -161,6 +162,8 @@ interface ControlApi {
 	sendMessage(payload: {
 		chat_id: number;
 		text: string;
+		/** The topic this control message belongs to (owner DM with topics on). */
+		message_thread_id?: number;
 		reply_markup?: InlineKeyboardMarkup;
 		/** Control the URL preview card (e.g. disable it for a help message). */
 		link_preview_options?: { is_disabled?: boolean; url?: string };
@@ -320,6 +323,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let connectSystemBlock: string | null = null;
 	// Timezone for the mode-1 `[Now: …]` line (from settings; system zone if unset).
 	let connectTimezone: string | undefined;
+
+	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
+	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
+	let topics: TopicRouter | null = null;
 
 	// Live manager-mode runtime (null when inactive).
 	let manager: ManagerController | null = null;
@@ -760,6 +767,36 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return { settings, token };
 	};
 
+	// Split the owner's DM into a `chat` topic (the conversation) and a `log` topic
+	// (feed, tool activity, notices). Best-effort and shared by both modes: without
+	// topic mode on the bot every thread id stays undefined and the DM behaves exactly
+	// as before, so a start is never blocked by this.
+	const setupTopics = async (
+		api: unknown,
+		ownerChatId: number,
+		settings: TelegramSettings,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		topics = new TopicRouter({
+			api: api as TopicsApi,
+			fs,
+			path: paths.topicsPath,
+			ownerChatId,
+			options: settings.topics,
+			onFallback: (reason) => ctx.ui.notify(reason, "warning"),
+		});
+		await topics.ensure();
+	};
+
+	const chatThread = (): number | undefined => topics?.thread("chat");
+	const logThread = (): number | undefined => topics?.thread("log");
+
+	/** The topic an inbound message was posted in (undefined without topics). */
+	const threadOf = (event: TelegramEvent): number | undefined =>
+		event.kind === "message" || event.kind === "edited_message"
+			? event.message.message_thread_id
+			: undefined;
+
 	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
 	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
 	// control panel.
@@ -806,11 +843,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			token,
 			onEvent: async (event) => {
 				if (await handleControl(event)) return;
+				// The log topic is the bot talking to itself; anything the owner types
+				// there is not a prompt for the model (they'd use the chat topic).
+				if (event.kind === "message" && topics?.isLog(threadOf(event))) return;
 				await connect?.onEvent(event);
 			},
 			onError: (error) =>
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
+		await setupTopics(client.api, allowedUserId, settings, ctx);
 		// Warn once (not per-message) when native rich rendering isn't reaching
 		// Telegram and we degraded to plain text — so a tester can tell a real
 		// rich reply from a fallback one.
@@ -922,6 +963,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					Date.now(),
 				);
 			},
+			chatThread,
+			logThread,
 			outbound,
 			abort,
 		});
@@ -1117,6 +1160,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// (mode 1 keeps the default drop — stale terminal commands are unwanted).
 			dropPendingUpdates: false,
 		});
+		if (settings.allowedUserId) {
+			await setupTopics(
+				managerClient.api,
+				settings.allowedUserId,
+				settings,
+				ctx,
+			);
+		}
 		// Download an interlocutor message's inline images so the model can scan
 		// them (mode-2 vision); documents are never downloaded here (refused by the
 		// controller's media policy). Per-image failures are swallowed — the
@@ -1218,11 +1269,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				});
 			},
 		});
-		// The bot account is idle in mode 2, so with debugFeed on it doubles as an
+		// The bot account is idle in mode 2, so with `manager.log` on it doubles as an
 		// observability channel: each turn (and runtime warnings/errors) is mirrored
-		// to the owner's private chat with the bot — sent AS the bot (no business
-		// connection), so it never leaks into the managed conversation.
-		if (settings.manager.debugFeed) {
+		// to the owner's private chat with the bot — into the `log` topic when topics
+		// are live, the plain DM otherwise — sent AS the bot (no business connection),
+		// so it never leaks into the managed conversation.
+		if (settings.manager.log) {
 			// Resolve the owner's private-chat id. `allowedUserId` is the configured
 			// owner and the exact DM mode 1 talks to, so it is the reliable target —
 			// the business store can be empty (the manager runs off each message's
@@ -1242,8 +1294,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				const chatId = await ownerChatId();
 				if (chatId === null) return;
 				try {
-					await managerOutbound.notify({ chatId }, html);
+					await managerOutbound.notify(
+						{ chatId, messageThreadId: logThread() },
+						html,
+					);
 				} catch (error) {
+					// A thread that vanished (topic deleted) would fail every card from
+					// here on: drop to the plain DM and retry this one there.
+					if (topics?.active) {
+						topics.fallBack();
+						await managerOutbound.notify({ chatId }, html).catch(() => {});
+						return;
+					}
 					if (!managerFeedWarned) {
 						managerFeedWarned = true;
 						ctx.ui.notify(
@@ -1444,13 +1506,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}, 0);
 	};
 
-	// Send a fresh mode-switcher panel to the owner's DM.
-	const sendSwitchPanel = async (api: ControlApi): Promise<void> => {
+	// Send a fresh mode-switcher panel to the owner's DM. Control output belongs with
+	// the conversation, so with topics on it goes to the `chat` topic — except when
+	// the owner asked from a topic themselves, where the answer stays in that topic.
+	const sendSwitchPanel = async (
+		api: ControlApi,
+		threadId = chatThread(),
+	): Promise<void> => {
 		if (ownerUserId === null) return;
 		const active = activeTarget();
 		await api
 			.sendMessage({
 				chat_id: ownerUserId,
+				message_thread_id: threadId,
 				text: switchPanelText(active),
 				reply_markup: buildSwitchKeyboard(active),
 			})
@@ -1480,7 +1548,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					text,
 				});
 			} else {
-				const sent = await api.sendMessage({ chat_id: ownerUserId, text });
+				const sent = await api.sendMessage({
+					chat_id: ownerUserId,
+					message_thread_id: chatThread(),
+					text,
+				});
 				modePinMessageId = sent.message_id;
 				await api
 					.pinChatMessage({
@@ -1511,6 +1583,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		await api
 			.sendMessage({
 				chat_id: event.chatId,
+				message_thread_id: threadOf(event),
 				text: COMPLIANCE_NOTICE,
 				link_preview_options: { is_disabled: true },
 			})
@@ -1532,7 +1605,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			const text = (event.message.text ?? "").trim();
 			if (isSwitchCommand(text)) {
-				await sendSwitchPanel(api);
+				await sendSwitchPanel(api, threadOf(event) ?? chatThread());
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own
@@ -1542,6 +1615,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await api
 					.sendMessage({
 						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? chatThread(),
 						text: MANAGER_HELP_TEXT,
 						// No preview card — a help message should stay compact, and Telegram
 						// would otherwise card the last URL (the mirror) over the main repo.

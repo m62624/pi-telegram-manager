@@ -69,6 +69,14 @@ export interface ConnectControllerDeps {
 	onAbort?: () => Promise<void>;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
+	/**
+	 * Topic threads in the owner's DM, resolved per send (they appear once the
+	 * router has created them, and vanish again on a fallback to the plain DM):
+	 * the conversation goes to `chat`, tool activity to `log` so the conversation
+	 * stays free of logs. Undefined → the plain DM, i.e. today's behaviour.
+	 */
+	chatThread?: () => number | undefined;
+	logThread?: () => number | undefined;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -114,7 +122,18 @@ export class ConnectController {
 	constructor(private readonly deps: ConnectControllerDeps) {}
 
 	private get target(): OutboundTarget {
-		return { chatId: this.deps.allowedUserId };
+		return {
+			chatId: this.deps.allowedUserId,
+			messageThreadId: this.deps.chatThread?.(),
+		};
+	}
+
+	/** Where observability output goes: the log topic, else the plain DM. */
+	private get logTarget(): OutboundTarget {
+		return {
+			chatId: this.deps.allowedUserId,
+			messageThreadId: this.deps.logThread?.(),
+		};
 	}
 
 	/** Handle an inbound Telegram event. Returns true when it enqueued/edited a turn. */
@@ -314,7 +333,7 @@ export class ConnectController {
 	 */
 	async sendToolActivity(activity: ToolCallActivity): Promise<void> {
 		await this.deps.outbound
-			.sendMessages(this.target, [toolActivityMessage(activity)])
+			.sendMessages(this.logTarget, [toolActivityMessage(activity)])
 			.catch(() => {});
 	}
 

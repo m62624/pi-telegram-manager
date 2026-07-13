@@ -140,11 +140,34 @@ describe("normalizeSettings", () => {
 		).toBe(5);
 	});
 
-	it("defaults debugFeed off and accepts an explicit toggle", () => {
-		expect(normalizeSettings({}).manager.debugFeed).toBe(false);
+	it("defaults the manager log on and accepts an explicit toggle", () => {
+		expect(normalizeSettings({}).manager.log).toBe(true);
+		expect(normalizeSettings({ manager: { log: false } }).manager.log).toBe(
+			false,
+		);
+	});
+
+	it("still honours the former manager.debugFeed key", () => {
 		expect(
-			normalizeSettings({ manager: { debugFeed: true } }).manager.debugFeed,
+			normalizeSettings({ manager: { debugFeed: false } }).manager.log,
+		).toBe(false);
+		// The new key wins when both are present.
+		expect(
+			normalizeSettings({ manager: { debugFeed: false, log: true } }).manager
+				.log,
 		).toBe(true);
+	});
+
+	it("defaults topics on, with chat/log names", () => {
+		expect(normalizeSettings({}).topics).toEqual({
+			enabled: true,
+			chatName: "chat",
+			logName: "log",
+		});
+		expect(
+			normalizeSettings({ topics: { enabled: false, logName: "debug" } })
+				.topics,
+		).toEqual({ enabled: false, chatName: "chat", logName: "debug" });
 	});
 
 	it("defaults strictReplyGuard on and reads an optional ownerName", () => {

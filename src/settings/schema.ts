@@ -46,6 +46,21 @@ export interface TelegramSettings {
 		 */
 		returnToTelegramMs: number;
 	};
+	/**
+	 * Forum topics in the owner's private chat with the bot (Bot API 9.3): the DM is
+	 * split into a `chat` topic (the conversation with the model) and a `log` topic
+	 * (the manager feed, tool activity, notices), so observability never buries the
+	 * conversation. Requires topic mode for the bot (@BotFather → Bot Settings);
+	 * without it — or on any error — everything degrades to the plain single DM.
+	 */
+	topics: {
+		/** Use topics when the bot supports them. Default true. */
+		enabled: boolean;
+		/** Name of the conversation topic. Default "chat". */
+		chatName: string;
+		/** Name of the observability topic. Default "log". */
+		logName: string;
+	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
 	connect: {
@@ -143,9 +158,12 @@ export interface TelegramSettings {
 		/**
 		 * Mirror every manager turn (thinking, tool calls, decision) to the owner's
 		 * private chat with the bot — the bot account is idle in mode 2, so it doubles
-		 * as an observability feed. Default false (opt-in; it is chatty in observer).
+		 * as an observability feed. Default true: with `topics` on it lands in its own
+		 * `log` topic, so it informs without burying the conversation. Without topics
+		 * it shares the single DM and is chatty — turn it off there if that annoys you.
+		 * Reads the former `manager.debugFeed` key when `manager.log` is unset.
 		 */
-		debugFeed: boolean;
+		log: boolean;
 		/**
 		 * The Owner's display name, surfaced to the model so it can introduce itself
 		 * as "{name}'s assistant" on first contact. Optional; when unset the model
@@ -182,6 +200,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	assistant: { rendering: "rich", draftPreviews: true, toolActivity: true },
 	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
 	mixed: { returnToTelegramMs: 480_000 },
+	topics: { enabled: true, chatName: "chat", logName: "log" },
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -199,7 +218,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
-		debugFeed: false,
+		log: true,
 		strictReplyGuard: true,
 		labeler: "LLM agent 🤖:",
 		labelerRule: "────────────",
@@ -290,6 +309,7 @@ const KNOWN_TOP_LEVEL = new Set([
 	"assistant",
 	"connectionCheck",
 	"mixed",
+	"topics",
 	"instructionFiles",
 	"connect",
 	"manager",
@@ -316,6 +336,7 @@ export function normalizeSettings(
 	const assistant = asRecord(root.assistant, "assistant");
 	const connectionCheck = asRecord(root.connectionCheck, "connectionCheck");
 	const mixed = asRecord(root.mixed, "mixed");
+	const topics = asRecord(root.topics, "topics");
 	const connect = asRecord(root.connect, "connect");
 	const manager = asRecord(root.manager, "manager");
 	const observer = asRecord(manager.observer, "manager.observer");
@@ -377,6 +398,11 @@ export function normalizeSettings(
 				"mixed.returnToTelegramMs",
 				d.mixed.returnToTelegramMs,
 			),
+		},
+		topics: {
+			enabled: asBoolean(topics.enabled, "topics.enabled", d.topics.enabled),
+			chatName: asString(topics.chatName, "topics.chatName", d.topics.chatName),
+			logName: asString(topics.logName, "topics.logName", d.topics.logName),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),
 		connect: {
@@ -483,10 +509,13 @@ export function normalizeSettings(
 				"manager.reviseThreshold",
 				d.manager.reviseThreshold,
 			),
-			debugFeed: asBoolean(
-				manager.debugFeed,
-				"manager.debugFeed",
-				d.manager.debugFeed,
+			// Renamed from `manager.debugFeed` (which now that the feed has its own `log`
+			// topic defaults to ON): an existing settings.json keeps working — the old
+			// key is read whenever the new one is unset.
+			log: asBoolean(
+				manager.log ?? manager.debugFeed,
+				"manager.log",
+				d.manager.log,
 			),
 			ownerName: asOptionalString(manager.ownerName, "manager.ownerName"),
 			strictReplyGuard: asBoolean(
