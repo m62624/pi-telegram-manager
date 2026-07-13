@@ -33,6 +33,15 @@ export function archiveName(personalName: string): string {
 	return `${personalName} (archive)`;
 }
 
+/**
+ * The name for a topic Telegram refuses to delete (`TOPIC_ID_INVALID`) and that holds
+ * nothing worth keeping. It cannot be removed, so it is at least named honestly instead
+ * of standing next to the live topic under the same name.
+ */
+export function deadName(personalName: string): string {
+	return `${personalName} (closed)`;
+}
+
 /** Topic icon colors, from the fixed palette Bot API allows. */
 const ICON_COLOR: Record<TopicKind, number> = {
 	personal: 7322096, // 0x6FB9F0 — blue
@@ -99,6 +108,8 @@ export interface TopicsState {
 	archive?: number;
 	/** Whether anything was actually said in the current `personal` this session. */
 	used?: boolean;
+	/** Topics Telegram refused to delete; retried on every later session. */
+	stale?: number[];
 }
 
 /**
@@ -208,6 +219,7 @@ export class TopicRouter {
 				...(personal === stored?.personal && stored?.used
 					? { used: true }
 					: {}),
+				...(stored?.stale !== undefined ? { stale: stored.stale } : {}),
 			};
 			await this.save(state);
 			this.state = state;
@@ -260,7 +272,16 @@ export class TopicRouter {
 	 *    alone. Otherwise a couple of silent restarts would push a real conversation out
 	 *    of the archive with empty topics.
 	 *
-	 * Best-effort: if anything here fails, the session keeps the topic it already has.
+	 * Deleting is NOT guaranteed. Telegram refuses some topics with
+	 * `400: TOPIC_ID_INVALID` — a topic that survived the owner clearing the chat, for
+	 * one — while `editForumTopic` still answers `ok` for the very same id, so nothing
+	 * warns us in advance. Swallowing that refusal is what turned this feature into a
+	 * chip factory: every switch added a topic and removed none. So a refusal is now a
+	 * fact we keep: the topic is renamed out of the way (it must not sit there as a
+	 * second `personal`) and retried on later sessions.
+	 *
+	 * Best-effort: if a fresh topic cannot be created, the session keeps the one it has
+	 * and nothing else is touched.
 	 */
 	async startSession(): Promise<void> {
 		const state = this.state;
@@ -277,33 +298,57 @@ export class TopicRouter {
 		} catch {
 			return; // no fresh topic — carry on in the one we have
 		}
+		// Topics Telegram would not delete before: try again, it may allow it now.
+		const stale: number[] = [];
+		for (const id of state.stale ?? []) {
+			if (!(await this.deleteTopic(id))) stale.push(id);
+		}
 		const outgoing = state.personal;
 		let archive = state.archive;
 		if (state.used) {
-			if (archive !== undefined) await this.deleteTopic(archive);
-			// The icon is the only mark we can put on it: a topic's COLOUR is fixed when
-			// it is created, and this one was created as `personal`.
-			const icon = await this.iconFor("archive");
-			await this.deps.api
-				.editForumTopic({
-					chat_id: this.deps.ownerChatId,
-					message_thread_id: outgoing,
-					name: archiveName(options.personalName),
-					...(icon ? { icon_custom_emoji_id: icon } : {}),
-				})
-				.catch(() => {});
+			if (archive !== undefined && !(await this.deleteTopic(archive))) {
+				stale.push(archive);
+			}
+			await this.rename(outgoing, archiveName(options.personalName), "archive");
 			archive = outgoing;
-		} else {
-			await this.deleteTopic(outgoing);
+		} else if (!(await this.deleteTopic(outgoing))) {
+			// Nothing was said in it, and it will not go away. It must not stay next to
+			// the new topic under the same name, and it must not evict the archive — it
+			// holds nothing worth keeping. Name it for what it is and keep trying later.
+			await this.rename(outgoing, deadName(options.personalName), "archive");
+			stale.push(outgoing);
 		}
+		// Rebuilt rather than spread over the old state: `archive` and `stale` are
+		// decided fresh here, and a stale id that Telegram finally removed must not be
+		// inherited from the state we started with — it would be retried forever.
 		const next: TopicsState = {
-			...state,
+			ownerChatId: state.ownerChatId,
 			personal: fresh,
+			manager: state.manager,
+			names: state.names,
 			used: false,
 			...(archive !== undefined ? { archive } : {}),
+			...(stale.length > 0 ? { stale } : {}),
 		};
 		this.state = next;
 		await this.save(next);
+	}
+
+	/** Rename a topic and re-badge it. Best-effort — a name is not worth a failed start. */
+	private async rename(
+		threadId: number,
+		name: string,
+		icon: keyof typeof ICON_EMOJI,
+	): Promise<void> {
+		const emoji = await this.iconFor(icon);
+		await this.deps.api
+			.editForumTopic({
+				chat_id: this.deps.ownerChatId,
+				message_thread_id: threadId,
+				name,
+				...(emoji ? { icon_custom_emoji_id: emoji } : {}),
+			})
+			.catch(() => {});
 	}
 
 	/**
@@ -348,13 +393,15 @@ export class TopicRouter {
 		});
 	}
 
-	private async deleteTopic(threadId: number): Promise<void> {
-		await this.deps.api
+	/** Delete a topic, and say whether Telegram actually did it (see startSession). */
+	private async deleteTopic(threadId: number): Promise<boolean> {
+		return await this.deps.api
 			.deleteForumTopic({
 				chat_id: this.deps.ownerChatId,
 				message_thread_id: threadId,
 			})
-			.catch(() => {});
+			.then(() => true)
+			.catch(() => false);
 	}
 
 	/**
@@ -479,6 +526,7 @@ export class TopicRouter {
 				names: stored.names,
 				...(stored.archive !== undefined ? { archive: stored.archive } : {}),
 				...(stored.used !== undefined ? { used: stored.used } : {}),
+				...(stored.stale !== undefined ? { stale: stored.stale } : {}),
 			};
 		}
 		if (stored.chat !== undefined && stored.log !== undefined) {

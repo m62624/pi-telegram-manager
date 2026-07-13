@@ -455,3 +455,103 @@ describe("TopicRouter: topic icons", () => {
 		);
 	});
 });
+
+// Telegram refuses to delete some topics with 400: TOPIC_ID_INVALID — one that survived
+// the owner clearing the chat, for instance — while editForumTopic still answers `ok`
+// for the same id, so nothing warns us. Swallowing that refusal turned the rotation into
+// a chip factory: every switch added a topic and removed none.
+describe("TopicRouter: a topic Telegram will not delete", () => {
+	function refusing(ids: number[], firstThread: number) {
+		return fakeApi(
+			{
+				deleteForumTopic: vi.fn(
+					async (args: { chat_id: number; message_thread_id: number }) => {
+						if (ids.includes(args.message_thread_id)) {
+							throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+						}
+						return {};
+					},
+				),
+			},
+			firstThread,
+		);
+	}
+
+	it("names the undeletable topic for what it is, instead of a second `personal`", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi();
+		const a = router(first, fs).router;
+		await a.ensure(); // personal 100
+
+		// A silent session: 100 should be deleted — but Telegram will not have it.
+		const second = refusing([100], 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession();
+
+		expect(b.thread("personal")).toBe(200);
+		expect(second.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 100,
+				name: "personal (closed)",
+			}),
+		);
+	});
+
+	it("retries it on the next session, and forgets it once it is gone", async () => {
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // personal 100
+
+		const second = refusing([100], 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession(); // 100 refused → remembered
+
+		// Next session: Telegram allows it now, so it is deleted and not carried further.
+		const third = fakeApi({}, 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession();
+
+		expect(third.deleteForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+
+		const fourth = fakeApi({}, 400);
+		const d = router(fourth, fs).router;
+		await d.ensure();
+		await d.startSession();
+
+		expect(fourth.deleteForumTopic).not.toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+	});
+
+	it("keeps the archive when the previous one cannot be deleted", async () => {
+		const fs = new FakeFs();
+		const a = router(fakeApi(), fs).router;
+		await a.ensure(); // personal 100
+		await a.markUsed();
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession(); // personal 200, archive 100
+		await b.markUsed();
+
+		// 100 (the archive) is now undeletable: 200 still becomes the archive, and 100 is
+		// renamed out of the way rather than left standing as a second `personal`.
+		const third = refusing([100], 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession();
+
+		expect(c.thread("personal")).toBe(300);
+		expect(third.editForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message_thread_id: 200,
+				name: "personal (archive)",
+			}),
+		);
+	});
+});
