@@ -550,6 +550,8 @@ describe("ConnectController forwards", () => {
 // the bot talking to nobody.
 describe("ConnectController: a message typed outside the personal topic", () => {
 	const PERSONAL = 5;
+	/** A topic that is not the personal one (a topic the owner made themselves). */
+	const FOREIGN = 9;
 
 	function threadEvent(
 		messageId: number,
@@ -571,7 +573,7 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 
 	it("answers in the personal topic, quoting the stray message", async () => {
 		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11));
+		await controller.onEvent(threadEvent(11, FOREIGN));
 		await controller.deliverAssistant("answer");
 
 		expect(api.sent).toHaveLength(1);
@@ -581,7 +583,7 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 
 	it("quotes it once, not on every message of the run", async () => {
 		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11));
+		await controller.onEvent(threadEvent(11, FOREIGN));
 		await controller.deliverAssistant("first");
 		await controller.deliverAssistant("second");
 
@@ -598,9 +600,21 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
 	});
 
-	it("does not quote a later notice — the run is over", async () => {
+	it("leaves a message Telegram gave no topic for alone", async () => {
+		// Live regression: inbound messages arrived with no message_thread_id at all,
+		// which was read as "typed outside the topic" — so the bot quoted the owner's
+		// every word. An absent field is not evidence; only a different topic is.
 		const { controller, api } = setup({ chatThread: () => PERSONAL });
 		await controller.onEvent(threadEvent(11));
+		await controller.deliverAssistant("answer");
+
+		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
+		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
+	});
+
+	it("does not quote a later notice — the run is over", async () => {
+		const { controller, api } = setup({ chatThread: () => PERSONAL });
+		await controller.onEvent(threadEvent(11, FOREIGN));
 		await controller.onAgentEnd([], false);
 		await controller.sendToChat("a notice");
 
@@ -614,13 +628,15 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 			async sendRichMessage(
 				args: Parameters<FakeOutboundApi["sendRichMessage"]>[0],
 			) {
-				if (args.reply_parameters && args.message_thread_id !== undefined) {
+				// Quoting a message that lives in ANOTHER topic (11 is in FOREIGN).
+				if (args.reply_parameters && args.message_thread_id === PERSONAL) {
 					throw new Error("400: message to be replied not found");
 				}
 				return super.sendRichMessage(args);
 			}
 			async sendMessage(args: Parameters<FakeOutboundApi["sendMessage"]>[0]) {
-				if (args.reply_parameters && args.message_thread_id !== undefined) {
+				// Quoting a message that lives in ANOTHER topic (11 is in FOREIGN).
+				if (args.reply_parameters && args.message_thread_id === PERSONAL) {
 					throw new Error("400: message to be replied not found");
 				}
 				return super.sendMessage(args);
@@ -636,11 +652,11 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 			abort: new AbortRegistry(),
 			chatThread: () => PERSONAL,
 		});
-		await controller.onEvent(threadEvent(11));
+		await controller.onEvent(threadEvent(11, FOREIGN));
 		await controller.deliverAssistant("answer");
 
 		expect(api.sent).toHaveLength(1);
-		expect(api.sent[0].message_thread_id).toBeUndefined();
+		expect(api.sent[0].message_thread_id).toBe(FOREIGN);
 		expect(api.sent[0].reply_parameters).toEqual({ message_id: 11 });
 	});
 });

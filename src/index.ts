@@ -1156,14 +1156,39 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * swallowed in silence (the router still pointed at a dead thread). So an
 	 * unexpected thread re-checks the topics, recreates whatever is gone, and the
 	 * message is taken as personal: the reply lands in the fresh `personal` topic.
+	 *
+	 * A message with NO thread is not "unexpected": Telegram simply did not say which
+	 * topic it belongs to, which is the normal shape of an inbound message in a bot DM.
+	 * Re-checking on those meant three API calls per message the owner typed — and
+	 * proved nothing. A topic that really is gone is caught where it matters: the send
+	 * fails, and that path recreates it.
 	 */
 	const acceptAsPersonal = async (event: TelegramEvent): Promise<boolean> => {
 		if (!topics?.active) return true;
 		const thread = threadOf(event);
-		if (thread === personalThread()) return true;
+		reportTopicRouting(event);
+		if (thread === undefined || thread === personalThread()) return true;
 		if (thread === managerThread()) return false;
 		await topics.revalidate();
 		return true;
+	};
+
+	/**
+	 * Say ONCE per run what Telegram actually reports about the topic of an owner
+	 * message. Which topic an inbound message belongs to is the one thing we cannot
+	 * verify from here — clients disagree, and a wrong guess is what made the bot
+	 * quote every message. So the raw fields are printed rather than assumed.
+	 */
+	let topicRoutingReported = false;
+	const reportTopicRouting = (event: TelegramEvent): void => {
+		if (topicRoutingReported) return;
+		if (event.kind !== "message") return;
+		topicRoutingReported = true;
+		const message = event.message;
+		activeCtx?.ui.notify(
+			`Telegram topics: your message reports message_thread_id=${message.message_thread_id ?? "none"}, ` +
+				`is_topic_message=${message.is_topic_message ?? false} — personal topic is ${personalThread() ?? "none"}.`,
+		);
 	};
 
 	/**

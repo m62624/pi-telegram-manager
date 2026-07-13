@@ -161,8 +161,8 @@ export class ConnectController {
 	/** The open forward batch, so a burst of forwards reaches the model as one turn. */
 	private readonly forwards: ForwardBursts;
 	/**
-	 * Owner messages typed OUTSIDE the personal topic (the "All" view, the plain DM,
-	 * a topic of their own): message id → the thread it was typed in.
+	 * Owner messages Telegram places in a topic that is NOT the personal one:
+	 * message id → that thread.
 	 *
 	 * Telegram cannot move a message between topics, so such a message stays where it
 	 * was written while the answer goes to the personal topic — the topic then reads
@@ -170,10 +170,9 @@ export class ConnectController {
 	 * legible: the answer is sent as a REPLY to that message, which quotes it. Bounded,
 	 * so a long run of stray messages cannot grow this without limit.
 	 */
-	private readonly strayMessages = new Map<number, number | undefined>();
+	private readonly strayMessages = new Map<number, number>();
 	/** The stray message the running turn answers; consumed by that turn's first send. */
-	private strayReply: { messageId: number; thread: number | undefined } | null =
-		null;
+	private strayReply: { messageId: number; thread: number } | null = null;
 
 	constructor(private readonly deps: ConnectControllerDeps) {
 		this.forwards = new ForwardBursts(this.forwardPolicy);
@@ -219,13 +218,22 @@ export class ConnectController {
 		};
 	}
 
-	/** Remember a message the owner typed outside the personal topic. */
+	/**
+	 * Remember a message the owner typed outside the personal topic — but only on
+	 * POSITIVE evidence that it was.
+	 *
+	 * An inbound message carries `message_thread_id` only when Telegram says which
+	 * topic it belongs to. When the field is absent we do NOT know that the owner
+	 * typed outside the topic — we know nothing at all, and treating that as "stray"
+	 * made the bot quote every single message the owner sent.
+	 */
 	private noteStray(message: Message): void {
 		const personal = this.deps.chatThread?.();
 		// No topics at all (or none resolved yet): the DM is one stream, nothing strays.
 		if (personal === undefined) return;
-		if (message.message_thread_id === personal) return;
-		this.strayMessages.set(message.message_id, message.message_thread_id);
+		const thread = message.message_thread_id;
+		if (thread === undefined || thread === personal) return;
+		this.strayMessages.set(message.message_id, thread);
 		if (this.strayMessages.size > MAX_STRAY_MESSAGES) {
 			const oldest = this.strayMessages.keys().next();
 			if (!oldest.done) this.strayMessages.delete(oldest.value);
@@ -234,12 +242,12 @@ export class ConnectController {
 
 	/** Claim the stray message this turn was built from, if any (it is answered once). */
 	private takeStray(sourceMessageIds: readonly number[]) {
-		let claimed: { messageId: number; thread: number | undefined } | null =
-			null;
+		let claimed: { messageId: number; thread: number } | null = null;
 		for (const id of sourceMessageIds) {
-			if (!this.strayMessages.has(id)) continue;
+			const thread = this.strayMessages.get(id);
+			if (thread === undefined) continue;
 			// An album/forward batch is several messages but ONE question: quote the first.
-			claimed ??= { messageId: id, thread: this.strayMessages.get(id) };
+			claimed ??= { messageId: id, thread };
 			this.strayMessages.delete(id);
 		}
 		return claimed;
