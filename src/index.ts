@@ -68,6 +68,10 @@ import {
 	lastInterlocutorUserId,
 	selectCatchUpChats,
 } from "./modes/manager/catchup";
+import {
+	type ConnectionAlert,
+	connectionAlerts,
+} from "./modes/manager/connection-health";
 import { toRebuiltMessages } from "./modes/manager/context-isolation";
 import {
 	ManagerController,
@@ -262,6 +266,32 @@ const REPLY_RIGHT_NOTICE = [
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
 ].join("\n");
+
+/**
+ * The rights of a live connection are changed in the Telegram app, and Telegram
+ * reports it once. Without these notices the manager just goes quiet: revoking
+ * `can_reply` mid-run leaves it reading every chat and failing every send, which
+ * from the outside is indistinguishable from a bot that decided to say nothing.
+ */
+const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
+	disabled: [
+		"⛔ The Secretary connection to this bot was just switched OFF.",
+		"It no longer receives your chats and cannot answer them.",
+		"",
+		"Turn it back on: Telegram → Settings → Business / Secretary → Chatbots.",
+	].join("\n"),
+	enabled:
+		"✅ The Secretary connection is back on — the manager is listening again.",
+	reply_right_lost: [
+		"⛔ This bot just LOST the right to reply on your behalf.",
+		"It still reads every managed chat and can answer none of them.",
+		"",
+		"Restore it: Telegram → Settings → Business / Secretary → Chatbots →",
+		"this bot → allow it to reply to messages.",
+	].join("\n"),
+	reply_right_restored:
+		"✅ The right to reply is back — the manager can answer again.",
+};
 
 /**
  * Sent when nothing has proved the Secretary connection yet. It cannot be checked
@@ -839,11 +869,31 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await learnBusinessConnection(event.connectionId);
 		}
 		if (event.kind === "business_connection") {
+			// Read the stored record BEFORE the update overwrites it: what the owner
+			// needs to hear is the TRANSITION (the right was just taken away), not the
+			// state (it is absent), which the startup check already reports.
+			const previous = await businessStore.get(event.connectionId);
 			await manager.onBusinessConnection({
 				connectionId: event.connectionId,
 				connection: event.connection,
 				isEnabled: event.isEnabled,
 			});
+			const alerts = connectionAlerts(
+				previous
+					? { canReply: previous.canReply, isEnabled: previous.isEnabled }
+					: null,
+				{
+					canReply: event.connection.rights?.can_reply,
+					isEnabled: event.isEnabled,
+				},
+			);
+			for (const alert of alerts) {
+				const good = alert === "enabled" || alert === "reply_right_restored";
+				await notifyOwner(
+					CONNECTION_ALERT_NOTICES[alert],
+					good ? "info" : "warning",
+				);
+			}
 		} else if (event.kind === "business_message") {
 			await manager.onBusinessMessage({
 				connectionId: event.connectionId,
@@ -1182,6 +1232,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * this extension rather than a setting nobody flipped. Checked on every manager /
 	 * mixed start; best-effort, never blocks the start.
 	 */
+	/**
+	 * Say something to the owner in their own DM (and in the terminal). Unlike the
+	 * startup check, this fires from live traffic, where there is no Pi command
+	 * context — it rides the manager client and the owner id captured on mode start.
+	 * Best-effort: a diagnostic must never break the update it rode in on.
+	 */
+	const notifyOwner = async (
+		text: string,
+		level: "info" | "warning" = "warning",
+	): Promise<void> => {
+		activeCtx?.ui.notify(text.split("\n")[0] ?? text, level);
+		const api = managerClient?.api as unknown as ControlApi | undefined;
+		if (!api || ownerUserId === null) return;
+		await api
+			.sendMessage({
+				chat_id: ownerUserId,
+				text,
+				link_preview_options: { is_disabled: true },
+			})
+			.catch(() => {});
+	};
+
 	const checkSecretarySetup = async (
 		api: unknown,
 		ownerChatId: number,
@@ -1218,9 +1290,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			// `canReply` is undefined on older connections we stored before the field
-			// existed; only an explicit false is a real problem.
-			if (enabled.every((c) => c.canReply === false)) {
-				await warn(REPLY_RIGHT_NOTICE);
+			// existed; only an explicit false is a real problem. ANY muted connection is
+			// worth saying out loud: with `every`, a second working account silenced the
+			// warning for the broken one, which is precisely the case you cannot see from
+			// the inside.
+			const muted = enabled.filter((c) => c.canReply === false);
+			if (muted.length > 0) {
+				const named =
+					muted.length === enabled.length
+						? REPLY_RIGHT_NOTICE
+						: `${REPLY_RIGHT_NOTICE}\n\nAffected account(s): ${muted
+								.map((c) => c.userName ?? c.userId)
+								.join(", ")}`;
+				await warn(named);
 			}
 		} catch {
 			// A probe failure is not worth blocking a mode start over.
