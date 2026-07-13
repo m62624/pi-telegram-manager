@@ -18,7 +18,7 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
 | `assistant.rendering` | `"rich"` | replaces | `"rich"` (native Bot API rich Markdown) or `"html"`. |
-| `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates. |
+| `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates, and — before the first word of it exists — show what the agent is doing right now (`Thinking…`, then the tool it is running). The draft is ephemeral: it animates in place and leaves nothing in the chat history. Mixed mode shows it on coding turns only; a manager turn never does (a draft cannot be sent over a business connection). |
 | `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block — turns the bot DM into a live log of the model's work in Personal mode. |
 | `connect.instructionFiles` | `[]` | **appended** | Extra instruction files for Personal mode only. |
 

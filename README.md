@@ -57,7 +57,7 @@ Binds your **current Pi terminal session** to your **private chat with the bot**
 
 - Send text, files and images; the bot saves non-image files to disk and hands the model real paths ([`files.downloadDir`](SETTINGS.md#files)), so it can open them with its normal tools.
 - You see the model **work**, not just its conclusion: each message it writes is delivered as it finishes, and each tool call is mirrored as a collapsible block ([`assistant.toolActivity`](SETTINGS.md#assistant-personal-mode)).
-- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)).
+- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)). The wait before the first word is not blank either: an animated placeholder shows what the agent is doing (`Thinking…`, then `bash — npm test`) and dissolves into the reply as it starts streaming.
 - Messages you send while it is busy are **queued**, not dropped; editing a queued message rewrites it in place.
 - **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)) — a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
 - The bot talks only to **you** (`allowedUserId`) and touches no other chats.
