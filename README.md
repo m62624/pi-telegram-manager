@@ -92,13 +92,13 @@ Every branch of this is enforced in **code**. The model is only ever asked the q
   ─────────────────────────────────────────────────────────────────────────
   ✓ TURN  →  the model is given ONE chat and must end with ONE tool:
              manager_reply (answer)  ·  manager_silent (nothing was asked)
-             then that chat keeps a 1:30 fast lane, so a live back-and-forth
+             then that chat keeps a 2:00 fast lane, so a live back-and-forth
              is not made to wait five minutes over again
 ```
 
 **A message of yours also does three things**, none of which is "answer me":
 
-1. **closes the 1:30 fast lane** in that chat — you are present, so the bot goes back to letting you answer first;
+1. **closes the 2:00 fast lane** in that chat — you are present, so the bot goes back to letting you answer first;
 2. **holds any draft it was writing** right then: it is reconsidered against what you just said, and sent, refined, or dropped — never fired off over your head;
 3. **and nothing else.** It does not switch the bot off in that chat: the next message from that person arms a new window, and if you let that one hang, the bot answers it.
 
@@ -144,7 +144,7 @@ The decision rules are in [the algorithm above](#the-algorithm-in-full). This is
 Messages from many people arrive at once; the model handles **one chat per turn**, so it is never confused about who it is talking to. The scheduler picks the next chat by:
 
 1. **never-replied chats first** — someone who has not heard back yet outranks an ongoing conversation;
-2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **1:30**) — right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
+2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **2:00**) — right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
 
 ### Wake-words — how the bot knows it is being addressed
 
@@ -164,7 +164,7 @@ Being addressed **in substance** works too ("what does the bot think?") — but 
 - **Every turn ends in a tool call**, never in prose. Prose is never delivered to Telegram — if the model writes an answer as plain text, it is **held as a draft** and handed back with one instruction: send it, refine it, or drop it. That way a composed answer is never lost, and never sent by accident.
 - **The same happens when new messages land mid-reply**: the draft is held and reconsidered against them, up to [`manager.reviseThreshold`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) times (default **2**), then sent as-is.
 - **The chatter guard** ([`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **on**): a reply the model itself tagged as chatter/acknowledgement — or as not needing an answer — is dropped unless the interlocutor addressed the bot directly. This is what stops a weak model from cheerfully joining a conversation between two other people.
-- **Backlog is not "woken"** ([`manager.liveFreshnessMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **2 min**): a message redelivered long after it was sent is recorded as context but does not start a live reply cycle.
+- **Backlog is not "woken"** ([`manager.liveFreshnessMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 min**): after a reconnect Telegram redelivers what the bot missed, so a message is judged by its *true send time* — anything older is kept as context but starts no reply cycle, and a conversation that ended yesterday cannot wake the bot. A message delayed in transit still counts as live, which is why this sits well above the owner window.
 - **Catch-up on start** ([`manager.catchUpWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 h**): when a mode starts, chats whose last message is not yours and is still recent get answered — so switching the bot on does not silently ignore what waited for it.
 - **Re-greeting** ([`manager.reopenAfterMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **24 h**): a conversation resuming after a long silence is greeted rather than continued mid-sentence.
 - **The sandbox.** While the manager holds the session the model has **no computer access** — only its messaging tools. It cannot read your files, run commands, or ask you anything, and a blocked call steers it back. Extra tools can be allowed explicitly ([`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)).
@@ -307,6 +307,42 @@ npm run build     # tsc (typecheck)
 npm run ci        # check + build + test + pack --dry-run
 pi -e ./src/index.ts
 ```
+
+---
+
+## Provenance, forks, and who answers for what
+
+The bot answers real people on your behalf, so it matters that you can tell the
+real thing from something wearing its name.
+
+**Where it is published from.** Two places, both mine:
+[npm](https://www.npmjs.com/package/pi-telegram-manager) and
+[github.com/m62624/pi-telegram-manager](https://github.com/m62624/pi-telegram-manager)
+(mirrored to [tangled](https://tangled.org/m62624.tngl.sh/pi-telegram-manager)).
+Releases are built by GitHub Actions and published with npm **trusted publishing**,
+which attaches a signed [provenance attestation](https://docs.npmjs.com/generating-provenance-statements)
+binding the tarball to the commit it was built from — `npm audit signatures` checks
+it. A package that cannot show provenance pointing at this repository was not built
+here, whatever its README says.
+
+**What the code guarantees.** Two behaviours are bundled into the instructions and
+reachable by no setting: the manager introduces itself as an AI assistant to anyone
+it has no history with, and it answers truthfully when asked whether it is a bot.
+The block that says so is appended after your own instruction files, so your text
+cannot outweigh it. Everything else — tone, name, banner, subjects — is yours to
+configure.
+
+**What a fork can do, and what it cannot.** MIT means anyone may fork this, delete
+that block, and ship the result. That is the deal, and I would not change it. But a
+fork is not this project: I cannot vouch for one, patch one, or answer for one.
+Whoever strips the disclosure and points a bot at real people is the person who did
+that — and under Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers)
+the developer is *"you"*: the account that holds the bot's credentials. Running a
+bot honestly is a choice each operator makes on their own machine. This one is built
+to make the honest choice the easy one.
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability and how to verify a
+release.
 
 ---
 

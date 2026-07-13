@@ -246,12 +246,12 @@ export function createManagerTools(
 		type: "string",
 		enum: MESSAGE_CATEGORIES,
 		description:
-			"Classify the latest interlocutor message first: 'question' (wants an answer), 'addressed_to_bot' (you are called by name or as the AI), 'acknowledgement' (ok/thanks/reaction), or 'chatter' (small talk/emoji).",
+			"Classify the latest interlocutor message first: 'question' (wants an answer — including a personal one asked of the owner, such as 'where are you?' or 'what are you doing?', however casual its tone), 'addressed_to_bot' (you are called by name or as the AI), 'acknowledgement' (ok/thanks/reaction, or the answer to something the owner asked for), or 'chatter' (banter between other people, emoji, jokes that ask nothing of anyone). This is a decision, not a comment: a reply you tag 'chatter' or 'acknowledgement' is DISCARDED unless you were addressed by name. If you are answering it, it is a 'question'.",
 	};
 	const needsReplyParam = {
 		type: "boolean",
 		description:
-			"Your own check: does this message actually require a reply? Reactions and chatter usually do not.",
+			"Your own check: does this message actually require a reply? Reactions and banter usually do not. Setting false while calling manager_reply contradicts itself and your reply will be discarded — if you are replying, this is true.",
 	};
 
 	const managerReply = defineTool({
