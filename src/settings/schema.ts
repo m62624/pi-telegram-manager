@@ -32,6 +32,21 @@ export interface TelegramSettings {
 		 * already in the card.
 		 */
 		toolOutputMaxBytes: number;
+		/**
+		 * Where the full-output files are written before being sent (mode 1). Unset →
+		 * the extension's own directory (`<agent>/extensions/pi-telegram-manager/
+		 * tool-output`), never the system temp dir.
+		 *
+		 * POSIX and Windows paths are both accepted, since the same settings file may
+		 * travel between machines: `/var/log/pi`, `~/logs`, `C:\logs`, `D:/logs`,
+		 * `\\server\share`. A leading `~` expands to the home directory. The path is
+		 * used as written — a Windows path on Linux fails as a missing directory rather
+		 * than being silently rewritten into some other one.
+		 *
+		 * Each file is deleted right after it is sent; the directory only ever holds
+		 * files in flight.
+		 */
+		toolOutputDir?: string;
 	};
 	/**
 	 * Background connection watchdog (both modes). While a mode is active the bot
@@ -448,6 +463,10 @@ export function normalizeSettings(
 				assistant.toolOutputMaxBytes,
 				"assistant.toolOutputMaxBytes",
 				d.assistant.toolOutputMaxBytes,
+			),
+			toolOutputDir: asOptionalString(
+				assistant.toolOutputDir,
+				"assistant.toolOutputDir",
 			),
 		},
 		connectionCheck: {

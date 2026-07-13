@@ -1,36 +1,39 @@
 /**
- * Decide whether the tool's OWN full-output file should be attached to the chat.
+ * Decide whether the FULL output of a tool call should be attached to the chat.
  *
- * When a tool truncates its output for the model, it writes the whole thing to a
- * file and reports the path (`details.fullOutputPath`). That file is the answer to
- * "… (75 earlier lines)" — but it sits on the machine running Pi, useless to
- * anyone reading Telegram on a phone. Attaching it closes that gap.
+ * A card can only show so much. When it stops at "… (59 earlier lines)", the rest
+ * has to be reachable, or the card is just teasing. There are two ways the rest
+ * exists, and the reason this module is not a one-liner:
  *
- * Two rules, both the owner's:
- *  - only when the output was actually TRUNCATED — a complete result is already in
- *    the card, and sending it again as a file is noise;
- *  - only up to `maxBytes`, because the person reading this may be on mobile data.
- *    `0` disables attachment entirely.
+ *  - the TOOL truncated its own output for the model, and saved the whole thing to
+ *    a file (`details.fullOutputPath`) — a file we can send as it is;
+ *  - the tool returned everything, and WE truncated it to fit the card — so the
+ *    full output is in hand, and we can save it ourselves.
  *
- * This is deliberately OUR decision, not the model's: the agent would have to spend
- * a turn deciding, and would get it wrong. Pure and structural, so the rule is
- * testable without a filesystem or a bot.
+ * Only the first case existed at first, which produced exactly the wrong answer for
+ * `find … | head -100`: a hundred lines is nothing to the tool's limits, so it
+ * truncated nothing and saved no file, while our own card cut it at 2500 characters
+ * and offered nothing to open. Truncation is truncation, whoever did it.
+ *
+ * Both are capped by the owner's byte limit (`0` disables attachment entirely) —
+ * whoever reads this may be on mobile data. And it stays OUR decision, never the
+ * model's: it is a mechanical rule, and asking the agent would cost a turn and
+ * invite it to get it wrong.
  */
 
-/** The tool metadata we read (the SDK's `details`, narrowed). */
-export interface ToolOutputDetails {
-	fullOutputPath?: unknown;
-	truncation?: { truncated?: unknown } | unknown;
-}
-
 export type AttachSkipReason =
+	/** `toolOutputMaxBytes` is 0. */
 	| "disabled"
-	| "no_file"
+	/** Nothing was truncated: the card already shows the whole result. */
 	| "not_truncated"
+	/** Past the owner's byte cap. */
 	| "too_large";
 
-export type AttachDecision =
-	| { attach: true; path: string }
+export type AttachPlan =
+	/** The tool saved the log itself; send that file. */
+	| { attach: "file"; path: string }
+	/** We hold the full output; write it out and send it. */
+	| { attach: "text"; text: string }
 	| { attach: false; reason: AttachSkipReason };
 
 /** Whether the tool says it truncated. Absent metadata means "no claim" → no. */
@@ -48,23 +51,89 @@ export function fullOutputPath(details: unknown): string | undefined {
 	return typeof path === "string" && path.trim() ? path : undefined;
 }
 
-/**
- * Decide, given the tool's metadata and the file's size on disk. `sizeBytes` is
- * `undefined` when the file could not be measured (it vanished, or was never
- * written) — that is a skip, not an error: the card still names the path.
- */
-export function decideAttachment(input: {
+export interface AttachmentInput {
+	/** The tool's own metadata (`fullOutputPath`, `truncation`). */
 	details: unknown;
+	/** The tool's output as we have it, already unwrapped from the SDK envelope. */
+	text: string;
+	/** How many characters of it the card actually shows. */
+	shownChars: number;
+	/** The owner's cap in bytes; `0` never attaches. */
 	maxBytes: number;
-	sizeBytes: number | undefined;
-}): AttachDecision {
-	const { details, maxBytes, sizeBytes } = input;
+	/** Size of the tool's own saved file, when it has one and it could be measured. */
+	toolFileBytes?: number;
+}
+
+export function planAttachment(input: AttachmentInput): AttachPlan {
+	const { details, text, shownChars, maxBytes, toolFileBytes } = input;
 	if (maxBytes <= 0) return { attach: false, reason: "disabled" };
+
+	// The tool's own file wins when it exists: it holds the output in FULL, while the
+	// text we were handed is the copy the tool already cut down for the model.
 	const path = fullOutputPath(details);
-	if (!path || sizeBytes === undefined) {
-		return { attach: false, reason: "no_file" };
+	if (wasTruncated(details) && path !== undefined) {
+		if (toolFileBytes === undefined) {
+			// The path was reported but the file is unreadable/gone. Fall through: what
+			// we hold is still better than nothing, if the card cut it.
+		} else if (toolFileBytes > maxBytes) {
+			return { attach: false, reason: "too_large" };
+		} else {
+			return { attach: "file", path };
+		}
 	}
-	if (!wasTruncated(details)) return { attach: false, reason: "not_truncated" };
-	if (sizeBytes > maxBytes) return { attach: false, reason: "too_large" };
-	return { attach: true, path };
+
+	// Nobody truncated: the card shows everything, and a file would be a duplicate.
+	if (text.length <= shownChars) {
+		return { attach: false, reason: "not_truncated" };
+	}
+	if (byteLength(text) > maxBytes)
+		return { attach: false, reason: "too_large" };
+	return { attach: "text", text };
+}
+
+/** UTF-8 size, not character count — the cap is in bytes, and text is not ASCII. */
+export function byteLength(text: string): number {
+	return Buffer.byteLength(text, "utf8");
+}
+
+/**
+ * A filename for the output we save ourselves. Windows forbids `:` `\` `/` `*` `?`
+ * `"` `<` `>` `|` in a name — and a timestamp is the first thing that would smuggle
+ * a colon in — so everything outside a safe set is folded to `-`.
+ */
+export function toolOutputFileName(toolName: string, at: number): string {
+	const safeTool =
+		toolName.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 40) || "tool";
+	return `${safeTool}-${at}.log`;
+}
+
+/**
+ * Where those files go. Defaults to the extension's own directory — never the
+ * system temp dir, so the path is ours on every platform — and the owner may point
+ * it anywhere with `assistant.toolOutputDir`.
+ *
+ * Both path flavours are accepted, because the same `settings.json` may be carried
+ * between machines: POSIX (`/var/log/pi`, `~/logs`), Windows absolute (`C:\logs`,
+ * `D:/logs`), and UNC (`\\server\share`). A leading `~` expands to the home
+ * directory on either platform. Nothing is rewritten beyond that: a path is passed
+ * to the filesystem as the user wrote it, and a Windows path on Linux fails as a
+ * missing directory — an honest error — rather than being quietly "fixed" into
+ * some other directory.
+ */
+export function resolveToolOutputDir(
+	configured: string | undefined,
+	fallbackDir: string,
+	homeDir: string,
+): string {
+	const raw = configured?.trim();
+	if (!raw) return fallbackDir;
+	if (raw === "~") return homeDir;
+	// `~/x` and `~\x` — the second is what a Windows user will type by habit.
+	if (raw.startsWith("~/") || raw.startsWith("~\\")) {
+		const rest = raw.slice(2);
+		const separator =
+			homeDir.includes("\\") && !homeDir.includes("/") ? "\\" : "/";
+		return `${homeDir.replace(/[/\\]$/, "")}${separator}${rest}`;
+	}
+	return raw;
 }

@@ -34,6 +34,13 @@ export interface TelegramPaths {
 	contactsDir: string;
 	/** Working directory a mode-2 manager session is opened in. */
 	managerWorkspaceDir: string;
+	/**
+	 * Scratch directory for full tool outputs we save ourselves before attaching them
+	 * (see `core/tool-output-file`). Inside the extension dir — never the system temp
+	 * dir — so the path is ours on every platform and the file is deleted right after
+	 * it is sent.
+	 */
+	toolOutputDir: string;
 	/** JSONL transcript path for one chat. */
 	chatFile(chatId: string): string;
 	/** JSON profile + facts path for one contact (keyed by Telegram user id). */
@@ -44,6 +51,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 	const extensionDir = join(agentDir, "extensions", EXTENSION_NAME);
 	const chatsDir = join(extensionDir, "chats");
 	const contactsDir = join(extensionDir, "contacts");
+	const toolOutputDir = join(extensionDir, "tool-output");
 	return {
 		agentDir,
 		extensionDir,
@@ -58,6 +66,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		chatsDir,
 		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),
+		toolOutputDir,
 		chatFile: (chatId) => join(chatsDir, `${sanitizeSegment(chatId)}.jsonl`),
 		contactFile: (userId) =>
 			join(contactsDir, `${sanitizeSegment(userId)}.json`),

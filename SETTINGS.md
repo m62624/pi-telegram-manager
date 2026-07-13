@@ -20,19 +20,34 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | `assistant.rendering` | `"rich"` | replaces | `"rich"` (native Bot API rich Markdown) or `"html"`. |
 | `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates, and — before the first word of it exists — show what the agent is doing right now (`Thinking…`, then the tool it is running). The draft is ephemeral: it animates in place and leaves nothing in the chat history. Mixed mode shows it on coding turns only; a manager turn never does (a draft cannot be sent over a business connection). |
 | `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block — turns the bot DM into a live log of the model's work in Personal mode. The card completes itself when the call returns: ✅ or ❌ (⏹️ if `/esc` caught it mid-flight), with the output folded in. |
-| `assistant.toolOutputMaxBytes` | `26214400` (25 MiB) | replaces | Size cap **in bytes** for attaching a tool's own full-output file. See below. |
+| `assistant.toolOutputMaxBytes` | `26214400` (25 MiB) | replaces | Size cap **in bytes** for attaching the full output of a tool call. `0` never attaches. See below. |
+| `assistant.toolOutputDir` | *(extension dir)* | replaces | Where those files are written before being sent. POSIX and Windows paths both accepted. |
 | `connect.instructionFiles` | `[]` | **appended** | Extra instruction files for Personal mode only. |
 
-### The full-output file (`assistant.toolOutputMaxBytes`)
+### The full output of a tool call
 
-When a tool's output is too big for the model, the tool truncates it **and saves the whole thing to a file** on the machine running Pi. The card then stops at `… (75 earlier lines)` and names a path you cannot open from a phone.
+A card can only show so much: past `assistant`'s result limit it stops at `… (59 earlier lines)`. The rest has to be reachable, or the card is only teasing — so the extension attaches the full output as a file. It comes from one of two places, and you never have to care which:
 
-So the extension attaches that file to the chat itself. Two rules, and both are yours:
+- the **tool** truncated its own output for the model and saved the whole thing to a file → that file is sent;
+- the tool returned everything and **the card** is what cut it (a `find … | head -100`, say) → the extension writes the full output out itself and sends that.
 
-- **only when the output was actually truncated.** A complete result is already in the card; sending it again as a file would be noise.
-- **only up to `toolOutputMaxBytes`.** Above the cap, the card just names the path. Set it low if you read Telegram on metered mobile data (`1048576` = 1 MiB), or `0` to never attach anything.
+Two rules, and both are yours:
 
-This is not `files.maxBytes` — that one governs files **you** send the bot. This one governs logs the bot sends **you**, unasked, which is why it has its own cap. The extension decides this mechanically; the agent is not asked and cannot choose to spam you with logs.
+- **only when something was actually truncated.** If the card shows the whole result, a file would just be a duplicate.
+- **only up to `toolOutputMaxBytes`.** Over the cap, nothing is attached. Cap it low if you read Telegram on metered mobile data (`1048576` = 1 MiB), or set `0` to never attach anything.
+
+This is not `files.maxBytes` — that governs files **you** send the bot. This one governs logs the bot sends **you**, unasked, which is why it has a cap of its own. The extension decides it mechanically: the agent is never asked, so it cannot decide to bury you in logs.
+
+**Where the files go.** By default into the extension's own directory (`<agent>/extensions/pi-telegram-manager/tool-output`) — never the system temp dir — and each one is deleted the moment it has been sent. Point `toolOutputDir` anywhere you like; both path flavours are accepted, since the same `settings.json` may travel between machines:
+
+```jsonc
+"assistant": {
+  "toolOutputMaxBytes": 1048576,   // 1 MiB — mobile data
+  "toolOutputDir": "~/logs/pi"     // or "/var/log/pi", "C:\\logs", "D:/logs", "\\\\server\\share"
+}
+```
+
+A leading `~` expands to your home directory on either platform (`~\logs` works too). Beyond that the path is used exactly as written: a Windows path on Linux fails as a missing directory — an honest error — instead of being quietly rewritten into some other one.
 
 ## `mixed` (mixed mode)
 

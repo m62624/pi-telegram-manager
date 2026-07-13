@@ -16,6 +16,7 @@
  * context; `sendUserMessage` is used from the top-level `pi` for the same
  * reason.
  */
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
 	BusinessConnection,
@@ -45,7 +46,12 @@ import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
-import { decideAttachment, fullOutputPath } from "./core/tool-output-file";
+import {
+	fullOutputPath,
+	planAttachment,
+	resolveToolOutputDir,
+	toolOutputFileName,
+} from "./core/tool-output-file";
 import type { TurnSavedFile } from "./core/turns";
 import {
 	loadConnectInstructions,
@@ -167,7 +173,11 @@ import {
 	switchPanelText,
 } from "./telegram/switch-panel";
 import { ThinkingLog } from "./telegram/thinking-log";
-import { toolActivityHint } from "./telegram/tool-activity";
+import {
+	DEFAULT_MAX_RESULT_CHARS,
+	toolActivityHint,
+	unwrapToolResult,
+} from "./telegram/tool-activity";
 import {
 	placeOfOwnerMessage,
 	TopicRouter,
@@ -516,6 +526,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let toolActivityEnabled = false;
 	// Byte cap for attaching a tool's own full-output file; 0 = never attach.
 	let toolOutputMaxBytes = 0;
+	// Where we write a full output we saved ourselves (owner-configurable).
+	let toolOutputDir = paths.toolOutputDir;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
 	// The turn's live trace — the steps taken so far and the one running — shown in
@@ -1137,17 +1149,36 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!connect || toolOutputMaxBytes <= 0) return;
 		const details = (result as { details?: unknown } | undefined)?.details;
 		const path = fullOutputPath(details);
-		if (!path) return;
-		const decision = decideAttachment({
+		const plan = planAttachment({
 			details,
+			text: unwrapToolResult(result),
+			shownChars: DEFAULT_MAX_RESULT_CHARS,
 			maxBytes: toolOutputMaxBytes,
-			sizeBytes: await fs.size(path),
+			toolFileBytes: path ? await fs.size(path) : undefined,
 		});
-		if (!decision.attach) return;
-		await connect.attachToolOutput(
-			decision.path,
-			`📄 full output — ${toolName}`,
+		if (plan.attach === false) return;
+		const caption = `📄 full output — ${toolName}`;
+		if (plan.attach === "file") {
+			await connect.attachToolOutput(plan.path, caption);
+			return;
+		}
+		// Nobody saved this but us: the tool returned everything and the CARD is what
+		// cut it. Write it out inside the extension dir (never the system temp dir, so
+		// the path is ours on every platform), send it, and delete it — this file has
+		// no life beyond the message it rode in on.
+		const scratch = join(
+			toolOutputDir,
+			toolOutputFileName(toolName, Date.now()),
 		);
+		try {
+			await fs.writeText(scratch, plan.text);
+			await connect.attachToolOutput(scratch, caption);
+		} catch {
+			// A scratch file we could not write or send is not worth a word to the user:
+			// the card still carries the truncated output.
+		} finally {
+			await fs.removeFile(scratch).catch(() => {});
+		}
 	};
 
 	// Live streaming preview: open a draft when the assistant message starts and
@@ -1805,6 +1836,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
 		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
+		toolOutputDir = resolveToolOutputDir(
+			settings.assistant.toolOutputDir,
+			paths.toolOutputDir,
+			homedir(),
+		);
 		visibility.setActive("connect", true);
 		return connect;
 	};

@@ -61,8 +61,13 @@ export interface ToolActivityOptions {
 
 const DEFAULT_MAX_ARG_CHARS = 3500;
 const DEFAULT_MAX_HINT_CHARS = 56;
-/** Results are output, not input: a build log dwarfs its command, so cap it harder. */
-const DEFAULT_MAX_RESULT_CHARS = 2500;
+/**
+ * Results are output, not input: a build log dwarfs its command, so cap it harder.
+ * Exported because whoever decides to ATTACH the full output has to know exactly how
+ * much of it the card is already showing — otherwise the two disagree about whether
+ * anything was hidden at all.
+ */
+export const DEFAULT_MAX_RESULT_CHARS = 2500;
 
 /** The status mark that trails the summary line. `running` carries none — it is the default state. */
 const STATUS_MARK: Record<ToolStatus, string> = {
