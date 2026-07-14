@@ -52,6 +52,7 @@ import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { createSerialLane } from "./core/serial-lane";
 import { renderSettingsReport } from "./core/settings-report";
 import {
 	fullOutputPath,
@@ -383,6 +384,11 @@ const THINKING_REFRESH_MS = 3_000;
  * neither rate is anywhere near a limit — this is just not being wasteful).
  */
 const THINKING_KEEPALIVE_MS = 15_000;
+/**
+ * What the draft says while a finished reply waits for the tool output ahead of it to
+ * finish uploading — the one moment the agent is done but the chat is not.
+ */
+const SENDING_OUTPUT_HEADLINE = "📎 Sending the tool output…";
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -556,6 +562,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let lastThinkingAt = 0;
 	let draftText = "";
 	let lastDraftAt = 0;
+	// Everything the bot puts in the chat during a turn goes through this lane, so it
+	// lands in the order the turn actually happened: card, its output, the next card,
+	// the answer. Pi emits events fire-and-forget, so without it a slow send is simply
+	// overtaken by the fast ones behind it — which is how a tool's full-output file
+	// ended up UNDER the final answer, quoting a card from further up the chat.
+	const chatLane = createSerialLane();
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
@@ -840,6 +852,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (!thinkingUp) return;
 			pushThinking();
 		}, THINKING_REFRESH_MS);
+	};
+
+	/**
+	 * Hold the answer's place while the step before it finishes going out. The reply is
+	 * written and the model is done; what is left is the previous card's full-output
+	 * file, which is uploading and must land above the answer. The draft says so — it is
+	 * the one surface that can speak while a real message is queued behind an upload.
+	 */
+	const showSendingOutput = (): void => {
+		thinkingLog.clear();
+		thinkingLog.setHeadline(SENDING_OUTPUT_HEADLINE);
+		showThinking();
 	};
 
 	// The bot's own documentation, readable in every mode. The model picks a topic
@@ -1129,17 +1153,29 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		} else {
 			connect?.endDraft();
 		}
-		// A card still open here belongs to a call that never returned — the turn was
-		// aborted under it. Nothing will ever complete it, so close it as cancelled
-		// instead of leaving it wearing the running state.
-		await connect?.cancelOpenToolCards();
-		// A manager run in mixed still pumps the connect queue (an owner message may
-		// be waiting behind the aborted moderation turn) but its text is NOT a reply
-		// to the owner — only an owner run delivers to the chat topic.
-		// The run's messages were mirrored one by one as they ended; the agent_end
-		// fallback only fires when none of them was (an aborted or otherwise odd run),
-		// so an answer can never be lost.
-		await connect?.onAgentEnd(event.messages, ownerRun && !mirroredThisRun);
+		const controller = connect;
+		if (controller) {
+			// Both of these WRITE to the chat, so they go through the lane like everything
+			// else: the run's last word must not overtake a log still being uploaded.
+			await chatLane
+				.run(async () => {
+					// A card still open here belongs to a call that never returned — the turn
+					// was aborted under it. Nothing will ever complete it, so close it as
+					// cancelled instead of leaving it wearing the running state.
+					await controller.cancelOpenToolCards();
+					// A manager run in mixed still pumps the connect queue (an owner message
+					// may be waiting behind the aborted moderation turn) but its text is NOT a
+					// reply to the owner — only an owner run delivers to the chat topic.
+					// The run's messages were mirrored one by one as they ended; the agent_end
+					// fallback only fires when none of them was (an aborted or otherwise odd
+					// run), so an answer can never be lost.
+					await controller.onAgentEnd(
+						event.messages,
+						ownerRun && !mirroredThisRun,
+					);
+				})
+				.catch(() => {});
+		}
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
 		// don't feed it to the manager, and arm the idle timer that will hand the
 		// shared brain back to Telegram once the owner stays quiet.
@@ -1192,10 +1228,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		showThinking();
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
-		await connect
-			.sendToolActivity(
-				{ toolName: event.toolName, args: event.args },
-				event.toolCallId,
+		const controller = connect;
+		// Queued here, synchronously, so the card takes the place in the chat that its
+		// event had — see `chatLane`.
+		await chatLane
+			.run(() =>
+				controller.sendToolActivity(
+					{ toolName: event.toolName, args: event.args },
+					event.toolCallId,
+				),
 			)
 			.catch(() => {});
 	});
@@ -1211,10 +1252,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			showThinking();
 		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
-		const cardId = await connect
-			.completeToolActivity(event.toolCallId, event.result, event.isError)
-			.catch(() => undefined);
-		await attachToolOutputFile(event.result, event.toolName, cardId);
+		const controller = connect;
+		// The card and the file it carries are ONE step of the chat: queued together, so
+		// nothing (least of all the final answer) can slip between a card and its log.
+		await chatLane
+			.run(async () => {
+				const cardId = await controller
+					.completeToolActivity(event.toolCallId, event.result, event.isError)
+					.catch(() => undefined);
+				await attachToolOutputFile(event.result, event.toolName, cardId);
+			})
+			.catch(() => {});
 	});
 
 	/**
@@ -1300,10 +1348,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (message.role !== "assistant") return;
 		const text = extractText(message.content as never);
 		if (!text?.trim()) return;
-		connect.endDraft();
+		const controller = connect;
+		const delivered = chatLane.run(() => controller.deliverAssistant(text));
 		mirroredThisRun = true;
 		notePersonalActivity();
-		await connect.deliverAssistant(text).catch(() => {});
+		// The answer is ready, but the step before it is still being sent — a full-output
+		// log can take seconds to upload, and it goes FIRST on purpose. Say what the reply
+		// is waiting on, instead of leaving a finished draft sitting there looking stuck.
+		if (chatLane.pending() > 1) showSendingOutput();
+		await delivered.catch(() => {});
+		stopThinking();
+		controller.endDraft();
 	});
 
 	// Mirror prompts typed at the Pi terminal into Telegram for a unified history.
