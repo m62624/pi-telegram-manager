@@ -460,8 +460,12 @@ describe("ManagerController", () => {
 		});
 
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("WELCOME BACK");
-		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
+		// The opener rides in the TRAILING message, not the head: it changes as the chat
+		// progresses (first contact → nothing → re-opening), and anything above the
+		// transcript that changes costs the whole transcript to re-read.
+		expect(ctx?.at(-1)?.content).toContain("WELCOME BACK");
+		expect(ctx?.at(-1)?.content).not.toContain("FIRST CONTACT");
+		expect(ctx?.[0].content).not.toContain("WELCOME BACK");
 	});
 
 	it("fast-tracks an interlocutor wake-word past the owner-reply window", async () => {
@@ -677,10 +681,13 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
-		// First message = the system-instruction block (rules + first-contact).
+		// First message = the standing rules, and NOTHING that varies.
 		expect(ctx?.[0].content).toContain("[SYSTEM_INSTRUCTIONS]");
 		expect(ctx?.[0].content).toContain("BASE MANAGER RULES");
-		expect(ctx?.[0].content).toContain("FIRST CONTACT");
+		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
+		// The first-contact opener is a situational instruction, so it travels with the
+		// other situational ones, at the end.
+		expect(ctx?.at(-1)?.content).toContain("FIRST CONTACT");
 		// The chat boundary and the interlocutor's line are present in the middle.
 		expect(ctx?.some((m) => m.content.includes("New chat with Alice"))).toBe(
 			true,
@@ -826,9 +833,13 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("Known facts about Alice");
-		expect(ctx?.[0].content).toContain("likes green tea");
-		// The clock lives in the trailing directive, not the cacheable prefix block.
+		// Facts live in the trailing message. They are the most volatile thing the model
+		// reads — learning ONE of them used to change the head block and cost a full
+		// re-read of the conversation underneath it (measured: 19,397 characters).
+		expect(ctx?.at(-1)?.content).toContain("Known facts about Alice");
+		expect(ctx?.at(-1)?.content).toContain("likes green tea");
+		expect(ctx?.[0].content).not.toContain("Known facts about Alice");
+		// The clock lives there too, not in the cacheable prefix block.
 		expect(ctx?.[0].content).not.toContain("[Now:");
 		expect(ctx?.at(-1)?.content).toContain("[Now:");
 	});
@@ -868,7 +879,7 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const system =
-			(await controller.buildContextForActive())?.[0].content ?? "";
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
 		// Each kind is its own section with the behaviour it steers.
 		expect(system).toContain("Who they are");
 		expect(system).toContain("address them correctly");

@@ -251,6 +251,31 @@ describe("prompt prefix reuse", () => {
 		expect(after.reread).toBeLessThan(3_000);
 	});
 
+	it("keeps the head byte-identical, whoever is talking and whatever it has learned", async () => {
+		// The invariant the whole cost model rests on, asserted rather than hoped for: the
+		// first message is the standing rules and nothing else, so it is the same bytes for
+		// every chat and every turn. Put one per-chat or per-turn value back up there and
+		// this fails — which is the point, because the price of that is the transcript.
+		const env = await setup();
+		await arrive(env, 42, 5, 1, `${BODY} from Alice`);
+		const first = (await env.controller.buildContextForActive())?.[0].content;
+		env.controller
+			.factSink()
+			.record([
+				{ text: "Likes green tea", subject: "interlocutor", kind: "profile" },
+			]);
+		env.controller.decisionSink().record({ kind: "reply", text: "hi" });
+		await env.controller.onAgentEnd();
+
+		await arrive(env, 43, 6, 2, `${BODY} from Bob`);
+		const second = (await env.controller.buildContextForActive())?.[0].content;
+		expect(second).toBe(first);
+
+		await arrive(env, 42, 5, 3, `${BODY} again`);
+		const third = (await env.controller.buildContextForActive())?.[0].content;
+		expect(third).toBe(first);
+	});
+
 	it("shares the rulebook between two chats, so a switch is not a fresh start", async () => {
 		const env = await setup();
 		const cache = new PrefixCache();

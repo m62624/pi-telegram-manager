@@ -1191,19 +1191,20 @@ export class ManagerController {
 				? this.deps.instructions.reopen
 				: "";
 		const known = await this.knownFactsBlock(meta);
-		const ownerName = this.deps.ownerName?.trim();
-		const ownerLine = ownerName
-			? `\n\nThe account Owner's name is ${ownerName}. When you introduce ` +
-				`yourself, say you are ${ownerName}'s assistant.`
-			: "";
-		// The instruction prefix stays stable across a chat's turns (so the provider
-		// caches it); the volatile bits — the clock, the per-message state line, and
-		// the action directive — live in a single trailing message.
-		const system =
-			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
-			ownerLine +
-			(opener ? `\n\n${opener}` : "") +
-			(known ? `\n\n${known}` : "");
+		// The head message is the same bytes for every chat and every turn of the session.
+		//
+		// That is not a stylistic preference, it is the whole cost model. Every backend
+		// re-reads a prompt from the first byte that differs from the last one it saw, so
+		// anything written ABOVE the transcript is charged the entire transcript whenever
+		// it changes. The opener and the known facts used to live up here, and the bench
+		// (tests/modes/manager/prefix-reuse.test.ts) priced them: in a chat of ordinary
+		// pasted-length messages, ONE learned fact cost 19,397 characters of re-reading —
+		// the whole conversation, re-read to say one new line about the person.
+		//
+		// So the rule is: above the transcript goes only what never changes; everything
+		// that varies — the clock, the opener, the facts, the state, the directive —
+		// travels in the trailing message, where it is charged for itself alone.
+		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}${this.ownerLine()}`;
 		const pending = this.pendingReply.get(active);
 		const directive = this.turnDecided()
 			? MANAGER_TURN_DONE
@@ -1227,9 +1228,26 @@ export class ManagerController {
 			...isolated,
 			{
 				role: "user",
-				content: `${this.nowLine()}\n\n${stateSummary(state)}${mentionHint}\n\n${directive}`,
+				content: [
+					this.nowLine(),
+					opener,
+					known,
+					`${stateSummary(state)}${mentionHint}`,
+					directive,
+				]
+					.filter((part) => part.trim())
+					.join("\n\n"),
 			},
 		];
+	}
+
+	/** Who the model is answering for. Constant for the session, so it rides in the head. */
+	private ownerLine(): string {
+		const ownerName = this.deps.ownerName?.trim();
+		return ownerName
+			? `\n\nThe account Owner's name is ${ownerName}. When you introduce ` +
+					`yourself, say you are ${ownerName}'s assistant.`
+			: "";
 	}
 
 	/**
@@ -1259,16 +1277,23 @@ export class ManagerController {
 			boundary: boundaryDirective(meta?.contactName ?? current.chatId),
 		});
 		const known = await this.knownFactsBlock(meta);
-		const system =
-			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}` +
-			(known ? `\n\n${known}` : "");
+		// Constant above the transcript, everything that varies below it — the same rule as
+		// `buildContextForActive`, and for the same measured reason. The facts block is the
+		// most volatile thing in a consolidation (it is what the pass EXISTS to change), so
+		// it is the last thing that may sit on top of the conversation.
+		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}`;
 		const directive = this.turnDecided()
 			? MANAGER_TURN_DONE
 			: currentProbe(current.loop).directive;
 		return [
 			{ role: "user", content: system },
 			...isolated,
-			{ role: "user", content: `${this.nowLine()}\n\n${directive}` },
+			{
+				role: "user",
+				content: [this.nowLine(), known, directive]
+					.filter((part) => part.trim())
+					.join("\n\n"),
+			},
 		];
 	}
 
