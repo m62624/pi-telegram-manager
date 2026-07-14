@@ -6,12 +6,10 @@ import {
 	type ManagerControllerDeps,
 } from "../../../src/modes/manager/controller";
 import { createBusinessStore } from "../../../src/storage/business-store";
-import { createChatCursorStore } from "../../../src/storage/chat-cursors";
+import { createChatState } from "../../../src/storage/chat-state";
 import { createChatStore } from "../../../src/storage/chat-store";
-import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
-import { createSentRegistry } from "../../../src/storage/sent-registry";
 import { FakeFs } from "../../helpers/fake-fs";
 import { PrefixCache, serializePrompt } from "../../helpers/prefix-cache";
 
@@ -57,6 +55,7 @@ async function setup() {
 	const fs = new FakeFs();
 	const paths = createTelegramPaths("/agent");
 	const clock = new ManualClock(0);
+	const chatState = createChatState(fs, paths.chatStatePath);
 	const businessStore = createBusinessStore(fs, paths.businessPath);
 	await businessStore.upsert({
 		id: CONN,
@@ -92,12 +91,9 @@ async function setup() {
 		clock,
 		chatStore: createChatStore(fs, paths),
 		contactStore: createContactStore(fs, paths),
-		consolidationQueue: createConsolidationQueue(
-			fs,
-			paths.consolidationQueuePath,
-		),
-		chatCursors: createChatCursorStore(fs, paths.chatCursorsPath),
-		sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
+		consolidationQueue: chatState.consolidationQueue,
+		chatCursors: chatState.cursors,
+		sentRegistry: chatState.sentRegistry,
 		businessStore,
 		isIdle: () => idle,
 		triggerAgent: vi.fn(async () => {}),

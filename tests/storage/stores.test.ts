@@ -7,7 +7,6 @@ import {
 } from "../../src/storage/chat-store";
 import { createContactStore } from "../../src/storage/contact-store";
 import { createTelegramPaths } from "../../src/storage/paths";
-import { createSentRegistry } from "../../src/storage/sent-registry";
 import type { TelegramProfile } from "../../src/telegram/profile";
 import { FakeFs } from "../helpers/fake-fs";
 
@@ -120,28 +119,6 @@ describe("business-store", () => {
 
 		await store.remove("bc1");
 		expect(await store.get("bc1")).toBeNull();
-	});
-});
-
-describe("sent-registry", () => {
-	it("records bot message ids and distinguishes them", async () => {
-		const fs = new FakeFs();
-		const reg = createSentRegistry(fs, paths.sentRegistryPath);
-		await reg.recordSent("c", 100);
-		expect(await reg.wasSentByBot("c", 100)).toBe(true);
-		expect(await reg.wasSentByBot("c", 101)).toBe(false);
-		// Manual owner message id (never recorded) reads as not-bot.
-		expect(await reg.wasSentByBot("other", 100)).toBe(false);
-	});
-
-	it("bounds retention per chat", async () => {
-		const fs = new FakeFs();
-		const reg = createSentRegistry(fs, paths.sentRegistryPath, {
-			maxPerChat: 3,
-		});
-		for (let i = 0; i < 5; i++) await reg.recordSent("c", i);
-		expect(await reg.wasSentByBot("c", 0)).toBe(false); // evicted
-		expect(await reg.wasSentByBot("c", 4)).toBe(true);
 	});
 });
 

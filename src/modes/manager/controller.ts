@@ -38,13 +38,16 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
-import type { ChatCursorStore } from "../../storage/chat-cursors";
+import type {
+	ChatCursorStore,
+	ConsolidationQueue,
+	SentRegistry,
+} from "../../storage/chat-state";
 import {
 	type ChatMessageRecord,
 	type ChatStore,
 	ownWords,
 } from "../../storage/chat-store";
-import type { ConsolidationQueue } from "../../storage/consolidation-queue";
 import {
 	type ContactFact,
 	type ContactStore,
@@ -52,7 +55,6 @@ import {
 	dedupeFacts,
 	type FactKind,
 } from "../../storage/contact-store";
-import type { SentRegistry } from "../../storage/sent-registry";
 import { describeAttachments, isImage } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
@@ -367,7 +369,7 @@ export interface ManagerControllerDeps {
 	chatStore: ChatStore;
 	contactStore: ContactStore;
 	consolidationQueue: ConsolidationQueue;
-	/** How far each chat has been answered and consolidated — see `chat-cursors`. */
+	/** How far each chat has been answered and consolidated — see `chat-state`. */
 	chatCursors: ChatCursorStore;
 	sentRegistry: SentRegistry;
 	businessStore: BusinessStore;

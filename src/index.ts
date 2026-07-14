@@ -175,21 +175,16 @@ import {
 	type BusinessStore,
 	createBusinessStore,
 } from "./storage/business-store";
-import {
-	type ChatCursorStore,
-	createChatCursorStore,
-} from "./storage/chat-cursors";
+import { type ChatCursorStore, createChatState } from "./storage/chat-state";
 import {
 	type ChatMessageRecord,
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
-import { createConsolidationQueue } from "./storage/consolidation-queue";
 import { createContactStore } from "./storage/contact-store";
 import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateMemory } from "./storage/memory-migration";
-import { createSentRegistry } from "./storage/sent-registry";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -2914,14 +2909,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			paths,
 			settings.manager.rememberMessages,
 		);
-		const consolidationQueue = createConsolidationQueue(
-			fs,
-			paths.consolidationQueuePath,
-		);
-		// How far each chat has already been taken — the one thing a restart used to
-		// forget, and the reason it re-answered and re-interrogated the same messages
-		// every launch.
-		const chatCursors = createChatCursorStore(fs, paths.chatCursorsPath);
+		// Everything we know ABOUT a chat that is not the chat itself: the ids we sent, the
+		// memory-pass queue, and how far it has been answered and consolidated. One subject,
+		// one file, one lock — three views of it (see `storage/chat-state.ts`).
+		const chatState = createChatState(fs, paths.chatStatePath);
+		const {
+			consolidationQueue,
+			cursors: chatCursors,
+			sentRegistry,
+		} = chatState;
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
@@ -3034,7 +3030,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			contactStore,
 			consolidationQueue,
 			chatCursors,
-			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
+			sentRegistry,
 			businessStore,
 			// In mixed mode the manager may only run a turn while the shared brain is
 			// in the Telegram polarity; during coding the owner owns the session, so
