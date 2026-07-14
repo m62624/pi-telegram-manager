@@ -23,12 +23,59 @@ export const SYSTEM_INSTRUCTIONS_HEADER = "[SYSTEM_INSTRUCTIONS]";
 
 const INSTRUCTIONS_DIR = dirname(fileURLToPath(import.meta.url));
 
-/** Read a bundled instruction file; a missing/unreadable file yields "". */
+/**
+ * Read a bundled instruction file — and refuse to run without it.
+ *
+ * These files ARE the bot's rules: how it must speak to strangers, that it must say it
+ * is an AI when asked, what it may never reveal. Missing, they used to yield `""`, and
+ * the mode started anyway — with an empty rulebook. That is the worst failure available
+ * here: not a crash anyone would notice, but a bot quietly stripped of the obligations it
+ * exists to keep, talking to real people on the owner's behalf.
+ *
+ * So a missing bundled file is fatal, loudly, at mode start. It can only mean a broken
+ * install — every one of them is shipped in the package, and a test proves it.
+ */
 async function readBuiltin(fs: TelegramFs, name: string): Promise<string> {
+	let text: string;
 	try {
-		return (await fs.readText(join(INSTRUCTIONS_DIR, name))).trim();
-	} catch {
-		return "";
+		text = (await fs.readText(join(INSTRUCTIONS_DIR, name))).trim();
+	} catch (error) {
+		throw new Error(
+			`pi-telegram-manager is missing a bundled instruction file (${name}). ` +
+				"The installation is incomplete — reinstall the package. " +
+				`Looked in: ${INSTRUCTIONS_DIR}. (${String(error)})`,
+		);
+	}
+	if (!text) {
+		throw new Error(
+			`pi-telegram-manager's bundled instruction file ${name} is empty. ` +
+				"The installation is damaged — reinstall the package.",
+		);
+	}
+	return text;
+}
+
+/** Every bundled file a mode needs. Checked BEFORE a mode touches any state. */
+export const BUNDLED_INSTRUCTION_FILES = [
+	"connect.md",
+	"manager.md",
+	"manager-common.md",
+	"manager-disclosure.md",
+	"manager-first-message.md",
+	"manager-reopen.md",
+] as const;
+
+/**
+ * Prove the installation is complete before a mode starts.
+ *
+ * `readBuiltin` throws on a missing file, but by the time the instructions are assembled
+ * the mode has already claimed the singleton and opened a Telegram client — so a throw
+ * there would leave the bridge marked active with nothing behind it. Called first, this
+ * fails while there is still nothing to unwind.
+ */
+export async function verifyBundledInstructions(fs: TelegramFs): Promise<void> {
+	for (const name of BUNDLED_INSTRUCTION_FILES) {
+		await readBuiltin(fs, name);
 	}
 }
 

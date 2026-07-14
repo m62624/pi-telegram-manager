@@ -65,6 +65,7 @@ import {
 	loadConnectInstructions,
 	loadManagerInstructions,
 	SYSTEM_INSTRUCTIONS_HEADER,
+	verifyBundledInstructions,
 } from "./instructions/builtin";
 import {
 	compactedCard,
@@ -2311,8 +2312,29 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
 	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
 	// control panel.
+	/**
+	 * Refuse to start on a broken installation.
+	 *
+	 * The bundled Markdown IS the bot's rulebook. Missing, the manager would once have
+	 * started with an empty one — no disclosure duty, no stance — and gone on answering
+	 * real people. Checked here, first, while there is still nothing to unwind: no
+	 * singleton claimed, no client opened.
+	 */
+	const installationIsComplete = async (
+		ctx: ExtensionCommandContext,
+	): Promise<boolean> => {
+		try {
+			await verifyBundledInstructions(fs);
+			return true;
+		} catch (error) {
+			ctx.ui.notify(String((error as Error).message ?? error), "error");
+			return false;
+		}
+	};
+
 	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		activeCtx = ctx;
+		if (!(await installationIsComplete(ctx))) return;
 		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
@@ -2403,6 +2425,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
+		if (!(await installationIsComplete(ctx))) return;
 		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
