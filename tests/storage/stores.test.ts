@@ -202,10 +202,13 @@ describe("contact-store", () => {
 		expect((await store.get("2"))?.profile.displayName).toBe("Two");
 	});
 
-	it("clearAllFacts is a no-op when no contacts exist", async () => {
+	it("clearAllFacts clears nothing, and says so, when there is nothing to clear", async () => {
+		// The count is what tells the owner whether their memory was actually thrown away.
+		// A fresh install passes through the memory migration too, and must not be told
+		// that facts it never had were "upgraded".
 		const fs = new FakeFs();
 		const store = createContactStore(fs, paths);
-		await expect(store.clearAllFacts()).resolves.toBeUndefined();
+		expect(await store.clearAllFacts()).toBe(0);
 	});
 
 	it("stores a fact once, however many times it is learned", async () => {

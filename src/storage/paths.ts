@@ -24,8 +24,8 @@ export interface TelegramPaths {
 	 * file — see `chat-state.ts`.
 	 */
 	chatStatePath: string;
-	/** Marker of the applied contact-fact schema version (one-off migrations). */
-	memoryVersionPath: string;
+	/** The on-disk layout this directory is written in — see `migrations.ts`. */
+	schemaVersionPath: string;
 	/**
 	 * What we have put in the owner's DM and where it is: the topic threads we opened
 	 * and the mode message we pinned — see `dm-state.ts`.
@@ -50,6 +50,10 @@ export interface TelegramPaths {
 		topicsPath: string;
 		/** → `dmStatePath` (`modePin`), including its historic single-id form. */
 		modePinPath: string;
+		/** → `schemaVersionPath`: the contact-fact schema had a marker of its own. */
+		memoryVersionPath: string;
+		/** Where the owner's settings file is copied before its keys are rewritten. */
+		settingsBackupPath: string;
 	};
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
@@ -82,7 +86,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		settingsPath: join(extensionDir, "settings.json"),
 		businessPath: join(extensionDir, "business.json"),
 		chatStatePath: join(extensionDir, "chat-state.json"),
-		memoryVersionPath: join(extensionDir, "memory-version.json"),
+		schemaVersionPath: join(extensionDir, "schema-version.json"),
 		dmStatePath: join(extensionDir, "dm-state.json"),
 		legacy: {
 			sentRegistryPath: join(extensionDir, "sent-registry.json"),
@@ -90,6 +94,8 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 			chatCursorsPath: join(extensionDir, "chat-cursors.json"),
 			topicsPath: join(extensionDir, "topics.json"),
 			modePinPath: join(extensionDir, "mode-pin.json"),
+			memoryVersionPath: join(extensionDir, "memory-version.json"),
+			settingsBackupPath: join(extensionDir, "settings.backup.json"),
 		},
 		chatsDir,
 		contactsDir,

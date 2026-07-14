@@ -185,7 +185,7 @@ import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
-import { migrateMemory } from "./storage/memory-migration";
+import { migrateStorage } from "./storage/migrations";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -2070,6 +2070,38 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const loadSettingsAndToken = async (
 		ctx: ExtensionCommandContext,
 	): Promise<{ settings: TelegramSettings; token: string } | null> => {
+		// BEFORE the settings are read, and before any store opens a file: the migration
+		// is what puts the files where the stores expect them, and it rewrites
+		// `settings.json` itself (the keys we renamed are renamed in the owner's own file,
+		// so the reader below understands exactly one spelling). Both launchers come
+		// through here, which is why it lives here and not in one of them.
+		//
+		// A failed migration must not take the bot down with it: the old files are still
+		// there, untouched by any step that did not complete, and the owner is told.
+		try {
+			const outcome = await migrateStorage(
+				fs,
+				paths,
+				createContactStore(fs, paths),
+			);
+			if (outcome.applied.length > 0) {
+				ctx.ui.notify(
+					`Telegram storage upgraded (layout v${outcome.from} → v${outcome.to}): ${outcome.applied.join(", ")}.`,
+				);
+			}
+			if (outcome.factsCleared > 0) {
+				ctx.ui.notify(
+					`Memory upgraded: contact facts were cleared for ${outcome.factsCleared} contact(s) and will be re-learned.`,
+					"warning",
+				);
+			}
+		} catch (error) {
+			ctx.ui.notify(
+				`Telegram storage migration failed: ${String(error)}. Your files were left as they were.`,
+				"error",
+			);
+			return null;
+		}
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 		activeTimezone = settings.timezone;
@@ -2880,20 +2912,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// polling loop. So the manager runs in the current session; per-chat
 		// isolation is guaranteed by pi.on("context") rebuilding messages, and the
 		// banner tells the user this session is now the manager.
-
-		// One-off memory migration: wipe pre-v2 contact facts (captured without
-		// subject attribution, so mis-attributed under the who-is-who firewall).
-		// Runs once, guarded by the version marker; failure never blocks the manager.
-		if (
-			await migrateMemory(fs, paths.memoryVersionPath, contactStore).catch(
-				() => false,
-			)
-		) {
-			ctx.ui.notify(
-				"Memory upgraded: previous contact facts were cleared.",
-				"warning",
-			);
-		}
 
 		// Bound each chat transcript on disk to the last-N window the model reads
 		// (rememberMessages); older messages are pruned so files never grow forever.
