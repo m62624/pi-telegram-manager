@@ -110,6 +110,39 @@ describe("renderContextCard", () => {
 			renderContextCard({ snapshot: snapshot({ images: 3 }), now: NOW }),
 		).toContain("- Images — 3 inline");
 	});
+
+	it("reports the prompt head — the half of the context this card could not see", () => {
+		const card = renderContextCard({
+			snapshot: snapshot(),
+			head: { chars: 97_000, tools: 31, defects: 0 },
+			now: NOW,
+		});
+		expect(card).toContain("Prompt head");
+		expect(card).toContain("31 tools");
+		expect(card).not.toContain("changed mid-turn");
+	});
+
+	it("says plainly when the head changed mid-turn, and what it cost", () => {
+		// The live incident: the cache went to zero between two calls of one run, because
+		// ~12 800 tokens left the head. Nobody could see it, so nobody could name it.
+		const card = renderContextCard({
+			snapshot: snapshot(),
+			head: {
+				chars: 46_000,
+				tools: 12,
+				defects: 2,
+				lastDefect: {
+					toolsRemoved: ["bash", "read"],
+					toolsAdded: [],
+					at: NOW - 60_000,
+				},
+			},
+			now: NOW,
+		});
+		expect(card).toContain("changed mid-turn 2×");
+		expect(card).toContain("lost bash, read");
+		expect(card).toContain("This is a bug, not a setting");
+	});
 });
 
 describe("renderContextText", () => {

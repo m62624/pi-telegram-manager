@@ -53,6 +53,7 @@ import { ContextReset } from "./core/context-reset";
 import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
+import { PrefixWatch } from "./core/payload-probe";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
@@ -568,6 +569,37 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return { messages };
 	};
 
+	/**
+	 * The OTHER half of the prompt: the system prompt and the tool schemas Pi builds, which
+	 * `measured()` above never sees and which sit AHEAD of every message it does see.
+	 *
+	 * `before_provider_request` is the only place the real bytes exist. We do not modify the
+	 * payload — we read it, and we say so when its head changes between two calls of one
+	 * run, because that is the difference between a backend re-reading nothing and a backend
+	 * re-reading everything. See `core/payload-probe.ts` for the live incident that made
+	 * this necessary.
+	 */
+	pi.on("before_provider_request", async (event) => {
+		const churn = prefixWatch.record(event.payload);
+		// Only the mid-run case is a defect worth interrupting anyone about: a head that
+		// changes BETWEEN runs can be legitimate (a mode switch really does change which
+		// tools exist). One that changes between two calls of the SAME run cannot be.
+		if (churn?.midRun) {
+			const lost = churn.delta.toolsRemoved;
+			const gained = churn.delta.toolsAdded;
+			const delta = churn.delta.headCharsDelta;
+			mirrorManagerNotice?.(
+				"warning",
+				`Prompt head changed mid-turn (${delta > 0 ? "+" : ""}${delta} chars` +
+					(lost.length > 0 ? `, lost ${lost.join(", ")}` : "") +
+					(gained.length > 0 ? `, gained ${gained.join(", ")}` : "") +
+					") — the whole prompt is re-read. /context has the details.",
+			);
+		}
+		// Read, never rewrite: the payload goes on exactly as Pi built it.
+		return event.payload;
+	});
+
 	// Rebuild the LLM context per mode: the manager replaces it with the active
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
 	// mode / no boundary → leave the context untouched.
@@ -655,6 +687,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// everything `/context` reports. Null until the first turn.
 	let lastContext: ContextSnapshot | null = null;
 	let lastCompaction: CompactionMemory | null = null;
+	// The head of every provider request — the half of the prompt `lastContext` cannot see,
+	// and the half a backend charges us for when it changes. See `core/payload-probe.ts`.
+	const prefixWatch = new PrefixWatch();
 	// Fires on `agent_start`. It is how a hand-off is confirmed — see `deliverPrompt`.
 	const turnStarted = new TurnSignal();
 	// One hand-off at a time (see `deliverPrompt`).
@@ -1047,6 +1082,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 */
 	const contextInput = (): ContextReportInput => {
 		const usage = activeCtx?.getContextUsage();
+		const shape = prefixWatch.current();
+		const defects = prefixWatch.defects();
+		const worst = defects[0];
 		return {
 			snapshot: lastContext ?? undefined,
 			usage: usage
@@ -1057,6 +1095,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					}
 				: undefined,
 			compaction: lastCompaction ?? undefined,
+			head: shape
+				? {
+						chars: shape.headChars,
+						tools: shape.toolNames.length,
+						defects: defects.length,
+						lastDefect: worst
+							? {
+									toolsRemoved: worst.delta.toolsRemoved,
+									toolsAdded: worst.delta.toolsAdded,
+									at: worst.at,
+								}
+							: undefined,
+					}
+				: undefined,
 			now: Date.now(),
 		};
 	};
@@ -1456,6 +1508,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
+		// A new run: its first request may legitimately carry a different head (a mode
+		// switch changes which tools exist). Every request AFTER it may not.
+		prefixWatch.runStarted();
 		// The turn started — which is the only proof we can get that the prompt behind it
 		// was ever accepted. See `deliverPrompt`.
 		turnStarted.fire();
@@ -1491,41 +1546,57 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// inference; the reply is still delivered from onAgentEnd (reading the recorded
 	// decision, not the messages the abort may orphan).
 	pi.on("turn_end", async (_event, ctx) => {
-		// Only cap a manager turn. In mixed mode's coding polarity the owner is
-		// running the turn — never abort it on the manager's stale decision flag.
-		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
-		// Never abort ON TOP of a queued message. An abort makes the TUI empty the
-		// queue into the terminal editor (`restoreQueuedMessagesToEditor`), where the
-		// message stops being a Telegram turn and becomes text waiting for a human to
-		// press Enter. `deliverPrompt` keeps the queue empty, so this should not
-		// happen — but the cost of being wrong is a conversation silently stranded in
-		// an editor, and the cost of skipping the abort is one extra sample.
-		if (ctx.hasPendingMessages()) return;
-		// Consolidation now walks its whole interrogation in ONE agent run: step the
-		// state machine here (no per-probe abort) and abort only when it asks — live
-		// conversation work is waiting, or the interrogation is already done and the
-		// model kept calling tools (backstop). Otherwise let the loop re-sample; the
-		// context rebuild shows the next probe (or CONSOLIDATION_DONE when finished).
+		/**
+		 * What the end of this turn means for the manager, and whether the run should stop.
+		 * Settled FIRST, because the tool list depends on the state it changes: a memory
+		 * pass that has just taken its last step has no probe left to offer, and a turn
+		 * that just drafted a reply becomes a revise turn.
+		 */
+		const settle = async (): Promise<boolean> => {
+			// In mixed mode's coding polarity the owner is running the turn — never abort it
+			// on the manager's stale decision flag.
+			if (!managerHoldsSession(mixedActive, polarity) || !manager) return false;
+			// Never abort ON TOP of a queued message. An abort makes the TUI empty the queue
+			// into the terminal editor (`restoreQueuedMessagesToEditor`), where the message
+			// stops being a Telegram turn and becomes text waiting for a human to press
+			// Enter. `deliverPrompt` keeps the queue empty, so this should not happen — but
+			// the cost of being wrong is a conversation silently stranded in an editor, and
+			// the cost of skipping the abort is one extra sample.
+			if (ctx.hasPendingMessages()) return false;
+			// Consolidation walks its whole interrogation in ONE agent run: step the state
+			// machine here (no per-probe abort) and abort only when it asks — live
+			// conversation work is waiting, or the interrogation is already done and the
+			// model kept calling tools (backstop). Otherwise let the loop re-sample; the
+			// context rebuild shows the next probe (or CONSOLIDATION_DONE when finished).
+			if (manager.isConsolidating()) {
+				return (await manager.stepConsolidation()) === "abort";
+			}
+			// A normal reply/silent turn: cap re-sampling once the decision is recorded.
+			return manager.turnDecided();
+		};
+		const abortRun = await settle();
+
+		// Then the tools — after every state change above, on EVERY path, in EVERY mode.
+		// Two reasons, and both were paid for in live sessions:
 		//
-		// The tool list is re-applied AFTER the step, and that order is the fix: Pi
-		// re-reads `agent.state.tools` between turns, right after this handler returns
-		// (`AgentSession._installAgentNextTurnRefresh`), so a refresh here is the last
-		// moment at which the next turn's tools can still be changed. Refreshed before
-		// the step, it would carry the tools of the step just finished — which is how a
-		// finished memory pass kept being offered the tool for step one, and kept
-		// calling it.
-		if (manager.isConsolidating()) {
-			const next = await manager.stepConsolidation();
-			visibility.refresh();
-			if (next === "abort") ctx.abort();
-			return;
-		}
-		// A normal reply/silent turn: cap re-sampling once the decision is recorded. The
-		// refresh matters here too — a turn that drafted a reply becomes a revise turn,
-		// and the next sample must see manager_resolve_draft rather than be told to use
-		// a tool that is not in its list.
+		//  1. Our own turn kinds differ. Refreshed BEFORE the step, the list would carry the
+		//     tools of the step just finished — which is how a finished memory pass kept
+		//     being offered the tool for step one, and kept calling it.
+		//  2. We are not the only extension writing this list. `setActiveTools` is a global
+		//     setter with no notion of whose tools are whose, and `pi-planner` rebuilds the
+		//     whole thing from `getAllTools()` on `before_provider_request` — which
+		//     resurrected the manager tools we hide (the model could see `manager_reply` in
+		//     the owner's DM) and rewrote the head of the prompt mid-turn, so the backend
+		//     threw away its cache: 24 302 tokens of prefill where 97 would have done.
+		//
+		// The ordering makes it hold, and it is not luck: another extension writes during
+		// the REQUEST (`onPayload`), we write at `turn_end` — after it — and Pi re-reads
+		// `agent.state.tools` in `prepareNextTurn`, after us. The last word is ours, so what
+		// reaches the model is what we decided. This runs before the early returns above
+		// could skip it, because a manager turn with a queued message is exactly when the
+		// sandbox must NOT be left in someone else's hands.
 		visibility.refresh();
-		if (manager.turnDecided()) ctx.abort();
+		if (abortRun) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;

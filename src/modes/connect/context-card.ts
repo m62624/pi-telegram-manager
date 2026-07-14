@@ -38,6 +38,24 @@ export interface ContextReportInput {
 	};
 	/** The last compaction, whoever triggered it. */
 	compaction?: CompactionMemory;
+	/**
+	 * The head of the last provider request — the system prompt plus the tool schemas —
+	 * and whether it has been changing. `snapshot` cannot see this: it measures the
+	 * messages WE build, and the head is built by Pi, ahead of all of them.
+	 *
+	 * It belongs on this card because it is the only part of the prompt whose SIZE is not
+	 * the thing that matters. A head is either the same bytes as last time, in which case
+	 * a backend re-reads none of it, or it is not, in which case it re-reads all of it —
+	 * and everything after it too.
+	 */
+	head?: {
+		chars: number;
+		tools: number;
+		/** Head changes seen mid-run: nothing about the model changed, only our bookkeeping. */
+		defects: number;
+		/** What the last mid-run change did, if there was one. */
+		lastDefect?: { toolsRemoved: string[]; toolsAdded: string[]; at: number };
+	};
 	/** Clock, for "8 minutes ago". */
 	now: number;
 }
@@ -80,6 +98,12 @@ export function renderContextCard(input: ContextReportInput): string {
 		);
 	}
 
+	const head = headLine(input);
+	if (head) body.push(bullet("Prompt head", head));
+
+	const churn = churnLine(input);
+	if (churn) body.push(churn);
+
 	const compaction = compactionLine(input);
 	if (compaction) body.push(bullet("Compacted", compaction));
 
@@ -96,6 +120,45 @@ export function renderContextCard(input: ContextReportInput): string {
 	}
 
 	return card("🧠", "Context", body);
+}
+
+/**
+ * `~24.3k tokens — 31 tools, sent ahead of every message` — the part of the prompt nobody
+ * writes and everybody pays for, on every single call.
+ */
+function headLine(input: ContextReportInput): string | undefined {
+	if (!input.head) return undefined;
+	const { chars, tools } = input.head;
+	return `~${humanTokens(estimateTokens(chars))} tokens — ${tools} ${plural(tools, "tool")}, sent ahead of every message`;
+}
+
+/**
+ * The alarm. A head that changes between two calls of ONE run means the backend threw away
+ * everything it had read — not because the conversation moved on, but because we handed it
+ * different bytes. It is never correct, and until this line existed nobody could see it.
+ */
+function churnLine(input: ContextReportInput): string | undefined {
+	const head = input.head;
+	if (!head?.defects) return undefined;
+	const last = head.lastDefect;
+	const what = last
+		? [
+				last.toolsRemoved.length > 0
+					? `lost ${last.toolsRemoved.join(", ")}`
+					: undefined,
+				last.toolsAdded.length > 0
+					? `gained ${last.toolsAdded.join(", ")}`
+					: undefined,
+			]
+				.filter(Boolean)
+				.join("; ")
+		: "";
+	const detail = what
+		? ` (${humanAgo(input.now - (last?.at ?? input.now))}: ${what})`
+		: "";
+	return note(
+		`⚠️ The prompt head changed mid-turn ${head.defects}× this session${detail} — the whole prompt is re-read when it does. This is a bug, not a setting.`,
+	);
 }
 
 /** `24.5k of 131k (19% full)` — what the model actually counted, last time. */

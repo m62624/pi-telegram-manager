@@ -60,11 +60,21 @@ describe("visibleToolNames", () => {
 });
 
 describe("createToolVisibility", () => {
+	/**
+	 * The registry as Pi really behaves: `getActiveTools()` returns what is active RIGHT
+	 * NOW — which includes whatever another extension set a moment ago. That is the whole
+	 * reason this file changed: the list is shared, and we are not its only author.
+	 *
+	 * A fresh session starts with everything active, which is what Pi does.
+	 */
 	function fakeApi(names: string[]): ToolRegistryApi & { active: string[] } {
 		return {
 			active: [...names],
 			getAllTools() {
 				return names.map((name) => ({ name }));
+			},
+			getActiveTools() {
+				return [...this.active];
 			},
 			setActiveTools(next) {
 				this.active = next;
@@ -198,10 +208,14 @@ describe("the real group wiring (index.ts)", () => {
 		"manager_skip",
 	];
 
+	/** A fresh Pi session starts with every registered tool active. */
 	function fakeApi(): ToolRegistryApi & { active: string[] } {
 		return {
-			active: [],
+			active: [...ALL],
 			getAllTools: () => ALL.map((name) => ({ name })),
+			getActiveTools() {
+				return [...this.active];
+			},
 			setActiveTools(next) {
 				this.active = next;
 			},
@@ -263,5 +277,171 @@ describe("the real group wiring (index.ts)", () => {
 		expect(api.active).not.toContain("bash");
 		expect(api.active).not.toContain("telegram_attach");
 		expect(api.active).toContain("telegram_bot_about");
+	});
+});
+
+/**
+ * The other extensions.
+ *
+ * `setActiveTools` is a GLOBAL setter: it replaces the whole list, and it has no notion of
+ * whose tools are whose. We are not its only author — `pi-planner` rebuilds the entire list
+ * from `getAllTools()` on every `before_provider_request`, and `pi-approval-modes` can do
+ * the same. Two extensions each declaring the whole world, on every request, is not a race.
+ * It is a war, and it was fought in the owner's prompt:
+ *
+ *   - our list resurrected the 54 `planner_*` tools the planner had just hidden;
+ *   - the planner's list resurrected the 8 `manager_*` tools we had just hidden — so in
+ *     PERSONAL mode the model was shown `manager_reply`;
+ *   - and the head of the prompt (where the tool schemas live, ahead of every message)
+ *     changed between two calls of ONE turn. Measured: prefill 24 302 → 11 653,
+ *     cache 24 348 → 0. The backend threw away everything it had read.
+ *
+ * So these tests do not ask "does our gate work in a quiet room". They put a rival in the
+ * room, let it write last on every request, and demand three things anyway: the sandbox
+ * holds, the other mode's tools never appear, and the list stops moving.
+ */
+describe("living with another extension that also owns the tool list", () => {
+	const PLANNER = ["planner_status", "planner_reason", "planner_exec"];
+	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
+	const MANAGER_GROUP = [
+		"manager_reply",
+		"manager_silent",
+		...ABOUT_TOOL_NAMES,
+	];
+	const ALL = [
+		"read",
+		"write",
+		"bash",
+		...PLANNER,
+		...TELEGRAM_TOOL_NAMES,
+		...ABOUT_TOOL_NAMES,
+		"manager_reply",
+		"manager_silent",
+	];
+
+	/**
+	 * A registry with a rival extension living in it. `rivalRefresh()` is `pi-planner`'s
+	 * `updateToolVisibility`, verbatim in shape: read EVERY registered tool, drop its own,
+	 * write the whole list back — trampling anything anyone else had hidden.
+	 */
+	function world() {
+		const api: ToolRegistryApi & { active: string[] } = {
+			active: [...ALL],
+			getAllTools: () => ALL.map((name) => ({ name })),
+			getActiveTools() {
+				return [...this.active];
+			},
+			setActiveTools(next) {
+				this.active = next;
+			},
+		};
+		/** What the planner does on every provider request, when no plan is running. */
+		const rivalRefresh = (): void => {
+			api.setActiveTools(
+				api
+					.getAllTools()
+					.map((t) => t.name)
+					.filter((n) => !PLANNER.includes(n)),
+			);
+		};
+		return { api, rivalRefresh };
+	}
+
+	const gate = (api: ToolRegistryApi) =>
+		createToolVisibility(api, {
+			connect: CONNECT_GROUP,
+			manager: MANAGER_GROUP,
+		});
+
+	it("never lets a rival resurrect the manager tools into the owner's DM", () => {
+		// The live symptom: `/context` reported the head had `gained manager_reply,
+		// manager_silent, …` in PERSONAL mode. The planner put them back, because it does
+		// not know they are ours to hide.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		visibility.setActive("connect", true);
+
+		rivalRefresh(); // the planner writes during the request
+		expect(api.active).toContain("manager_reply"); // …and it really does resurrect them
+
+		visibility.refresh(); // we write at turn_end — after it, and last
+		expect(api.active).not.toContain("manager_reply");
+		expect(api.active).not.toContain("manager_silent");
+		expect(api.active).toContain("telegram_attach");
+		expect(api.active).toContain("bash"); // the owner's own machine, untouched
+	});
+
+	it("does not resurrect the rival's tools either — we subtract, we do not rebuild", () => {
+		// The other half of the war, and the half that was OURS. Rebuilding the list from
+		// `getAllTools()` put the planner's tools back every time it hid them, so the two of
+		// us swapped 14k tokens of schemas in and out of the head of the prompt, forever.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		visibility.setActive("connect", true);
+
+		rivalRefresh(); // planner hides its own tools: it is not running a plan
+		visibility.refresh();
+
+		for (const name of PLANNER) expect(api.active).not.toContain(name);
+	});
+
+	it("reaches a fixed point — which is what a prefix cache actually needs", () => {
+		// A stable set of tools is a stable head, and a stable head is a prompt the backend
+		// does not have to read twice. Convergence is not an aesthetic property here: it is
+		// the feature.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		visibility.setActive("connect", true);
+
+		const heads: string[] = [];
+		for (let turn = 0; turn < 5; turn += 1) {
+			rivalRefresh(); // the request
+			visibility.refresh(); // turn_end — we have the last word
+			heads.push(api.active.join(","));
+		}
+		expect(new Set(heads).size).toBe(1); // it never moves again
+	});
+
+	it("keeps the sandbox closed even when the rival writes last on every request", () => {
+		// Security first, and it may not depend on the order extensions happen to load in.
+		// A sandbox is not "the world minus some things" — it is a closed set, and it stays
+		// closed no matter what anyone else has just decided the world should contain.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		visibility.setActive("manager", true);
+		visibility.setExclusive("manager", createToolMatcher(MANAGER_GROUP, []));
+
+		for (let turn = 0; turn < 3; turn += 1) {
+			rivalRefresh(); // the rival hands the sandbox read/write/bash on a plate
+			visibility.refresh(); // and we take them straight back
+			for (const forbidden of ["read", "write", "bash", ...PLANNER]) {
+				expect(api.active).not.toContain(forbidden);
+			}
+			expect(api.active).toContain("manager_reply");
+			expect(api.active).toContain("telegram_bot_about");
+		}
+	});
+
+	it("gives the world back when the sandbox comes down", () => {
+		// While the sandbox is up, the live list IS the sandbox — so "subtract from what is
+		// active" would have nothing left to subtract from, and the owner's terminal would
+		// come out of a Telegram turn with no tools at all. The world is remembered on the
+		// way in and restored on the way out.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		visibility.setActive("connect", true);
+		rivalRefresh();
+		visibility.refresh();
+		const before = [...api.active];
+
+		visibility.setActive("manager", true);
+		visibility.setExclusive("manager", createToolMatcher(MANAGER_GROUP, []));
+		expect(api.active).not.toContain("bash");
+
+		visibility.setExclusive("manager", null);
+		visibility.setActive("manager", false);
+		expect(api.active).toEqual(before); // exactly the world we left, nothing invented
+		expect(api.active).toContain("bash");
+		for (const name of PLANNER) expect(api.active).not.toContain(name);
 	});
 });
