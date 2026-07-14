@@ -270,6 +270,128 @@ describe("tool card status and result", () => {
 	});
 });
 
+describe("code highlighting on a tool card", () => {
+	it("highlights what a READ returned, in the language of the file it read", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "src/main.rs" },
+			status: "ok",
+			result: 'fn main() { println!("hi"); }',
+		}).html;
+		expect(html).toContain('<pre><code class="language-rust">');
+		expect(html).toContain("fn main()");
+	});
+
+	it("writes the file's code as code, not as a JSON dump of the arguments", () => {
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "src/index.ts", content: "const a = 1;\nexport {};" },
+		}).html;
+		expect(html).toContain('<pre><code class="language-typescript">');
+		expect(html).toContain("const a = 1;\nexport {};");
+		// The old rendering: the whole file on one line, every newline spelled "\n".
+		expect(html).not.toContain("language-json");
+		expect(html).not.toContain("\\n");
+		expect(html).not.toContain('"content"');
+	});
+
+	it("shows both sides of an edit, each in the file's language", () => {
+		const html = toolActivityHtml({
+			toolName: "edit",
+			args: {
+				file_path: "app/main.py",
+				old_string: "x = 1",
+				new_string: "x = 2",
+			},
+		}).html;
+		expect(html).toContain("<b>Before</b>");
+		expect(html).toContain("<b>After</b>");
+		expect(html.match(/language-python/g)).toHaveLength(2);
+		expect(html).toContain("x = 1");
+		expect(html).toContain("x = 2");
+	});
+
+	it("keeps a huge edit inside the message limit", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "write",
+				args: { file_path: "big.ts", content: "x".repeat(9000) },
+			},
+			{ maxArgChars: 100 },
+		).html;
+		expect(html).toContain("… (truncated)");
+		expect(html.length).toBeLessThan(1000);
+	});
+
+	// --- and now everything that must NOT be highlighted -------------------------
+
+	it("does not colour a WRITE's answer as the file — it is a message about it", () => {
+		// "wrote 42 lines" is not Rust, and painting it as Rust is a lie told in colour.
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "src/main.rs", content: "fn main() {}" },
+			status: "ok",
+			result: "Wrote 1 line to src/main.rs",
+		}).html;
+		const result = html.slice(html.indexOf("<b>Result</b>"));
+		expect(result).toContain("<pre>Wrote 1 line");
+		expect(result).not.toContain("language-rust");
+	});
+
+	it("does not colour an ERROR as the file", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "src/main.rs" },
+			status: "error",
+			result: "ENOENT: no such file",
+		}).html;
+		expect(html).toContain("<b>Error</b>");
+		expect(html).not.toContain("language-rust");
+	});
+
+	it("leaves a file it cannot name untagged, rather than guessing", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "notes.txt" },
+			status: "ok",
+			result: "just words",
+		}).html;
+		expect(html).toContain("<pre>just words</pre>");
+		expect(html).not.toContain("language-");
+	});
+
+	it("does not treat a bash command as a file just because it mentions one", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "cat src/main.rs" },
+			status: "ok",
+			result: "fn main() {}",
+		}).html;
+		// The command is bash; its OUTPUT is a log, not a Rust file.
+		expect(html).toContain('<pre><code class="language-bash">');
+		expect(html).not.toContain("language-rust");
+	});
+
+	it("does not turn a path-only tool into a code block", () => {
+		// `read` before it returns: a path argument alone is not code to highlight.
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "/a/b.ts" },
+		}).html;
+		expect(html).toContain("<pre>/a/b.ts</pre>");
+		expect(html).not.toContain("language-typescript");
+	});
+
+	it("still JSON-prints a multi-arg tool that carries no file content", () => {
+		const html = toolActivityHtml({
+			toolName: "grep",
+			args: { pattern: "TODO", path: "src/main.rs" },
+		}).html;
+		expect(html).toContain('<pre><code class="language-json">');
+		expect(html).not.toContain("language-rust");
+	});
+});
+
 describe("unwrapToolResult", () => {
 	it("unwraps the SDK's result envelope into the plain output it carries", () => {
 		// This is the bug the cards had: JSON-printing the envelope turned a directory

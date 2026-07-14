@@ -45,6 +45,13 @@ Telegram limits to keep in mind: the bot can download files up to 20 MB and
 upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 20 MB. A local Bot API server raises these substantially.
 
+## Code
+
+Fence every code block with its language (```rust, ```python, ```bash) — Telegram
+highlights a fenced block and shows a copy button, and an unfenced one arrives as
+flat grey text. Use the language's real name: Telegram knows `rust`, `cpp` and
+`typescript` (and the short `py`, `ts`, `js`, `rb`, `sh`), but not `rs` or `c++`.
+
 ## Questions about this bridge itself
 
 If you are asked what this extension is, what bot you are running on, how a mode

@@ -53,6 +53,22 @@ describe("formatManagerReplyHtmlChunks", () => {
 		expect(chunk).toBe(`hi${BOT_MARKER}`);
 	});
 
+	it("sends code to a person as highlightable code", () => {
+		// The manager talks to strangers over a business connection, which takes classic
+		// HTML — so the fence has to survive into `class="language-…"` or the code lands
+		// grey. Telegram has no `rs`, so the tag is corrected on the way out.
+		const [chunk] = formatManagerReplyHtmlChunks(
+			"Here:\n\n```rs\nfn main() {}\n```",
+		);
+		expect(chunk).toContain('<pre><code class="language-rust">');
+		expect(chunk).toContain("fn main() {}");
+	});
+
+	it("leaves a language Telegram already knows exactly as written", () => {
+		const [chunk] = formatManagerReplyHtmlChunks("```bash\necho hi\n```");
+		expect(chunk).toContain('<pre><code class="language-bash">');
+	});
+
 	it("puts the labeler only on the first chunk of a long reply", () => {
 		const long = Array.from({ length: 400 }, (_, i) => `line number ${i}`).join(
 			"\n",

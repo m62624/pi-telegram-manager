@@ -21,6 +21,7 @@
  * single `markdown` (this module) or `html` (see `rich-builder.ts`) string.
  */
 import type { InputRichMessage } from "@grammyjs/types";
+import { normalizeCodeFences } from "./code-language";
 
 /** Hard limits on a single Telegram rich message (Bot API 10.1). */
 export const RICH_MESSAGE_MAX_CHARS = 32768;
@@ -43,7 +44,7 @@ interface CodeSegment {
  * length math and fence detection are line-consistent.
  */
 export function normalizeRichMarkdown(input: string): string {
-	const text = input.replace(/\r\n?/g, "\n");
+	const text = normalizeCodeFences(input.replace(/\r\n?/g, "\n"));
 	return segmentByCode(text)
 		.map((segment) => (segment.code ? segment.text : rewriteMath(segment.text)))
 		.join("");
