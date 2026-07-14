@@ -275,11 +275,15 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`.
 
 `/status` reports the model and its provider, how full the context is (`~77k of 131.1k tokens (59% full)`), the working directory, whether a turn is running, what is queued, and — in mixed — which side holds the session. Every command above is refused to anyone but the owner, and none appear in the menu strangers see.
 
+`/context` answers the next question: not how full the context is, but what it is full **of**. It names the thread it was built from (your session, or one isolated chat), the exact size of the last call as the model counted it, our estimate of the next one, and the breakdown — tool output is usually most of it. If a compaction has already replaced part of the history with a summary, it says so and when, which is normally the answer to "why did it forget what I said an hour ago".
+
 `/compact` summarises the history so a long session keeps going instead of hitting the context window. The chat shows the outcome: how full the context was, what the history weighed, and a card if the compaction failed. In manager mode there is nothing to compact — the context is built fresh for each conversation.
+
+**Every compaction is summarised with instructions**, whoever started it. Pi decides when to compact and what to cut; the bridge writes the summary, using Pi's own `compact()` with the one argument its automatic path leaves empty. The instructions say the thing the token counts hide: tool output is 80-90% of a working context and your words are two or three, so a summariser weighing the conversation by mass keeps the files it read and forgets what you asked it to do with them. A file can be read again; a thing you said an hour ago cannot. The manager's summaries are briefed differently — they are told never to reproduce what other people wrote, because a chat summary outlives the chat. If the summarisation fails for any reason, Pi's own compaction runs instead, exactly as before.
 
 ---
 

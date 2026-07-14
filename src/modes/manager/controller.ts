@@ -55,10 +55,10 @@ import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
 import {
 	boundaryDirective,
-	budgetRecords,
 	buildIsolatedMessages,
 	type IsolatedImage,
 	type IsolatedMessage,
+	windowRecords,
 } from "./context-isolation";
 import { analyzeChat, type ConversationState } from "./conversation-state";
 import {
@@ -119,6 +119,26 @@ export const MANAGER_ACTION_TRIGGER =
 export const MANAGER_TURN_DONE =
 	"[You have already decided this turn. Do not call any more tools. Reply with a " +
 	"single word to end the turn.]";
+
+/**
+ * The same job for a consolidation pass — and it needs its own words, because the one
+ * above is written for a turn that ends in a DECISION, and a memory pass does not have
+ * one.
+ *
+ * Reused verbatim, it told a model in the middle of a background memory review that it
+ * "had already decided this turn". Reading that, with the reply tools still in its list
+ * (a separate bug, now fixed in `tool-gate.ts`) and a transcript ending in somebody's
+ * question, the model concluded it was answering that person — "I already replied", it
+ * wrote, and then produced a word of prose for a chat it was never talking to. In other
+ * passes it went looking for the interrogation step that the standing prompt above still
+ * demanded, found none, and called step one again until the run was aborted.
+ *
+ * A directive that ends a turn has to say what KIND of turn it is ending.
+ */
+export const CONSOLIDATION_DONE =
+	"[The memory pass for this contact is finished: every step has been answered and " +
+	"there is nothing left to do. You are not replying to anyone — no tool, no message. " +
+	"Reply with a single word to end the turn.]";
 
 /**
  * Trailing directive when a drafted reply is held back because new messages
@@ -185,9 +205,12 @@ export const MENTION_HINT =
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
-	"long-term memory about this specific person. Do NOT reply to anyone — nothing " +
-	"you write reaches Telegram. Work strictly about the interlocutor, never the " +
-	"owner or the bot. Answer only the numbered interrogation step shown below.";
+	"long-term memory about this specific person. Nobody is waiting for you and " +
+	"nothing you write reaches Telegram: the reply tools do not exist on this turn, " +
+	"and a question left standing in the transcript below is one you have already " +
+	"answered, or one that is not yours to answer now. Work strictly about the " +
+	"interlocutor, never the owner or the bot. Answer only the numbered interrogation " +
+	"step shown below, calling the one tool it names.";
 
 /** Bare prompt that kicks off each interrogation probe (real directive is in context). */
 const CONSOLIDATION_PROMPT =
@@ -1159,19 +1182,21 @@ export class ManagerController {
 		if (this.consolidating) return this.buildConsolidationContext();
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
-		const raw = await this.deps.chatStore.getRecent(
-			active,
-			this.deps.rememberMessages,
-		);
+		// The whole transcript, because the window that is cut from it is ANCHORED to the
+		// conversation's length — a window measured from the end alone slides by one line
+		// per line, and a transcript whose first line moves is a transcript the model must
+		// read again from the top. (`getRecent` reads the same file to serve its slice, so
+		// this costs no more I/O.)
+		const raw = await this.deps.chatStore.all(active);
 		// Rehydrate the contact's userId from the transcript if the in-memory meta
 		// lacks it (e.g. after a restart, before a fresh live message repopulates it),
 		// so known facts are shown and new facts are stored by the right contact.
 		this.rememberUserId(active, raw);
-		const records = budgetRecords(
-			raw,
-			this.deps.maxCharsPerMessage,
-			this.deps.maxContextChars,
-		);
+		const records = windowRecords(raw, {
+			maxMessages: this.deps.rememberMessages,
+			maxCharsPerMessage: this.deps.maxCharsPerMessage,
+			maxContextChars: this.deps.maxContextChars,
+		});
 		const meta = this.chats.get(active);
 		const isolated = buildIsolatedMessages({
 			records,
@@ -1191,19 +1216,20 @@ export class ManagerController {
 				? this.deps.instructions.reopen
 				: "";
 		const known = await this.knownFactsBlock(meta);
-		const ownerName = this.deps.ownerName?.trim();
-		const ownerLine = ownerName
-			? `\n\nThe account Owner's name is ${ownerName}. When you introduce ` +
-				`yourself, say you are ${ownerName}'s assistant.`
-			: "";
-		// The instruction prefix stays stable across a chat's turns (so the provider
-		// caches it); the volatile bits — the clock, the per-message state line, and
-		// the action directive — live in a single trailing message.
-		const system =
-			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}` +
-			ownerLine +
-			(opener ? `\n\n${opener}` : "") +
-			(known ? `\n\n${known}` : "");
+		// The head message is the same bytes for every chat and every turn of the session.
+		//
+		// That is not a stylistic preference, it is the whole cost model. Every backend
+		// re-reads a prompt from the first byte that differs from the last one it saw, so
+		// anything written ABOVE the transcript is charged the entire transcript whenever
+		// it changes. The opener and the known facts used to live up here, and the bench
+		// (tests/modes/manager/prefix-reuse.test.ts) priced them: in a chat of ordinary
+		// pasted-length messages, ONE learned fact cost 19,397 characters of re-reading —
+		// the whole conversation, re-read to say one new line about the person.
+		//
+		// So the rule is: above the transcript goes only what never changes; everything
+		// that varies — the clock, the opener, the facts, the state, the directive —
+		// travels in the trailing message, where it is charged for itself alone.
+		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}${this.ownerLine()}`;
 		const pending = this.pendingReply.get(active);
 		const directive = this.turnDecided()
 			? MANAGER_TURN_DONE
@@ -1227,9 +1253,26 @@ export class ManagerController {
 			...isolated,
 			{
 				role: "user",
-				content: `${this.nowLine()}\n\n${stateSummary(state)}${mentionHint}\n\n${directive}`,
+				content: [
+					this.nowLine(),
+					opener,
+					known,
+					`${stateSummary(state)}${mentionHint}`,
+					directive,
+				]
+					.filter((part) => part.trim())
+					.join("\n\n"),
 			},
 		];
+	}
+
+	/** Who the model is answering for. Constant for the session, so it rides in the head. */
+	private ownerLine(): string {
+		const ownerName = this.deps.ownerName?.trim();
+		return ownerName
+			? `\n\nThe account Owner's name is ${ownerName}. When you introduce ` +
+					`yourself, say you are ${ownerName}'s assistant.`
+			: "";
 	}
 
 	/**
@@ -1243,32 +1286,36 @@ export class ManagerController {
 			chatId: string;
 			loop: InterrogationState;
 		};
-		const raw = await this.deps.chatStore.getRecent(
-			current.chatId,
-			this.deps.rememberMessages,
-		);
+		const raw = await this.deps.chatStore.all(current.chatId);
 		this.rememberUserId(current.chatId, raw);
-		const records = budgetRecords(
-			raw,
-			this.deps.maxCharsPerMessage,
-			this.deps.maxContextChars,
-		);
+		const records = windowRecords(raw, {
+			maxMessages: this.deps.rememberMessages,
+			maxCharsPerMessage: this.deps.maxCharsPerMessage,
+			maxContextChars: this.deps.maxContextChars,
+		});
 		const meta = this.chats.get(current.chatId);
 		const isolated = buildIsolatedMessages({
 			records,
 			boundary: boundaryDirective(meta?.contactName ?? current.chatId),
 		});
 		const known = await this.knownFactsBlock(meta);
-		const system =
-			`${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}` +
-			(known ? `\n\n${known}` : "");
+		// Constant above the transcript, everything that varies below it — the same rule as
+		// `buildContextForActive`, and for the same measured reason. The facts block is the
+		// most volatile thing in a consolidation (it is what the pass EXISTS to change), so
+		// it is the last thing that may sit on top of the conversation.
+		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}`;
 		const directive = this.turnDecided()
-			? MANAGER_TURN_DONE
+			? CONSOLIDATION_DONE
 			: currentProbe(current.loop).directive;
 		return [
 			{ role: "user", content: system },
 			...isolated,
-			{ role: "user", content: `${this.nowLine()}\n\n${directive}` },
+			{
+				role: "user",
+				content: [this.nowLine(), known, directive]
+					.filter((part) => part.trim())
+					.join("\n\n"),
+			},
 		];
 	}
 
@@ -1507,6 +1554,8 @@ export class ManagerController {
 		};
 		this.facts.reset();
 		this.probes.reset();
+		this.decision.reset();
+		this.resolve.reset();
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
 	}
 
@@ -1611,6 +1660,12 @@ export class ManagerController {
 	}): Promise<void> {
 		this.consolidating = null;
 		this.facts.reset();
+		// A memory pass makes no chat decision, so it must leave none behind. It should
+		// not be able to record one at all now (`tool-gate.ts` takes the reply tools away
+		// on this turn) — but a sink that outlives the turn that filled it is a landmine,
+		// and the next turn to read it would be somebody else's.
+		this.decision.reset();
+		this.resolve.reset();
 		for (const fact of finalFacts(current.loop)) {
 			this.facts.record([
 				{ text: fact.text, subject: "interlocutor", kind: fact.kind },

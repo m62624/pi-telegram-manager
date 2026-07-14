@@ -4,6 +4,7 @@ import { AbortRegistry } from "../../../src/core/abort";
 import {
 	ConnectController,
 	type ConnectControllerDeps,
+	isReadOnlyBridgeCommand,
 } from "../../../src/modes/connect/controller";
 import { OutboundSender } from "../../../src/telegram/outbound";
 import { RichHtml, thinking } from "../../../src/telegram/rich-builder";
@@ -84,6 +85,19 @@ describe("ConnectController", () => {
 		expect(sendFollowUp).toHaveBeenCalledTimes(1);
 		expect(sendFollowUp.mock.calls[0][0]).toContain("hello");
 		expect(controller.pendingCount()).toBe(0);
+	});
+
+	it("stamps the arrival time into the turn it hands the agent", async () => {
+		// The model has to know when a message reached it — and it must learn that from
+		// the message, not from a clock message of its own, which it would answer.
+		const { controller, sendFollowUp } = setup({
+			clock: { now: () => Date.UTC(2026, 6, 13, 5, 33) },
+			timezone: "Asia/Almaty",
+		});
+		await controller.onEvent(messageEvent("hello"));
+		expect(sendFollowUp.mock.calls[0][0]).toContain(
+			"at:Mon 2026-07-13 10:33 +05:00",
+		);
 	});
 
 	it("queues without dispatching while the agent is busy", async () => {
@@ -952,5 +966,30 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		await controller.deliverAssistant("answer");
 
 		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
+	});
+});
+
+describe("isReadOnlyBridgeCommand", () => {
+	it("names the commands that are answered without waking the model", () => {
+		// Mixed mode: any message the owner writes in the bot DM takes the brain back for
+		// coding, which ABORTS a manager turn in flight. Right for a message, wrong for a
+		// question about the bot — a stranger's half-written reply must not die because
+		// the owner asked how full the context was.
+		expect(isReadOnlyBridgeCommand("/status")).toBe(true);
+		expect(isReadOnlyBridgeCommand("/context")).toBe(true);
+		expect(isReadOnlyBridgeCommand("/help@some_bot")).toBe(true);
+	});
+
+	it("does not name the ones that reach into the session — taking it is the point", () => {
+		expect(isReadOnlyBridgeCommand("/esc")).toBe(false);
+		expect(isReadOnlyBridgeCommand("/clear")).toBe(false);
+		expect(isReadOnlyBridgeCommand("/compact")).toBe(false);
+	});
+
+	it("treats ordinary prose as a message, not a command", () => {
+		expect(isReadOnlyBridgeCommand("what is the status of the build?")).toBe(
+			false,
+		);
+		expect(isReadOnlyBridgeCommand(undefined)).toBe(false);
 	});
 });

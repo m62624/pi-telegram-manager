@@ -39,13 +39,17 @@ import {
 	createAboutTools,
 } from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { runFocusedCompaction } from "./core/compaction-run";
+import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
-import { ContextReset } from "./core/context-reset";
 import {
-	backgroundNowMessage,
-	formatClock,
-	formatNowLine,
-} from "./core/datetime";
+	type ContextSnapshot,
+	type MeasurableMessage,
+	type ContextSource as MeasuredSource,
+	measureContext,
+} from "./core/context-measure";
+import { ContextReset } from "./core/context-reset";
+import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -59,12 +63,12 @@ import {
 	planAttachment,
 	toolOutputFileName,
 } from "./core/tool-output-file";
+import { TurnSignal } from "./core/turn-signal";
 import type { TurnSavedFile } from "./core/turns";
 import { resolveUserDir } from "./core/user-path";
 import {
 	loadConnectInstructions,
 	loadManagerInstructions,
-	SYSTEM_INSTRUCTIONS_HEADER,
 	verifyBundledInstructions,
 } from "./instructions/builtin";
 import {
@@ -73,7 +77,14 @@ import {
 	compactionFailedCard,
 } from "./modes/connect/compaction-cards";
 import {
+	type CompactionMemory,
+	type ContextReportInput,
+	renderContextCard,
+	renderContextText,
+} from "./modes/connect/context-card";
+import {
 	ConnectController,
+	isReadOnlyBridgeCommand,
 	MIRROR_URL,
 	REPO_URL,
 } from "./modes/connect/controller";
@@ -129,6 +140,7 @@ import {
 import { withLabelerMention } from "./modes/manager/mention";
 import {
 	stripTelegramTurns,
+	stripTelegramTurnsFromCompaction,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
 import {
@@ -137,10 +149,13 @@ import {
 	mixedContextSource,
 } from "./modes/manager/polarity";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
+import { managerToolGate } from "./modes/manager/tool-gate";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import { compact } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
+	CONSOLIDATION_END_TURN_HINT,
 	RESOLVE_DRAFT_END_TURN_HINT,
 	registerToolGuard,
 } from "./pi/tool-guard";
@@ -416,6 +431,17 @@ const ESC_SETTLE_MS = 3_000;
 const STUCK_WARN_AFTER_MS = 120_000;
 /** Retry the queue on this beat, so a message never waits on an event that never comes. */
 const QUEUE_PUMP_MS = 15_000;
+/**
+ * How long a delivered prompt has to become a turn before we call the hand-off failed.
+ *
+ * A prompt Pi accepted starts its turn at once, so this is generous by a wide margin —
+ * it exists to catch the hand-off that was silently thrown away, not to race a slow one.
+ */
+const TURN_START_WAIT_MS = 15_000;
+/** …unless a compaction is running ahead of the turn. Then we wait it out, up to this. */
+const TURN_START_MAX_WAIT_MS = 300_000;
+/** A compaction that has not reported back in this long is not running any more. */
+const COMPACTION_MAX_MS = 300_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -451,6 +477,7 @@ const MANAGER_HELP_TEXT = [
 	"",
 	"/switch — change mode (manager / personal / mixed)",
 	"/status — model, context, working directory, queue",
+	"/context — what I am carrying, and what filled it up",
 	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
@@ -494,39 +521,41 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// mixed mode's coding polarity, where the owner is coding and needs full tools.
 		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
-		// On a revise turn the decision tools are blocked, so the steer must point at
-		// the one tool that can end it — otherwise a blocked manager_reply answers
-		// "call manager_reply", and the model spins until the turn is wasted.
+		// A blocked tool must be answered with the tool that CAN end this turn — otherwise
+		// a blocked manager_reply is answered with "call manager_reply", and the model
+		// spins until the turn is wasted. Each turn kind has its own way out.
 		endTurnHint: () =>
-			manager?.isReviseTurn() ? RESOLVE_DRAFT_END_TURN_HINT : undefined,
+			manager?.isConsolidating()
+				? CONSOLIDATION_END_TURN_HINT
+				: manager?.isReviseTurn()
+					? RESOLVE_DRAFT_END_TURN_HINT
+					: undefined,
 	});
 
 	/**
 	 * Prepend the connect system instructions so the agent knows it is bridged to
 	 * Telegram (files saved to disk, telegram_attach to send back), for Personal mode
-	 * and for mixed's coding polarity alike.
-	 *
-	 * The prepended block is kept byte-identical across calls (constant content + a
-	 * stable timestamp) so the provider's prompt cache holds over the whole shared
-	 * terminal session; the volatile date/time goes in a SEPARATE trailing message,
-	 * outside the cached prefix, so a fresh clock never invalidates the entire context
-	 * (which made a big terminal session re-prefill every turn).
+	 * and for mixed's coding polarity alike. Nothing is appended — see
+	 * `core/connect-context.ts` for why that sentence is the important one.
 	 */
-	const withConnectBlock = <T>(messages: readonly T[]): unknown[] => {
-		if (!connect || !connectSystemBlock) return [...messages];
-		return [
-			{
-				role: "user",
-				content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
-				timestamp: 0,
-			},
-			...messages,
-			{
-				role: "user",
-				content: backgroundNowMessage(Date.now(), connectTimezone),
-				timestamp: Date.now(),
-			},
-		];
+	const withConnectBlock = <T>(messages: readonly T[]): unknown[] =>
+		connect ? withSystemBlock(messages, connectSystemBlock) : [...messages];
+
+	/**
+	 * The exact array we are about to hand the model, measured on the way out — this
+	 * is the only place it exists, and the only place that knows what we changed. It
+	 * is what `/context` reports. See `core/context-measure.ts`.
+	 */
+	const measured = <T>(
+		source: MeasuredSource,
+		messages: readonly T[],
+	): { messages: readonly T[] } => {
+		lastContext = measureContext(
+			source,
+			messages as readonly MeasurableMessage[],
+			Date.now(),
+		);
+		return { messages };
 	};
 
 	// Rebuild the LLM context per mode: the manager replaces it with the active
@@ -540,25 +569,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// block belongs here exactly as it does in Personal mode.
 		if (source === "coding-filtered") {
 			const stripped = stripTelegramTurns(event.messages);
-			return {
-				messages: withConnectBlock(contextReset.apply(stripped) ?? stripped),
-			} as never;
+			return measured(
+				"mixed-coding",
+				withConnectBlock(contextReset.apply(stripped) ?? stripped),
+			) as never;
 		}
 		// Manager / mixed-telegram: replace context with the active chat's isolated
 		// history so the model sees only that one conversation.
 		if (source === "manager-chat" && manager) {
 			const isolated = await manager.buildContextForActive();
 			if (!isolated) return {};
-			return {
-				messages: toRebuiltMessages(isolated, Date.now()),
-			} as never;
+			return measured(
+				"manager-chat",
+				toRebuiltMessages(isolated, Date.now()),
+			) as never;
 		}
 		const filtered = contextReset.apply(event.messages);
 		// Mode 1: the owner's thread, with the bridge's system block.
 		if (connect && connectSystemBlock) {
-			return {
-				messages: withConnectBlock(filtered ?? event.messages),
-			} as never;
+			return measured(
+				"personal",
+				withConnectBlock(filtered ?? event.messages),
+			) as never;
 		}
 		return filtered ? { messages: filtered } : {};
 	});
@@ -609,8 +641,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
-	// Timezone for the mode-1 `[Now: …]` line (from settings; system zone if unset).
-	let connectTimezone: string | undefined;
+	// The last context handed to the model, and the last compaction of this session —
+	// everything `/context` reports. Null until the first turn.
+	let lastContext: ContextSnapshot | null = null;
+	let lastCompaction: CompactionMemory | null = null;
+	// Fires on `agent_start`. It is how a hand-off is confirmed — see `deliverPrompt`.
+	const turnStarted = new TurnSignal();
+	// One hand-off at a time (see `deliverPrompt`).
+	let deliveryInFlight = false;
+	// When the running compaction began; 0 = none. A compaction runs BEFORE the turn it
+	// delays (Pi checks for one inside `prompt()`), so a prompt waiting behind one has
+	// not failed — and on a local model it can take minutes. The stamp expires on its
+	// own, so a compaction that never reports back cannot wedge the delivery path.
+	let compactingSince = 0;
+	const compactionInFlight = (): boolean =>
+		compactingSince > 0 && Date.now() - compactingSince < COMPACTION_MAX_MS;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -828,7 +873,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Hand a prompt to the agent — and only ever while the session is REALLY idle.
+	 * Hand a prompt to the agent — and only ever while the session is REALLY idle, and
+	 * only ever ONE hand-off at a time.
 	 *
 	 * `sendUserMessage` starts a turn when the agent is idle and QUEUES otherwise. A
 	 * queued message is not safe: on any abort the TUI calls
@@ -841,17 +887,52 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
 	 * still finishing, so a message sent from that handler (the queue pump does exactly
 	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
-	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes. The
-	 * message stays in our queue (the caller only drops it once it is really sent) and
-	 * the pump tries again; a session that never comes back is reported, not waited on.
+	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes.
+	 *
+	 * And then we CONFIRM. `pi.sendUserMessage` is fire-and-forget (it returns `void`;
+	 * the SDK swallows the promise), so awaiting it proves nothing, and it fails for
+	 * real: right after an abort the session says idle while the run is still unwinding,
+	 * `agent.prompt()` throws "Agent is already processing a prompt", and the message is
+	 * gone — silently, because the call could not tell us. A prompt that was accepted
+	 * starts a turn, so we wait for `agent_start` (see {@link TurnSignal}) and treat its
+	 * absence as a failed hand-off: the message stays in our queue, and the pump tries
+	 * again.
 	 */
 	const deliverPrompt = async (content: PromptContent): Promise<void> => {
-		if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
-			noteSessionStuck();
-			throw new Error("the Pi session did not go idle; message kept in queue");
+		// One at a time: a second attempt while the first is still unconfirmed cannot be
+		// told apart from a retry, and a retry that lands twice sends the message twice.
+		if (deliveryInFlight) {
+			throw new Error("a hand-off is already in flight; message kept in queue");
 		}
-		sessionStuckSince = 0;
-		await pi.sendUserMessage(content, { deliverAs: "followUp" });
+		deliveryInFlight = true;
+		try {
+			if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
+				noteSessionStuck();
+				throw new Error(
+					"the Pi session did not go idle; message kept in queue",
+				);
+			}
+			// Armed BEFORE the send, so a turn that starts immediately is not missed.
+			let started = turnStarted.next(TURN_START_WAIT_MS);
+			pi.sendUserMessage(content, { deliverAs: "followUp" });
+			const deadline = Date.now() + TURN_START_MAX_WAIT_MS;
+			while (!(await started)) {
+				// Pi runs a compaction INSIDE `prompt()`, before the turn — and a local model
+				// summarising a full context takes minutes. A prompt waiting behind one has
+				// not failed, and re-sending it would both duplicate the message and pile a
+				// second compaction on the first.
+				if (!compactionInFlight() || Date.now() >= deadline) {
+					noteSessionStuck();
+					throw new Error(
+						"the prompt never started a turn; message kept in queue",
+					);
+				}
+				started = turnStarted.next(TURN_START_WAIT_MS);
+			}
+			sessionStuckSince = 0;
+		} finally {
+			deliveryInFlight = false;
+		}
 	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
@@ -944,6 +1025,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	const buildStatus = (): string => renderStatusCard(statusInput());
+
+	/**
+	 * What `/context` reports: the context we last built (ours, measured), the size of
+	 * the last call (Pi's, exact), and the last compaction (the usual answer to "why
+	 * did it forget the beginning").
+	 */
+	const contextInput = (): ContextReportInput => {
+		const usage = activeCtx?.getContextUsage();
+		return {
+			snapshot: lastContext ?? undefined,
+			usage: usage
+				? {
+						tokens: usage.tokens,
+						contextWindow: usage.contextWindow,
+						percent: usage.percent,
+					}
+				: undefined,
+			compaction: lastCompaction ?? undefined,
+			now: Date.now(),
+		};
+	};
+	const buildContextReport = (): string => renderContextCard(contextInput());
 
 	/** What the chat is told about an /esc — including the outcome that used to be silence. */
 	const escapeCard = (outcome: "aborted" | "idle" | "stuck"): string => {
@@ -1176,7 +1279,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		connectSystemBlock = null;
-		connectTimezone = undefined;
+		// Nothing will ever confirm a hand-off that is still waiting: the mode is gone.
+		turnStarted.clear();
+		compactingSince = 0;
+		// The next mode builds its own context; reporting the last one built by the mode
+		// that just ended would be a true number about a thread that is gone.
+		lastContext = null;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		thinkingEnabled = false;
@@ -1213,6 +1321,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerMatcher = null;
 		managerUi?.setWidget(MANAGER_BANNER_KEY, undefined);
 		managerUi = null;
+		// See `stopConnect`: the context that was measured belonged to the mode that is
+		// ending, and /context must not report it as if it were still the one in use.
+		turnStarted.clear();
+		compactingSince = 0;
+		lastContext = null;
 		// Tear down mixed-mode state (a no-op for the standalone manager). Deactivate
 		// the lifecycle record for whichever mode was actually running.
 		const wasMixed = mixedActive;
@@ -1227,7 +1340,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			stopThinking();
 			connect = null;
 			connectSystemBlock = null;
-			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
 			thinkingEnabled = false;
@@ -1256,7 +1368,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			event.chatId === ownerUserId
 		) {
 			await acceptAsPersonal(event);
-			await takeSessionForCoding();
+			// A question ABOUT the bot is not the owner taking over. `/status`, `/context`
+			// and `/help` are answered from our own state — the model never sees them — so
+			// taking the session for one would abort a manager turn in flight: a stranger's
+			// half-written reply dying because the owner asked how full the context was.
+			// Everything else, `/esc` and `/clear` and `/compact` included, IS the owner
+			// reaching into the session, and takes it.
+			if (!isReadOnlyBridgeCommand(event.message.text)) {
+				await takeSessionForCoding();
+			}
 			await connect.onEvent(event);
 			return;
 		}
@@ -1322,6 +1442,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
+		// The turn started — which is the only proof we can get that the prompt behind it
+		// was ever accepted. See `deliverPrompt`.
+		turnStarted.fire();
+		// A turn is running, so whatever compaction preceded it is over, whether or not it
+		// said so.
+		compactingSince = 0;
 		managerTurnTools = [];
 		aboutCallsThisTurn = 0;
 		// Whose run is this? Personal mode: always the owner's. Mixed: only a coding
@@ -1683,18 +1809,63 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Narrate compaction, whoever started it: the owner (/compact), the context
 	// threshold, or an overflow recovery. It rewrites what the model remembers and takes
 	// long enough that saying nothing reads as a hang.
+	//
+	// It is also the ONE path that reads the session without asking us what the model
+	// may see: `pi.on("context")` does not run for a compaction. In mixed mode that
+	// matters — the manager's Telegram turns share the session with the owner's coding
+	// thread — so the moderation turns come out of the summary here, before it is
+	// written. See `stripTelegramTurnsFromCompaction`.
 	pi.on("session_before_compact", async (event, ctx) => {
-		const controller = connect;
-		if (!controller) return;
-		await chatLane
-			.run(() =>
-				controller.sendToChat(
-					compactingCard(event.reason, ctx.getContextUsage()),
+		// A compaction runs INSIDE `prompt()`, ahead of the turn it delays, and on a local
+		// model it takes minutes. `deliverPrompt` reads this so it waits for the turn
+		// instead of concluding the prompt was thrown away and sending it a second time.
+		compactingSince = Date.now();
+		// The material, first — including for the fallback path below, where Pi summarises
+		// `preparation` itself and never asks us anything again.
+		if (mixedActive) stripTelegramTurnsFromCompaction(event.preparation);
+		if (connect) {
+			const controller = connect;
+			await chatLane
+				.run(() =>
+					controller.sendToChat(
+						compactingCard(event.reason, ctx.getContextUsage()),
+					),
+				)
+				.catch(() => {});
+		}
+		// Then the summary itself. Pi's automatic compaction — the one that actually fires
+		// in a long session — tells the summariser nothing, so it weighs the conversation
+		// by mass and keeps the tool output, which is four fifths of it, over the person,
+		// who is two percent of it. We run the same `compact()` Pi would have run, with the
+		// one argument its automatic path leaves empty. Undefined = Pi compacts as usual.
+		const compaction = await runFocusedCompaction({
+			thread: manager ? (mixedActive ? "mixed" : "manager") : "personal",
+			model: ctx.model,
+			preparation: event.preparation,
+			callerInstructions: event.customInstructions,
+			signal: event.signal,
+			auth: (model) => ctx.modelRegistry.getApiKeyAndHeaders(model),
+			compact: (args) =>
+				compact(
+					args.preparation,
+					args.model,
+					args.apiKey,
+					args.headers,
+					args.customInstructions,
+					args.signal,
 				),
-			)
-			.catch(() => {});
+		});
+		return compaction ? { compaction } : undefined;
 	});
 	pi.on("session_compact", async (event) => {
+		compactingSince = 0;
+		// Remembered, not just announced: a compaction is the answer to "why did it
+		// forget the beginning", and that question is asked hours later, when the card
+		// has scrolled away. /context still says so.
+		lastCompaction = {
+			at: Date.now(),
+			tokensBefore: event.compactionEntry.tokensBefore,
+		};
 		const controller = connect;
 		if (!controller) return;
 		await chatLane
@@ -2124,7 +2295,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			overrideText: connectOverride.text,
 		});
-		connectTimezone = settings.timezone;
 
 		// Warn once (not per-message) when native rich rendering isn't reaching
 		// Telegram and we degraded to plain text — so a tester can tell a real
@@ -2267,6 +2437,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 			onCompact: compactContext,
 			onStatus: buildStatus,
+			onContextReport: buildContextReport,
 			onAbort: async () => {
 				await connect?.sendToChat(escapeCard(await escapeSession()));
 			},
@@ -2279,6 +2450,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			chatThread: personalThread,
 			onTurnVisible: mirrorStraysIntoPersonal,
 			forwards: settings.forwards,
+			timezone: settings.timezone,
 			outbound,
 			abort,
 		});
@@ -2500,19 +2672,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			settings.manager.allowedTools,
 			(warning) => ctx.ui.notify(warning, "warning"),
 		);
-		// manager_resolve_draft belongs to the manager group (so it is hidden whenever
-		// the manager is inactive) but is visible ONLY on a revise turn. On a revise
-		// turn it is the SOLE active tool — reply/silent/remember are hidden — so the
-		// model must resolve the held draft (send/refine/drop) and cannot spin calling
-		// a tool the gate ignores. On any other turn it is hidden and the normal
-		// sandbox applies. The matcher gates both the visibility gate and the runtime
-		// guard on the live revise state, recomputed before each request.
-		managerMatcher = {
-			matches: (name) =>
-				(manager?.isReviseTurn() ?? false)
-					? name === MANAGER_RESOLVE_TOOL_NAME
-					: name !== MANAGER_RESOLVE_TOOL_NAME && baseMatcher.matches(name),
-		};
+		// One turn kind, one tool set — `modes/manager/tool-gate.ts` owns the rule and the
+		// reason it exists. The matcher drives BOTH the visibility gate (what the model
+		// sees) and the runtime guard (what it may call), and both are recomputed before
+		// every request, so a turn never carries the tools of the one before it.
+		managerMatcher = managerToolGate(baseMatcher, {
+			get consolidating() {
+				return manager?.isConsolidating() ?? false;
+			},
+			get revising() {
+				return manager?.isReviseTurn() ?? false;
+			},
+		});
 
 		// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
 		// terminal — it staleness-poisons the captured `ctx` and the module-level
@@ -3161,6 +3332,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						chat_id: ownerUserId,
 						message_thread_id: threadOf(event) ?? personalThread(),
 						text: renderStatusText(statusInput()),
+						link_preview_options: { is_disabled: true },
+					})
+					.catch(() => {});
+				return true;
+			}
+			// /context, likewise: in manager mode it reports the rebuilt per-chat context,
+			// which is the one place you can see the isolation actually holding.
+			if (!connect && /^\/context(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: renderContextText(contextInput()),
 						link_preview_options: { is_disabled: true },
 					})
 					.catch(() => {});

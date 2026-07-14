@@ -5,7 +5,7 @@
  * replying to, and which files rode along — none of which is part of the raw
  * message text. We prepend compact, deterministic header lines:
  *
- *   [telegram|from:Alice|chat:General]
+ *   [telegram|from:Alice|chat:General|at:Mon 2026-07-10 14:32 +05:00]
  *   [reply to Bob]: "earlier text…"
  *   [attachments: photo, document "report.pdf"]
  *
@@ -66,6 +66,19 @@ export interface TurnInput extends MessageContext {
 	text?: string;
 	senderName?: string;
 	chatTitle?: string;
+	/**
+	 * When the message reached us, already formatted (`Mon 2026-07-10 14:32 +05:00`).
+	 *
+	 * The clock belongs to the message, not to the conversation. It used to be a
+	 * message of its own, appended to the context before every LLM call — and a
+	 * message is a TURN: the model read it as someone speaking, answered it ("a
+	 * background tick, I am not replying"), and that answer went into the history
+	 * and into the chat. Carried here it is simply part of what arrived, it is
+	 * written once, and it never changes again — so the model always knows when
+	 * each message was sent, and the prompt cache is never invalidated by a clock
+	 * that ticks.
+	 */
+	receivedAt?: string;
 	attachments?: readonly TurnAttachment[];
 	/** Non-image files saved to disk, with their absolute paths. */
 	savedFiles?: readonly TurnSavedFile[];
@@ -86,13 +99,15 @@ function truncate(text: string, max: number): string {
 	return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
 }
 
-/** The `[telegram|from:…|chat:…]` header, omitting absent attributes. */
+/** The `[telegram|from:…|chat:…|at:…]` header, omitting absent attributes. */
 export function buildHeader(input: TurnInput): string {
 	const parts = [TELEGRAM_PREFIX];
 	const from = input.senderName ? sanitizeAttribute(input.senderName) : "";
 	const chat = input.chatTitle ? sanitizeAttribute(input.chatTitle) : "";
+	const at = input.receivedAt ? sanitizeAttribute(input.receivedAt) : "";
 	if (from) parts.push(`from:${from}`);
 	if (chat) parts.push(`chat:${chat}`);
+	if (at) parts.push(`at:${at}`);
 	return `[${parts.join("|")}]`;
 }
 

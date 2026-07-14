@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backgroundNowMessage, formatNowLine } from "../../src/core/datetime";
+import { formatClock, formatNowLine } from "../../src/core/datetime";
 
 // 2026-07-10T09:32:00Z — a Friday in UTC.
 const T = Date.UTC(2026, 6, 10, 9, 32, 0);
@@ -24,16 +24,14 @@ describe("formatNowLine", () => {
 	});
 });
 
-describe("backgroundNowMessage", () => {
-	it("labels the clock as background so the model does not answer it", () => {
-		// Regression: as the LAST message in the context, a bare "[Now: …]" read as a
-		// fresh prompt — traces show the model pausing mid-task to reason about it.
-		const message = backgroundNowMessage(
-			Date.UTC(2026, 6, 13, 5, 33),
-			"Asia/Almaty",
-		);
-		expect(message).toContain("Background");
-		expect(message).toContain("Do not reply to it");
-		expect(message).toContain("[Now: Mon 2026-07-13 10:33 +05:00]");
+describe("formatClock", () => {
+	it("renders the bare clock, with no framing — it goes inside a message header", () => {
+		expect(formatClock(T, "Asia/Almaty")).toBe("Fri 2026-07-10 14:32 +05:00");
+	});
+
+	it("carries no character that would break the turn header's framing", () => {
+		// The stamp is written into `[telegram|from:…|at:…]`, so a `|`, a `]` or a
+		// newline in it would split the header into nonsense.
+		expect(formatClock(T, "Asia/Almaty")).not.toMatch(/[|\]\r\n]/);
 	});
 });

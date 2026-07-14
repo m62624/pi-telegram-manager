@@ -14,6 +14,7 @@
 import type { Message, User } from "@grammyjs/types";
 import { COMPLIANCE_LINKS, COMPLIANCE_NOTICE } from "../../constants";
 import type { AbortRegistry } from "../../core/abort";
+import { formatClock } from "../../core/datetime";
 import {
 	DEFAULT_FORWARD_POLICY,
 	ForwardBursts,
@@ -105,6 +106,11 @@ export interface ConnectControllerDeps {
 	 * fetch any.
 	 */
 	onStatus?: () => string;
+	/**
+	 * Build the `/context` card — what the model is actually carrying, and what put it
+	 * there. `/status` says how full the context is; this says what it is full OF.
+	 */
+	onContextReport?: () => string;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
@@ -136,6 +142,12 @@ export interface ConnectControllerDeps {
 	clearTimer?: (handle: unknown) => void;
 	/** Clock port, injected so forward batching is testable without real time. */
 	clock?: { now(): number };
+	/**
+	 * IANA zone for the arrival time stamped into each turn's header (system zone
+	 * when unset). The model is told when a message reached it inside the message
+	 * itself — never as a message of its own; see `core/connect-context.ts`.
+	 */
+	timezone?: string;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -149,8 +161,32 @@ const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const COMPACT_COMMANDS = new Set(["compact"]);
 const STATUS_COMMANDS = new Set(["status"]);
+const CONTEXT_COMMANDS = new Set(["context"]);
+
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
+/**
+ * The commands the bridge answers entirely from its own state: they never reach the
+ * model, never touch the session, and never change what any mode is doing.
+ *
+ * Mixed mode is why this needs a name. Anything the owner writes in the bot DM takes
+ * the brain back for coding — which ABORTS a manager turn in flight. That is right for
+ * a message (the owner outranks a stranger who is waiting) and wrong for a question
+ * ABOUT the bot: ask how full the context is, and a stranger's half-written reply dies
+ * for it. `/esc`, `/clear` and `/compact` are not here on purpose — each one is the
+ * owner reaching into the session, and taking it is the point.
+ */
+const READ_ONLY_COMMANDS = new Set([
+	...HELP_COMMANDS,
+	...STATUS_COMMANDS,
+	...CONTEXT_COMMANDS,
+]);
+
+/** See {@link READ_ONLY_COMMANDS}. */
+export function isReadOnlyBridgeCommand(text: string | undefined): boolean {
+	const command = parseSlashCommand(text ?? "");
+	return command !== null && READ_ONLY_COMMANDS.has(command.name);
+}
 
 /** The extension's repository and its Tangled mirror, shown in the help footer. */
 export const REPO_URL = "https://github.com/m62624/pi-telegram-manager";
@@ -165,6 +201,7 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/clear", "clear the conversation history"),
 	bullet("/compact", "summarise the history to free up context"),
 	bullet("/status", "model, context, working directory, queue"),
+	bullet("/context", "what I am carrying, and what filled it up"),
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
@@ -330,6 +367,7 @@ export class ConnectController {
 				forward && input.text
 					? limitForwardText(input.text, this.forwardPolicy.maxChars)
 					: input.text,
+			receivedAt: formatClock(this.now(), this.deps.timezone),
 			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
 			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
 		});
@@ -437,6 +475,10 @@ export class ConnectController {
 		}
 		if (STATUS_COMMANDS.has(command.name) && this.deps.onStatus) {
 			await this.sendToChat(this.deps.onStatus());
+			return true;
+		}
+		if (CONTEXT_COMMANDS.has(command.name) && this.deps.onContextReport) {
+			await this.sendToChat(this.deps.onContextReport());
 			return true;
 		}
 		if (HELP_COMMANDS.has(command.name)) {

@@ -4,6 +4,7 @@ import {
 	budgetRecords,
 	buildIsolatedMessages,
 	toRebuiltMessages,
+	windowRecords,
 } from "../../../src/modes/manager/context-isolation";
 import type { ChatMessageRecord } from "../../../src/storage/chat-store";
 
@@ -190,5 +191,86 @@ describe("budgetRecords", () => {
 	it("disables both caps at 0", () => {
 		const input = [rec({ text: "x".repeat(100) }), rec({ text: "y" })];
 		expect(budgetRecords(input, 0, 0)).toEqual(input);
+	});
+});
+
+describe("windowRecords", () => {
+	const record = (i: number, text = `message ${i}`): ChatMessageRecord => ({
+		at: i,
+		author: i % 2 === 0 ? "interlocutor" : "bot",
+		text,
+	});
+	const many = (n: number) => Array.from({ length: n }, (_, i) => record(i));
+	const opts = {
+		maxMessages: 20,
+		maxCharsPerMessage: 0,
+		maxContextChars: 0,
+		block: 8,
+	};
+
+	it("keeps everything while the conversation fits", () => {
+		expect(windowRecords(many(20), opts)).toHaveLength(20);
+		expect(windowRecords(many(5), opts)[0].at).toBe(0);
+	});
+
+	it("does NOT move for every new message — that is the whole point", () => {
+		// A last-N window slides by one per message, so the first line the model reads
+		// changes every turn, and everything under it has to be read again. This one holds
+		// still and lets the conversation grow over it.
+		const starts = [21, 22, 23, 24, 25, 26, 27].map(
+			(total) => windowRecords(many(total), opts)[0].at,
+		);
+		expect(new Set(starts).size).toBe(1);
+		expect(starts[0]).toBe(0);
+	});
+
+	it("moves a whole block when it finally must", () => {
+		// It errs upward first (21…27 messages kept, all from the same first line), and
+		// only when a whole block has piled up does the window let go of one.
+		expect(windowRecords(many(27), opts)[0].at).toBe(0);
+		expect(windowRecords(many(28), opts)[0].at).toBe(8);
+		expect(windowRecords(many(35), opts)[0].at).toBe(8);
+		expect(windowRecords(many(36), opts)[0].at).toBe(16);
+	});
+
+	it("never holds fewer messages than configured", () => {
+		// The window errs upward: between maxMessages and maxMessages + block - 1. Being
+		// asked to remember 20 and remembering 13 would be a memory bug dressed as a
+		// performance one.
+		for (let total = 20; total <= 60; total += 1) {
+			const kept = windowRecords(many(total), opts).length;
+			expect(kept).toBeGreaterThanOrEqual(20);
+			expect(kept).toBeLessThan(20 + 8);
+		}
+	});
+
+	it("still obeys the character budget, and drops on the same grid", () => {
+		const long = Array.from({ length: 30 }, (_, i) =>
+			record(i, "x".repeat(500)),
+		);
+		const kept = windowRecords(long, { ...opts, maxContextChars: 5_000 });
+		expect(kept.length).toBeLessThanOrEqual(10);
+		// On the grid: dropping one message at a time would undo the anchoring that the
+		// budget is standing on.
+		expect((kept[0].at as number) % 8).toBe(0);
+	});
+
+	it("keeps the newest message however long it is", () => {
+		const huge = [record(0, "x".repeat(50)), record(1, "y".repeat(100_000))];
+		const kept = windowRecords(huge, { ...opts, maxContextChars: 1_000 });
+		expect(kept).toHaveLength(1);
+		expect(kept[0].text?.startsWith("y")).toBe(true);
+	});
+
+	it("truncates one over-long message in place, moving nobody", () => {
+		const kept = windowRecords([record(0, "z".repeat(100))], {
+			...opts,
+			maxCharsPerMessage: 10,
+		});
+		expect(kept[0].text).toBe(`${"z".repeat(10)} …[+90 chars]`);
+	});
+
+	it("survives an empty transcript", () => {
+		expect(windowRecords([], opts)).toEqual([]);
 	});
 });

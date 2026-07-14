@@ -127,17 +127,7 @@ export function budgetRecords(
 	maxCharsPerMessage: number,
 	maxContextChars: number,
 ): ChatMessageRecord[] {
-	const capped = records.map((record) => {
-		const text = record.text ?? "";
-		if (maxCharsPerMessage <= 0 || text.length <= maxCharsPerMessage) {
-			return record;
-		}
-		const dropped = text.length - maxCharsPerMessage;
-		return {
-			...record,
-			text: `${text.slice(0, maxCharsPerMessage)} …[+${dropped} chars]`,
-		};
-	});
+	const capped = records.map((record) => capRecord(record, maxCharsPerMessage));
 	if (maxContextChars <= 0) return [...capped];
 	const kept: ChatMessageRecord[] = [];
 	let total = 0;
@@ -147,6 +137,100 @@ export function budgetRecords(
 		kept.unshift(capped[i]);
 	}
 	return kept;
+}
+
+/** Truncate one over-long message, saying how much was left out. */
+function capRecord(
+	record: ChatMessageRecord,
+	maxCharsPerMessage: number,
+): ChatMessageRecord {
+	const text = record.text ?? "";
+	if (maxCharsPerMessage <= 0 || text.length <= maxCharsPerMessage)
+		return record;
+	const dropped = text.length - maxCharsPerMessage;
+	return {
+		...record,
+		text: `${text.slice(0, maxCharsPerMessage)} …[+${dropped} chars]`,
+	};
+}
+
+/**
+ * How many messages the window sheds when it must shed any.
+ *
+ * The number is a trade, and both sides of it are real: a bigger block means the
+ * transcript the model reads is stable for longer (cheaper turns), and that when it
+ * finally moves it forgets more at once. Eight is two to four turns of stability, and
+ * eight messages is not a conversation.
+ */
+export const WINDOW_BLOCK = 8;
+
+/**
+ * The transcript window: the newest messages, trimmed to the caps — and, crucially,
+ * ANCHORED, so that its first line does not move every time somebody speaks.
+ *
+ * A plain last-N window slides by one message per message. That sounds harmless and is
+ * not: the first line of the transcript is the first thing the model reads after the
+ * standing rules, so when it changes, EVERYTHING under it has to be read again. The
+ * bench (`tests/modes/manager/prefix-reuse.test.ts`) priced it — in a chat of
+ * pasted-length messages, an ordinary turn re-read 9,328 characters on average and
+ * 19,258 at worst, almost none of which was new.
+ *
+ * So the window's start is quantised to a grid of {@link WINDOW_BLOCK} messages. It stays
+ * put while the conversation grows over it, and when it finally must move, it moves a
+ * whole block at once — paying for one expensive turn and then being free again for
+ * several. The window therefore holds between `maxMessages` and `maxMessages + block - 1`
+ * records: never FEWER than configured, sometimes a few more, which is the right way for
+ * this trade to err.
+ *
+ * `maxContextChars` still binds (a paste can be enormous), and when it does, it also
+ * moves on the grid — dropping a whole block rather than one message, because a budget
+ * that slides by one undoes the anchoring it is standing on. `maxCharsPerMessage`
+ * truncates a single over-long message in place, which changes no one's position.
+ *
+ * Pure, and never touches disk: only the copy the model reads is trimmed.
+ */
+export function windowRecords(
+	records: readonly ChatMessageRecord[],
+	options: {
+		maxMessages: number;
+		maxCharsPerMessage: number;
+		maxContextChars: number;
+		block?: number;
+	},
+): ChatMessageRecord[] {
+	const block = Math.max(1, options.block ?? WINDOW_BLOCK);
+	const capped = records.map((record) =>
+		capRecord(record, options.maxCharsPerMessage),
+	);
+	if (capped.length === 0) return [];
+
+	const overflow =
+		options.maxMessages > 0
+			? Math.max(0, capped.length - options.maxMessages)
+			: 0;
+	let start = block * Math.floor(overflow / block);
+
+	if (options.maxContextChars > 0) {
+		const last = capped.length - 1;
+		// The newest message is never dropped, however long it is: a turn with nothing in
+		// it is not a cheaper turn, it is a broken one.
+		while (start < last && charsFrom(capped, start) > options.maxContextChars) {
+			start += block;
+		}
+		if (start > last) start = last;
+	}
+	return capped.slice(start);
+}
+
+function charsFrom(
+	records: readonly ChatMessageRecord[],
+	start: number,
+): number {
+	let total = 0;
+	for (let i = start; i < records.length; i += 1) {
+		total += records[i].text?.length ?? 0;
+	}
+	return total;
 }
 
 /** The default boundary directive shown when switching to a chat. */

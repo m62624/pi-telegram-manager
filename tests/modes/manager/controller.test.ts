@@ -460,8 +460,12 @@ describe("ManagerController", () => {
 		});
 
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("WELCOME BACK");
-		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
+		// The opener rides in the TRAILING message, not the head: it changes as the chat
+		// progresses (first contact → nothing → re-opening), and anything above the
+		// transcript that changes costs the whole transcript to re-read.
+		expect(ctx?.at(-1)?.content).toContain("WELCOME BACK");
+		expect(ctx?.at(-1)?.content).not.toContain("FIRST CONTACT");
+		expect(ctx?.[0].content).not.toContain("WELCOME BACK");
 	});
 
 	it("fast-tracks an interlocutor wake-word past the owner-reply window", async () => {
@@ -677,10 +681,13 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
-		// First message = the system-instruction block (rules + first-contact).
+		// First message = the standing rules, and NOTHING that varies.
 		expect(ctx?.[0].content).toContain("[SYSTEM_INSTRUCTIONS]");
 		expect(ctx?.[0].content).toContain("BASE MANAGER RULES");
-		expect(ctx?.[0].content).toContain("FIRST CONTACT");
+		expect(ctx?.[0].content).not.toContain("FIRST CONTACT");
+		// The first-contact opener is a situational instruction, so it travels with the
+		// other situational ones, at the end.
+		expect(ctx?.at(-1)?.content).toContain("FIRST CONTACT");
 		// The chat boundary and the interlocutor's line are present in the middle.
 		expect(ctx?.some((m) => m.content.includes("New chat with Alice"))).toBe(
 			true,
@@ -826,9 +833,13 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.[0].content).toContain("Known facts about Alice");
-		expect(ctx?.[0].content).toContain("likes green tea");
-		// The clock lives in the trailing directive, not the cacheable prefix block.
+		// Facts live in the trailing message. They are the most volatile thing the model
+		// reads — learning ONE of them used to change the head block and cost a full
+		// re-read of the conversation underneath it (measured: 19,397 characters).
+		expect(ctx?.at(-1)?.content).toContain("Known facts about Alice");
+		expect(ctx?.at(-1)?.content).toContain("likes green tea");
+		expect(ctx?.[0].content).not.toContain("Known facts about Alice");
+		// The clock lives there too, not in the cacheable prefix block.
 		expect(ctx?.[0].content).not.toContain("[Now:");
 		expect(ctx?.at(-1)?.content).toContain("[Now:");
 	});
@@ -868,7 +879,7 @@ describe("ManagerController", () => {
 		clock.advance(300_001);
 		await controller.onTick();
 		const system =
-			(await controller.buildContextForActive())?.[0].content ?? "";
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
 		// Each kind is its own section with the behaviour it steers.
 		expect(system).toContain("Who they are");
 		expect(system).toContain("address them correctly");
@@ -1122,9 +1133,12 @@ describe("ManagerController", () => {
 		});
 		expect(controller.stepConsolidation()).toBe("continue");
 		expect(controller.turnDecided()).toBe(true);
+		// A memory pass ends in ITS own terms. Told "you have already decided this turn"
+		// — the reply turn's words — a model mid-memory-review concluded it had answered
+		// somebody, and wrote a word of prose for a chat it was never in.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("already decided");
+		).toContain("memory pass for this contact is finished");
 
 		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
 		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
@@ -1842,5 +1856,67 @@ describe("ManagerController — the owner steps into a live chat", () => {
 		controller.resolveSink().record({ action: "drop" });
 		await controller.onAgentEnd();
 		expect(sendReply).not.toHaveBeenCalled();
+	});
+});
+
+describe("a memory pass is not a conversation", () => {
+	/** Run a chat up to the point where its idle consolidation pass starts. */
+	async function untilConsolidating() {
+		const env = await setup();
+		const { controller, clock } = env;
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you around?"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Yes." });
+		await controller.onAgentEnd();
+		// Past the continuation window and the quiet period → the memory pass begins.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(controller.isConsolidating()).toBe(true);
+		return env;
+	}
+
+	it("ends the pass with words about a memory pass, not about a decision", async () => {
+		// The bug: the pass was ended with the reply-turn directive ("you have already
+		// decided this turn"). A model reading that, mid-memory-review, decided it had
+		// answered somebody — and wrote a word of prose for a chat it was never in.
+		const { controller } = await untilConsolidating();
+		controller
+			.probeSink()
+			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
+		await controller.onAgentEnd();
+		controller.probeSink().record({ tool: "candidates", items: [] });
+		expect(controller.turnDecided()).toBe(false);
+		controller.stepConsolidation();
+
+		// Nothing to verify → the pass is finished, and the directive says so in its own
+		// terms: a memory pass, nobody to answer, no tool to call.
+		const directive =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(directive).toContain("memory pass");
+		expect(directive).toContain("not replying to anyone");
+		expect(directive).not.toContain("already decided this turn");
+	});
+
+	it("leaves no decision behind for the next person's turn", async () => {
+		// Belt and braces for the same bug: the reply tools are gone from a memory pass
+		// now, but a decision sink that outlives the turn that filled it is a landmine —
+		// and the next turn to read it belongs to somebody else.
+		const { controller } = await untilConsolidating();
+		controller.decisionSink().record({ kind: "silent" });
+		controller
+			.probeSink()
+			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
+		await controller.onAgentEnd();
+		controller.probeSink().record({ tool: "candidates", items: [] });
+		await controller.onAgentEnd();
+
+		expect(controller.isConsolidating()).toBe(false);
+		expect(controller.decisionSink().current().kind).toBe("none");
 	});
 });

@@ -23,6 +23,22 @@ describe("buildHeader", () => {
 			"[telegram|from:a b c d]",
 		);
 	});
+
+	it("stamps the arrival time into the header, last", () => {
+		// The clock belongs to the message. It used to be a context message of its own,
+		// re-appended before every call to the model — which the model read as a turn
+		// and answered ("a background tick, I am not replying"), out loud, into the chat.
+		expect(
+			buildHeader({
+				senderName: "Alice",
+				receivedAt: "Mon 2026-07-13 10:33 +05:00",
+			}),
+		).toBe("[telegram|from:Alice|at:Mon 2026-07-13 10:33 +05:00]");
+	});
+
+	it("omits the stamp when the arrival time is unknown", () => {
+		expect(buildHeader({ senderName: "Alice" })).toBe("[telegram|from:Alice]");
+	});
 });
 
 describe("buildReplyLine", () => {

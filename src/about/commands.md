@@ -18,6 +18,10 @@ every MODE" — never "to everyone".
 - `/status` — what the session is doing right now: the model and its provider, how full
   the context is, the working directory, whether a turn is running, what is queued, and —
   in mixed — whether the owner or the manager currently holds the session.
+- `/context` — what the model is actually carrying: which thread it was built from (the
+  owner's session, or one isolated chat), how big the last call really was, what the
+  context is made OF (tool output is usually most of it), and whether a compaction has
+  already replaced part of the history with a summary.
 - `/esc` — cancel whatever the agent is doing, exactly as the Escape key does in the
   terminal. If the session does not stop, the bot says so rather than staying quiet.
 - `/switch` — change the mode (manager / personal / mixed) with buttons.
@@ -31,7 +35,9 @@ every MODE" — never "to everyone".
   the terminal sees the cleared context too. Refused while a turn is running.
 - `/compact` — summarise the history so a long session keeps going instead of running
   into the context window. The chat is told how it went: how full the context was, what
-  the history weighed, and a card if the compaction failed.
+  the history weighed, and a card if the compaction failed. Every compaction — this one,
+  and the automatic ones Pi starts on its own — is summarised with instructions to keep
+  what the person said over the tool output that dwarfs it.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
 each conversation, so there is no accumulated history to clear or to compact.

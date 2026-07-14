@@ -69,6 +69,10 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 			command: "status",
 			description: "Model, context, working directory, queue",
 		},
+		{
+			command: "context",
+			description: "What I am carrying, and what filled it up",
+		},
 		{ command: "clear", description: "Clear the conversation history" },
 		{
 			command: "compact",

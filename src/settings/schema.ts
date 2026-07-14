@@ -134,7 +134,17 @@ export interface TelegramSettings {
 			/** Accept non-image documents. Default false (they are refused). */
 			documents: boolean;
 		};
-		/** Last-N messages remembered per chat. */
+		/**
+		 * How many of a chat's newest messages the model reads each turn — as a FLOOR, not
+		 * an exact count: the window holds between this many and this many plus seven.
+		 *
+		 * The slack is what makes a turn cheap. A window that keeps exactly the last N
+		 * moves its first line every time anyone speaks, and a transcript whose first line
+		 * moves has to be re-read from the top by whatever is serving the model — measured
+		 * at 9,328 characters per turn in a chat of pasted-length messages, almost none of
+		 * it new. So the window holds still and lets the conversation grow over it, then
+		 * lets go of a whole block at once. See `windowRecords`.
+		 */
 		rememberMessages: number;
 		/**
 		 * Character budget for the transcript window the model sees (mode 2 / mixed),
