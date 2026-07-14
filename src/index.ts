@@ -182,6 +182,7 @@ import {
 	createChatStore,
 } from "./storage/chat-store";
 import { createContactStore } from "./storage/contact-store";
+import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateMemory } from "./storage/memory-migration";
@@ -221,6 +222,7 @@ import {
 	placeOfOwnerMessage,
 	TopicRouter,
 	type TopicsApi,
+	type TopicsState,
 } from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
 import { fitLine, fitLines, terminalWidth } from "./ui/fit";
@@ -803,32 +805,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * restarted Pi that forgot them used to pin a SECOND message next to the first.
 	 */
 	let modePinMessageIds: number[] = [];
-	interface ModePinState {
-		ownerChatId: number;
-		/** Historic single-id form; still read so an existing pin is not orphaned. */
-		messageId?: number;
-		messageIds?: number[];
-	}
 	let modePinLoaded = false;
+	/**
+	 * The owner's DM state: the topic threads we opened in it and the mode message we
+	 * pinned to it. One file, because they are one question — see `storage/dm-state.ts`.
+	 * The historic single-id pin (`messageId`) is not read here any more; the migration
+	 * folds it into `messageIds` once, on the way in.
+	 */
+	const dmState = createDmState<TopicsState>(fs, paths.dmStatePath);
 
 	const loadModePin = async (ownerChatId: number): Promise<void> => {
 		if (modePinLoaded) return;
 		modePinLoaded = true;
-		const stored = await readJsonIfExists<ModePinState>(
-			fs,
-			paths.modePinPath,
-		).catch(() => null);
+		const stored = await dmState.loadModePin().catch(() => null);
 		if (!stored || stored.ownerChatId !== ownerChatId) return;
-		modePinMessageIds = [
-			...(stored.messageIds ?? []),
-			...(stored.messageId !== undefined ? [stored.messageId] : []),
-		];
+		modePinMessageIds = [...stored.messageIds];
 	};
 
 	/** Forget the pin entirely (an error path: better a new one than a ghost). */
 	const forgetModePin = async (): Promise<void> => {
 		modePinMessageIds = [];
-		await fs.removeFile(paths.modePinPath).catch(() => {});
+		await dmState.clearModePin().catch(() => {});
 	};
 
 	const saveModePin = async (
@@ -836,10 +833,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		messageIds: number[],
 	): Promise<void> => {
 		modePinMessageIds = messageIds;
-		await writeJson<ModePinState>(fs, paths.modePinPath, {
-			ownerChatId,
-			messageIds,
-		}).catch(() => {});
+		await dmState.saveModePin({ ownerChatId, messageIds }).catch(() => {});
 	};
 
 	// Connection watchdog: a silent timer that probes the active bot connection and
@@ -2103,8 +2097,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		topics = new TopicRouter({
 			api: api as TopicsApi,
-			fs,
-			path: paths.topicsPath,
+			store: dmState,
 			ownerChatId,
 			options: settings.topics,
 			onFallback: (reason) => {

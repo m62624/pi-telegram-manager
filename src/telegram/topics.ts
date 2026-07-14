@@ -21,9 +21,7 @@
  * Threaded Mode off, an old API server, or any error degrades to `undefined` thread
  * ids, which route every message to the plain DM exactly as before.
  */
-import { withFileWriteLock } from "../storage/file-lock";
-import type { TelegramFs } from "../storage/fs";
-import { readJsonIfExists, writeJson } from "../storage/json";
+import type { DmStateStore } from "../storage/dm-state";
 
 /** The two topics we maintain in the owner's DM. */
 export type TopicKind = "personal" | "manager";
@@ -157,12 +155,6 @@ export interface TopicsState {
  * The pre-rename layout (`chat` / `log`). Read once so an existing pair of topics is
  * ADOPTED and renamed in place rather than abandoned next to two fresh ones.
  */
-interface LegacyTopicsState {
-	ownerChatId: number;
-	chat: number;
-	log: number;
-}
-
 export interface TopicsOptions {
 	/** Use topics at all. Off → the router is inert and everything stays in the DM. */
 	enabled: boolean;
@@ -172,9 +164,8 @@ export interface TopicsOptions {
 
 export interface TopicRouterDeps {
 	api: TopicsApi;
-	fs: TelegramFs;
-	/** Where the thread ids are persisted (`paths.topicsPath`). */
-	path: string;
+	/** Where the thread ids are persisted — the owner's DM state (`paths.dmStatePath`). */
+	store: DmStateStore<TopicsState>;
 	ownerChatId: number;
 	options: TopicsOptions;
 	/** Called once with the reason when topics are unavailable (a UI hint). */
@@ -570,36 +561,22 @@ export class TopicRouter {
 	}
 
 	/** Persisted ids for THIS owner, in either layout (the old one is adopted). */
+	/**
+	 * The ids stored for THIS owner.
+	 *
+	 * It used to adopt an older on-disk shape here (`chat`/`log`, before they were renamed
+	 * to `personal`/`manager`). That belongs to the migration now — a reader that quietly
+	 * understands two shapes is a reader that will be asked to understand three.
+	 */
 	private async load(): Promise<TopicsState | null> {
-		const stored = await readJsonIfExists<TopicsState & LegacyTopicsState>(
-			this.deps.fs,
-			this.deps.path,
-		);
+		const stored = await this.deps.store.loadTopics();
 		if (!stored || stored.ownerChatId !== this.deps.ownerChatId) return null;
-		if (stored.personal !== undefined && stored.manager !== undefined) {
-			return {
-				ownerChatId: stored.ownerChatId,
-				personal: stored.personal,
-				manager: stored.manager,
-				names: stored.names,
-				...(stored.archive !== undefined ? { archive: stored.archive } : {}),
-				...(stored.used !== undefined ? { used: stored.used } : {}),
-				...(stored.stale !== undefined ? { stale: stored.stale } : {}),
-			};
-		}
-		if (stored.chat !== undefined && stored.log !== undefined) {
-			return {
-				ownerChatId: stored.ownerChatId,
-				personal: stored.chat,
-				manager: stored.log,
-			};
-		}
-		return null;
+		if (stored.personal === undefined || stored.manager === undefined)
+			return null;
+		return stored;
 	}
 
 	private async save(state: TopicsState): Promise<void> {
-		await withFileWriteLock(this.deps.path, async () => {
-			await writeJson(this.deps.fs, this.deps.path, state);
-		});
+		await this.deps.store.saveTopics(state);
 	}
 }

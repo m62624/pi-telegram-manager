@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDmState } from "../../src/storage/dm-state";
 import {
 	placeOfOwnerMessage,
 	TopicRouter,
 	type TopicsApi,
+	type TopicsState,
 } from "../../src/telegram/topics";
 import { FakeFs } from "../helpers/fake-fs";
 
@@ -40,8 +42,7 @@ function router(api: TopicsApi, fs = new FakeFs(), onFallback = vi.fn()) {
 		onFallback,
 		router: new TopicRouter({
 			api,
-			fs,
-			path: PATH,
+			store: createDmState<TopicsState>(fs, PATH),
 			ownerChatId: OWNER,
 			options: {
 				enabled: true,
@@ -99,8 +100,7 @@ describe("TopicRouter", () => {
 		const second = fakeApi();
 		const renamed = new TopicRouter({
 			api: second,
-			fs,
-			path: PATH,
+			store: createDmState<TopicsState>(fs, PATH),
 			ownerChatId: OWNER,
 			options: { enabled: true, personalName: "me", managerName: "manager" },
 		});
@@ -159,8 +159,7 @@ describe("TopicRouter", () => {
 		const fs = new FakeFs();
 		const r = new TopicRouter({
 			api,
-			fs,
-			path: PATH,
+			store: createDmState<TopicsState>(fs, PATH),
 			ownerChatId: OWNER,
 			options: {
 				enabled: false,
@@ -179,8 +178,7 @@ describe("TopicRouter", () => {
 		const other = fakeApi();
 		const r = new TopicRouter({
 			api: other,
-			fs,
-			path: PATH,
+			store: createDmState<TopicsState>(fs, PATH),
 			ownerChatId: 999,
 			options: {
 				enabled: true,
@@ -211,29 +209,6 @@ describe("TopicRouter", () => {
 		expect(
 			TopicRouter.isMissingThread(new Error("429: Too Many Requests")),
 		).toBe(false);
-	});
-
-	it("adopts and renames the old chat/log pair instead of creating new topics", async () => {
-		// The topics were first shipped as `chat`/`log`; a rename must keep the same
-		// threads (and their history) rather than leave two orphans behind.
-		const fs = new FakeFs();
-		await fs.writeText(
-			PATH,
-			JSON.stringify({ ownerChatId: OWNER, chat: 11, log: 12 }),
-		);
-		const { router: r } = router(api, fs);
-		expect(await r.ensure()).toBe(true);
-		expect(api.createForumTopic).not.toHaveBeenCalled();
-		// Each adopted thread is probed, then renamed once (it had no stored name).
-		const renames = api.editForumTopic.mock.calls.filter(
-			(call) => call[0].name !== undefined,
-		);
-		expect(renames.map((call) => call[0].name)).toEqual([
-			"personal",
-			"manager",
-		]);
-		expect(r.thread("personal")).toBe(11);
-		expect(r.thread("manager")).toBe(12);
 	});
 });
 
