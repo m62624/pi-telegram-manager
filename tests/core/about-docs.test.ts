@@ -41,6 +41,18 @@ describe("about pages match the code", () => {
 		expect(missing).toEqual([]);
 	});
 
+	it("cannot be read as 'anyone may use these'", () => {
+		// Live: the page said "Everywhere (personal, manager, mixed)" — meaning every
+		// MODE — and the model relayed it as "работают везде", which reads as "anyone
+		// may". The commands are refused to everyone but the owner, so the page must not
+		// leave that to inference.
+		const doc = page("commands.md");
+		expect(doc).toMatch(/only theirs/i);
+		expect(doc).toMatch(/not from a stranger in manager mode/i);
+		// And it must not describe a section as merely "everywhere".
+		expect(doc).not.toMatch(/^## Everywhere/m);
+	});
+
 	it("does not promise a command the bot does not have", () => {
 		const published = new Set(
 			TELEGRAM_BOT_COMMANDS.map((entry) => `/${entry.command}`),

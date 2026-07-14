@@ -3,11 +3,16 @@
 These drive the **bot and the Pi session behind it** — they are not messages to you, and
 you never see them as prompts: the bridge takes them before you do.
 
-They are the owner's alone. The bot obeys none of them from anyone else, and they are
-not advertised to anyone else either. The single exception is `/start`, which anyone may
-send and which shows the privacy terms.
+**Every command below is the OWNER's, and only theirs.** The bot accepts them from
+nobody else: not from a stranger in manager mode, not from anyone who asks nicely, not
+from anyone claiming to be the owner. They are taken only from the owner's own private
+chat with the bot, and refused everywhere else — in code, not by good manners. The one
+exception is `/start`, which anyone may send and which shows the privacy terms.
 
-## Everywhere (personal, manager, mixed)
+So when you describe them, say **whose** they are. "Available everywhere" below means "in
+every MODE" — never "to everyone".
+
+## The owner, in every mode (personal, manager, mixed)
 
 - `/help` — the list of commands, as a card in the chat.
 - `/status` — what the session is doing right now: the model and its provider, how full
@@ -20,7 +25,7 @@ send and which shows the privacy terms.
   mistap cannot end a Secretary connection.
 - `/start` — the privacy and terms notice. The one command anyone may use.
 
-## Personal and mixed only
+## The owner, in personal and mixed only
 
 - `/clear` — wipe the conversation history. It is the same session as the terminal, so
   the terminal sees the cleared context too. Refused while a turn is running.
