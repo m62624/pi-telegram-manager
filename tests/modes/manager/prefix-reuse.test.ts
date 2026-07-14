@@ -6,6 +6,7 @@ import {
 	type ManagerControllerDeps,
 } from "../../../src/modes/manager/controller";
 import { createBusinessStore } from "../../../src/storage/business-store";
+import { createChatCursorStore } from "../../../src/storage/chat-cursors";
 import { createChatStore } from "../../../src/storage/chat-store";
 import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
 import { createContactStore } from "../../../src/storage/contact-store";
@@ -72,7 +73,7 @@ async function setup() {
 			reopen: "WELCOME BACK — it has been a while.",
 		},
 		labeler: "LLM agent:",
-		ownerName: "Mansur",
+		ownerName: "Alex",
 		mentionWords: [],
 		rememberMessages: 20,
 		maxCharsPerMessage: 4000,
@@ -95,6 +96,7 @@ async function setup() {
 			fs,
 			paths.consolidationQueuePath,
 		),
+		chatCursors: createChatCursorStore(fs, paths.chatCursorsPath),
 		sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 		businessStore,
 		isIdle: () => idle,

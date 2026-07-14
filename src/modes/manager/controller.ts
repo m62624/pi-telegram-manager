@@ -38,6 +38,7 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "../../instructions/builtin";
 import type { BusinessStore } from "../../storage/business-store";
+import type { ChatCursorStore } from "../../storage/chat-cursors";
 import {
 	type ChatMessageRecord,
 	type ChatStore,
@@ -363,6 +364,8 @@ export interface ManagerControllerDeps {
 	chatStore: ChatStore;
 	contactStore: ContactStore;
 	consolidationQueue: ConsolidationQueue;
+	/** How far each chat has been answered and consolidated — see `chat-cursors`. */
+	chatCursors: ChatCursorStore;
 	sentRegistry: SentRegistry;
 	businessStore: BusinessStore;
 	/** Whether the agent is free to take a new turn. */
@@ -521,6 +524,12 @@ export class ManagerController {
 		 * transcript is static while an idle consolidation runs.
 		 */
 		interlocutorLines: string[];
+		/**
+		 * The newest message this pass can see. Written to the chat's cursor when the
+		 * pass finishes, and it is what stops the whole interrogation being run again,
+		 * from scratch, on the same messages, at every launch.
+		 */
+		coveredThrough: number;
 	} | null = null;
 	/**
 	 * A consolidation paused mid-interrogation because live conversation work
@@ -535,6 +544,7 @@ export class ManagerController {
 		userId?: string;
 		loop: InterrogationState;
 		interlocutorLines: string[];
+		coveredThrough: number;
 	} | null = null;
 	/** Open forward batches, per chat — the budget for pasted-in content. */
 	private readonly forwards: ForwardBursts;
@@ -1141,6 +1151,13 @@ export class ManagerController {
 		this.latestImages.delete(active);
 		this.pendingReply.delete(active);
 		this.reviseCount.delete(active);
+		// And say so on disk. `unserved` is the truth about what has been dealt with, and
+		// it dies with the process: a turn that ended in silence — banter, a sticker, a
+		// laugh — writes nothing to the transcript, so on the next launch the chat still
+		// looked like someone waiting for an answer, and the bot went and answered it. A
+		// day-old joke, replied to, every restart. The cursor is that silence, written
+		// down.
+		await this.markHandled(active);
 		let deliveredReplyTo: number | undefined;
 		let guardReason: string | undefined;
 		if (text) {
@@ -1571,13 +1588,30 @@ export class ManagerController {
 		return connections.some((connection) => connection.userId === userId);
 	}
 
-	/** Mark a chat as a consolidation candidate, refreshing its quiet timer. */
+	/**
+	 * Mark a chat as a consolidation candidate, refreshing its quiet timer.
+	 *
+	 * Unless the memory pass has already been over everything up to `activityAt`. This
+	 * one line is what makes a restart free: activation seeds every stored transcript
+	 * back into the queue (that is what makes memory survive a restart at all), stamped
+	 * with its real last-activity time — which, for a conversation that ended
+	 * yesterday, is long past the quiet threshold and therefore eligible AT ONCE. With
+	 * no record of what had already been read, the whole interrogation ran again, on
+	 * the same messages, every single launch. The facts were deduplicated on write, so
+	 * nothing was corrupted; it simply cost a full pass of inference per chat, forever.
+	 *
+	 * A chat with genuinely new messages has activity past the cursor and is queued as
+	 * it always was.
+	 */
 	private async touchConsolidation(
 		chatId: string,
 		activityAt: number,
 	): Promise<void> {
 		const userId = this.chats.get(chatId)?.userId;
 		if (!userId) return; // nothing to remember without a known contact
+		const cursor = await this.deps.chatCursors.get(chatId);
+		const consolidated = cursor?.consolidatedThrough;
+		if (consolidated !== undefined && activityAt <= consolidated) return;
 		await this.deps.consolidationQueue.upsert({ chatId, userId, activityAt });
 	}
 
@@ -1593,13 +1627,14 @@ export class ManagerController {
 		// one — continue from the exact interrogation step it reached, so nothing
 		// already consolidated is redone.
 		if (this.pausedConsolidation) {
-			// Resume from the exact step reached, but refresh the evidence lines in
-			// case the transcript grew while paused.
+			// Resume from the exact step reached, but refresh the window: the transcript
+			// grew while the pass was paused for live work, and the pass will be credited
+			// with everything it can now see.
 			this.consolidating = {
 				...this.pausedConsolidation,
-				interlocutorLines: await this.loadInterlocutorLines(
+				...(await this.loadConsolidationWindow(
 					this.pausedConsolidation.chatId,
-				),
+				)),
 			};
 			this.pausedConsolidation = null;
 			this.facts.reset();
@@ -1626,7 +1661,7 @@ export class ManagerController {
 			chatId: entry.chatId,
 			userId: entry.userId,
 			loop: initInterrogation(contactName),
-			interlocutorLines: await this.loadInterlocutorLines(entry.chatId),
+			...(await this.loadConsolidationWindow(entry.chatId)),
 		};
 		this.facts.reset();
 		this.probes.reset();
@@ -1658,20 +1693,55 @@ export class ManagerController {
 		}
 	}
 
-	/** The interlocutor's own transcript lines for a chat (for the evidence check). */
-	private async loadInterlocutorLines(chatId: string): Promise<string[]> {
+	/**
+	 * Record that this chat has been dealt with up to its newest interlocutor message —
+	 * the durable twin of `unserved.delete()`.
+	 *
+	 * Their newest message, not the newest message: a reply of ours, or a line the owner
+	 * typed, is not something anyone is waiting on us for. And it is read from the
+	 * transcript rather than remembered in the meta, because the meta is empty after a
+	 * restart, while the transcript is the thing catch-up will be judging.
+	 */
+	private async markHandled(chatId: string): Promise<void> {
 		const records = await this.deps.chatStore.getRecent(
 			chatId,
 			this.deps.rememberMessages,
 		);
-		// Their OWN words only. A reply quotes the message it answers and a forward
-		// carries a stranger's text: both used to sit inside the interlocutor's
-		// stored line, so the evidence check confirmed "facts" about them out of
-		// words the owner or the bot had written.
-		return records
+		const { lastInterlocutorAt } = analyzeChat(records);
+		if (lastInterlocutorAt === null) return;
+		await this.deps.chatCursors.markHandled(chatId, lastInterlocutorAt);
+	}
+
+	/**
+	 * What a memory pass reads: the interlocutor's own lines (the evidence a fact must
+	 * be quoted from) and how far into the chat those lines go.
+	 *
+	 * Their OWN words only. A reply quotes the message it answers and a forward carries
+	 * a stranger's text: both used to sit inside the interlocutor's stored line, so the
+	 * evidence check confirmed "facts" about them out of words the owner or the bot had
+	 * written.
+	 *
+	 * `coveredThrough` is the newest message in the window — every author, not just
+	 * theirs — because it answers a different question: not "what may be remembered"
+	 * but "how much of this chat has been looked at". A pass that saw the bot's reply
+	 * has been over that reply too, and must not be asked to look again.
+	 */
+	private async loadConsolidationWindow(
+		chatId: string,
+	): Promise<{ interlocutorLines: string[]; coveredThrough: number }> {
+		const records = await this.deps.chatStore.getRecent(
+			chatId,
+			this.deps.rememberMessages,
+		);
+		const interlocutorLines = records
 			.filter((record) => record.author === "interlocutor")
 			.map((record) => ownWords(record))
 			.filter((line) => line.length > 0);
+		const coveredThrough = records.reduce(
+			(newest, record) => Math.max(newest, record.timestamp),
+			0,
+		);
+		return { interlocutorLines, coveredThrough };
 	}
 
 	/**
@@ -1739,6 +1809,7 @@ export class ManagerController {
 		chatId: string;
 		userId?: string;
 		loop: InterrogationState;
+		coveredThrough: number;
 	}): Promise<void> {
 		this.consolidating = null;
 		this.facts.reset();
@@ -1756,6 +1827,15 @@ export class ManagerController {
 		const contactName = this.chats.get(current.chatId)?.contactName;
 		await this.persistRecordedFacts(current.userId, contactName);
 		await this.deps.consolidationQueue.remove(current.chatId);
+		// Say so on disk, or the next launch will ask the same questions of the same
+		// messages. Recorded even when the pass saved nothing — "there was nothing here
+		// to remember" is a conclusion, and it took a full interrogation to reach it.
+		if (current.coveredThrough > 0) {
+			await this.deps.chatCursors.markConsolidated(
+				current.chatId,
+				current.coveredThrough,
+			);
+		}
 		await this.triggerTurn();
 	}
 }

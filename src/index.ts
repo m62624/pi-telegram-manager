@@ -176,6 +176,10 @@ import {
 	createBusinessStore,
 } from "./storage/business-store";
 import {
+	type ChatCursorStore,
+	createChatCursorStore,
+} from "./storage/chat-cursors";
+import {
 	type ChatMessageRecord,
 	type ChatStore,
 	createChatStore,
@@ -2914,6 +2918,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			paths.consolidationQueuePath,
 		);
+		// How far each chat has already been taken — the one thing a restart used to
+		// forget, and the reason it re-answered and re-interrogated the same messages
+		// every launch.
+		const chatCursors = createChatCursorStore(fs, paths.chatCursorsPath);
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
@@ -3025,6 +3033,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			chatStore,
 			contactStore,
 			consolidationQueue,
+			chatCursors,
 			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 			businessStore,
 			// In mixed mode the manager may only run a turn while the shared brain is
@@ -3166,6 +3175,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			manager,
 			chatStore,
 			businessStore,
+			chatCursors,
 			settings.manager,
 		).catch(() => {});
 		updateManagerBanner();
@@ -3694,6 +3704,7 @@ async function catchUpOnActivation(
 	manager: ManagerController,
 	chatStore: ChatStore,
 	businessStore: BusinessStore,
+	chatCursors: ChatCursorStore,
 	managerSettings: {
 		ownerReplyWindowMs: number;
 		catchUpWindowMs: number;
@@ -3712,9 +3723,16 @@ async function catchUpOnActivation(
 		);
 		if (records.length > 0) chats.push({ chatId, records });
 	}
+	const cursors = await chatCursors.all();
+	const handledThrough = new Map<string, number>();
+	for (const [chatId, cursor] of cursors) {
+		if (cursor.handledThrough !== undefined)
+			handledThrough.set(chatId, cursor.handledThrough);
+	}
 	const selected = selectCatchUpChats(chats, Date.now(), {
 		ownerReplyWindowMs: managerSettings.ownerReplyWindowMs,
 		catchUpWindowMs: managerSettings.catchUpWindowMs,
+		handledThrough,
 	});
 	const byId = new Map(chats.map((chat) => [chat.chatId, chat.records]));
 	for (const chatId of selected) {

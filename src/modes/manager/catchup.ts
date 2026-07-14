@@ -4,11 +4,16 @@
  *
  * A chat qualifies only when ALL hold:
  *  1. the interlocutor spoke last (nobody answered them);
- *  2. enough time has passed that the owner already had their window
+ *  2. we have not already dealt with that message (`handledThrough`) — the bot may
+ *     have read it and deliberately said nothing, and a decision to stay silent
+ *     leaves NOTHING in a transcript. Without this the chat looked, at every launch,
+ *     exactly like someone waiting for an answer, and got answered: the same
+ *     day-old banter, chased again on every restart;
+ *  3. enough time has passed that the owner already had their window
  *     (`> ownerReplyWindowMs` since that last message);
- *  3. the chat is still recent (last message within `catchUpWindowMs`, default
+ *  4. the chat is still recent (last message within `catchUpWindowMs`, default
  *     10 h) — stale threads are left alone;
- *  4. the last interlocutor message actually carries text — a bare reaction /
+ *  5. the last interlocutor message actually carries text — a bare reaction /
  *     empty sticker is not something to chase.
  *
  * Pure and deterministic (records are supplied by the caller, which handles the
@@ -28,6 +33,12 @@ export interface CatchUpOptions {
 	ownerReplyWindowMs: number;
 	/** How far back a chat may be and still be chased (default 10 h). */
 	catchUpWindowMs: number;
+	/**
+	 * Per chat, the newest interlocutor message a turn has already settled on. A chat
+	 * whose last word is at or before its mark has been dealt with — even when the
+	 * transcript ends on the interlocutor, because staying silent is an answer too.
+	 */
+	handledThrough?: ReadonlyMap<string, number>;
 }
 
 /** The display name of the most recent interlocutor message, if any. */
@@ -85,6 +96,8 @@ export function selectCatchUpChats(
 		if (!state.interlocutorWaiting) continue;
 		if (state.lastInterlocutorAt === null || state.lastMessageAt === null)
 			continue;
+		const handled = options.handledThrough?.get(chat.chatId);
+		if (handled !== undefined && state.lastInterlocutorAt <= handled) continue;
 		if (now - state.lastInterlocutorAt <= options.ownerReplyWindowMs) continue;
 		if (now - state.lastMessageAt > options.catchUpWindowMs) continue;
 		if (!lastInterlocutorText(chat.records)?.trim()) continue;

@@ -40,11 +40,9 @@ describe("formatToolArgs", () => {
 
 describe("shortenPath", () => {
 	it("keeps the end of a POSIX path — the part that says which file it is", () => {
-		expect(
-			shortenPath(
-				"/home/m62624/Projects/main/pi-telegram-manager/src/index.ts",
-			),
-		).toBe("…/src/index.ts");
+		expect(shortenPath("/home/user/projects/pi-telegram/src/index.ts")).toBe(
+			"…/src/index.ts",
+		);
 		expect(shortenPath("./src/telegram/tool-activity.ts")).toBe(
 			"…/telegram/tool-activity.ts",
 		);
