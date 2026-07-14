@@ -1546,41 +1546,57 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// inference; the reply is still delivered from onAgentEnd (reading the recorded
 	// decision, not the messages the abort may orphan).
 	pi.on("turn_end", async (_event, ctx) => {
-		// Only cap a manager turn. In mixed mode's coding polarity the owner is
-		// running the turn — never abort it on the manager's stale decision flag.
-		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
-		// Never abort ON TOP of a queued message. An abort makes the TUI empty the
-		// queue into the terminal editor (`restoreQueuedMessagesToEditor`), where the
-		// message stops being a Telegram turn and becomes text waiting for a human to
-		// press Enter. `deliverPrompt` keeps the queue empty, so this should not
-		// happen — but the cost of being wrong is a conversation silently stranded in
-		// an editor, and the cost of skipping the abort is one extra sample.
-		if (ctx.hasPendingMessages()) return;
-		// Consolidation now walks its whole interrogation in ONE agent run: step the
-		// state machine here (no per-probe abort) and abort only when it asks — live
-		// conversation work is waiting, or the interrogation is already done and the
-		// model kept calling tools (backstop). Otherwise let the loop re-sample; the
-		// context rebuild shows the next probe (or CONSOLIDATION_DONE when finished).
+		/**
+		 * What the end of this turn means for the manager, and whether the run should stop.
+		 * Settled FIRST, because the tool list depends on the state it changes: a memory
+		 * pass that has just taken its last step has no probe left to offer, and a turn
+		 * that just drafted a reply becomes a revise turn.
+		 */
+		const settle = async (): Promise<boolean> => {
+			// In mixed mode's coding polarity the owner is running the turn — never abort it
+			// on the manager's stale decision flag.
+			if (!managerHoldsSession(mixedActive, polarity) || !manager) return false;
+			// Never abort ON TOP of a queued message. An abort makes the TUI empty the queue
+			// into the terminal editor (`restoreQueuedMessagesToEditor`), where the message
+			// stops being a Telegram turn and becomes text waiting for a human to press
+			// Enter. `deliverPrompt` keeps the queue empty, so this should not happen — but
+			// the cost of being wrong is a conversation silently stranded in an editor, and
+			// the cost of skipping the abort is one extra sample.
+			if (ctx.hasPendingMessages()) return false;
+			// Consolidation walks its whole interrogation in ONE agent run: step the state
+			// machine here (no per-probe abort) and abort only when it asks — live
+			// conversation work is waiting, or the interrogation is already done and the
+			// model kept calling tools (backstop). Otherwise let the loop re-sample; the
+			// context rebuild shows the next probe (or CONSOLIDATION_DONE when finished).
+			if (manager.isConsolidating()) {
+				return (await manager.stepConsolidation()) === "abort";
+			}
+			// A normal reply/silent turn: cap re-sampling once the decision is recorded.
+			return manager.turnDecided();
+		};
+		const abortRun = await settle();
+
+		// Then the tools — after every state change above, on EVERY path, in EVERY mode.
+		// Two reasons, and both were paid for in live sessions:
 		//
-		// The tool list is re-applied AFTER the step, and that order is the fix: Pi
-		// re-reads `agent.state.tools` between turns, right after this handler returns
-		// (`AgentSession._installAgentNextTurnRefresh`), so a refresh here is the last
-		// moment at which the next turn's tools can still be changed. Refreshed before
-		// the step, it would carry the tools of the step just finished — which is how a
-		// finished memory pass kept being offered the tool for step one, and kept
-		// calling it.
-		if (manager.isConsolidating()) {
-			const next = await manager.stepConsolidation();
-			visibility.refresh();
-			if (next === "abort") ctx.abort();
-			return;
-		}
-		// A normal reply/silent turn: cap re-sampling once the decision is recorded. The
-		// refresh matters here too — a turn that drafted a reply becomes a revise turn,
-		// and the next sample must see manager_resolve_draft rather than be told to use
-		// a tool that is not in its list.
+		//  1. Our own turn kinds differ. Refreshed BEFORE the step, the list would carry the
+		//     tools of the step just finished — which is how a finished memory pass kept
+		//     being offered the tool for step one, and kept calling it.
+		//  2. We are not the only extension writing this list. `setActiveTools` is a global
+		//     setter with no notion of whose tools are whose, and `pi-planner` rebuilds the
+		//     whole thing from `getAllTools()` on `before_provider_request` — which
+		//     resurrected the manager tools we hide (the model could see `manager_reply` in
+		//     the owner's DM) and rewrote the head of the prompt mid-turn, so the backend
+		//     threw away its cache: 24 302 tokens of prefill where 97 would have done.
+		//
+		// The ordering makes it hold, and it is not luck: another extension writes during
+		// the REQUEST (`onPayload`), we write at `turn_end` — after it — and Pi re-reads
+		// `agent.state.tools` in `prepareNextTurn`, after us. The last word is ours, so what
+		// reaches the model is what we decided. This runs before the early returns above
+		// could skip it, because a manager turn with a queued message is exactly when the
+		// sandbox must NOT be left in someone else's hands.
 		visibility.refresh();
-		if (manager.turnDecided()) ctx.abort();
+		if (abortRun) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
 		busy = false;

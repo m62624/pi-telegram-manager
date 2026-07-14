@@ -29,11 +29,69 @@ import type { ToolMatcher } from "./tool-allow";
 /** The tool-registry slice the controller needs; `ExtensionAPI` satisfies it. */
 export interface ToolRegistryApi {
 	getAllTools(): { name: string }[];
+	/** What the world allows RIGHT NOW — including whatever other extensions decided. */
+	getActiveTools(): string[];
 	setActiveTools(names: string[]): void;
 }
 
 /** Named groups of gated tool names. */
 export type ToolGroups = Record<string, Iterable<string>>;
+
+/** Tool names claimed by an ACTIVE group — ours, and they must be reachable. */
+export function claimedToolNames(
+	groups: ReadonlyMap<string, ReadonlySet<string>>,
+	activeGroups: ReadonlySet<string>,
+): Set<string> {
+	const claimed = new Set<string>();
+	for (const group of activeGroups) {
+		for (const name of groups.get(group) ?? []) claimed.add(name);
+	}
+	return claimed;
+}
+
+/**
+ * The active list to apply, computed as a SUBTRACTION from what is already active rather
+ * than as a fresh recomputation of the world. This distinction is the whole file.
+ *
+ * `setActiveTools` is a global setter with no notion of "someone else's tools": whoever
+ * writes last wins the entire list. We rebuilt it from `getAllTools()`, and so does
+ * `pi-planner` (`updateToolVisibility`: `getAllTools()` → everything minus `planner_*` →
+ * `setActiveTools`). Two extensions each declaring the whole world, on every request, is
+ * not a race — it is a war, and the owner's prompt was the battlefield:
+ *
+ *   - our list resurrected the 54 `planner_*` tools the planner had just hidden;
+ *   - the planner's list resurrected the 8 `manager_*` tools we had just hidden — so in
+ *     PERSONAL mode the model could see `manager_reply`;
+ *   - and the head of the prompt, where the tool schemas live, changed between two calls
+ *     of one turn: ~24k tokens, then ~10k. The backend threw away everything it had read.
+ *     Measured in the owner's session: prefill 24 302 → 11 653, cache 24 348 → 0.
+ *
+ * So we stop declaring the world. We enforce our own invariants and nothing else:
+ *
+ *   next = (what is active now  ∪  what our active groups claim)  \  what we hide
+ *
+ * Nobody's tools are resurrected by us again. And it CONVERGES: the planner sets
+ * `all − planner_*`; we subtract `manager_*`; next turn the planner computes the same
+ * thing and we subtract the same thing. A fixed point — which is what a prefix cache
+ * needs, because a stable set of tools is a stable head, and a stable head is a prompt
+ * the backend does not have to read twice.
+ *
+ * Order is part of the bytes: the same tools in a different order are a different head.
+ * So the result is built by walking the registry, whose order does not move.
+ */
+export function subtractedToolNames(
+	allToolNames: readonly string[],
+	activeNow: readonly string[],
+	groups: ReadonlyMap<string, ReadonlySet<string>>,
+	activeGroups: ReadonlySet<string>,
+): string[] {
+	const active = new Set(activeNow);
+	const claimed = claimedToolNames(groups, activeGroups);
+	const hidden = hiddenToolNames(groups, activeGroups);
+	return allToolNames.filter(
+		(name) => (active.has(name) || claimed.has(name)) && !hidden.has(name),
+	);
+}
 
 /**
  * Tool names hidden right now: those belonging to an inactive group AND to no
@@ -74,12 +132,27 @@ export function visibleToolNames(
 }
 
 /**
- * The active tool list. If any active group is *exclusive* (has a matcher), the
- * list collapses to only the tools those exclusive matchers allow — deny-all
- * sandboxing. Otherwise it is the additive "all minus inactive groups".
+ * The active tool list.
+ *
+ * Two rules, and the difference between them is the difference between a subtraction and
+ * an allowlist:
+ *
+ *  - **Sandboxed** (an active group is exclusive): the list is EXACTLY what the matcher
+ *    allows, taken from the registry. A sandbox is not "the world, minus some things" —
+ *    it is a closed set, and it must stay closed no matter what another extension has
+ *    just decided the world should contain. This is what keeps `pi-planner`'s tools (or
+ *    anyone's) out of a Telegram turn.
+ *  - **Otherwise**: a subtraction from what is active right now
+ *    ({@link subtractedToolNames}) — we hide ours, claim ours, and leave everyone else's
+ *    decisions alone.
+ *
+ * `activeNow` is what the world currently allows. In the sandboxed case it is ignored on
+ * purpose; the caller passes the world it remembers from before the sandbox went up, so
+ * the sandbox cannot poison what comes after it.
  */
 export function computeActiveTools(
 	allToolNames: readonly string[],
+	activeNow: readonly string[],
 	groups: ReadonlyMap<string, ReadonlySet<string>>,
 	activeGroups: ReadonlySet<string>,
 	exclusive: ReadonlyMap<string, ToolMatcher>,
@@ -92,7 +165,7 @@ export function computeActiveTools(
 			activeExclusive.some((matcher) => matcher.matches(name)),
 		);
 	}
-	return visibleToolNames(allToolNames, groups, activeGroups);
+	return subtractedToolNames(allToolNames, activeNow, groups, activeGroups);
 }
 
 export interface ToolVisibility {
@@ -119,10 +192,32 @@ export function createToolVisibility(
 	}
 	const activeGroups = new Set<string>();
 	const exclusive = new Map<string, ToolMatcher>();
+	/**
+	 * The world as it was before a sandbox went up — everything the other extensions were
+	 * allowing, at the last moment we could still see it.
+	 *
+	 * While the sandbox is up, the live list IS the sandbox (six tools), so "subtract from
+	 * what is active" has nothing left to subtract from: come out of the sandbox reading
+	 * the live list and the owner's terminal would be left with no tools at all. So the
+	 * world is remembered on the way in and restored on the way out — and whoever changed
+	 * their mind while we were away (the planner moving to another stage) re-asserts it on
+	 * their next refresh, which is one turn later, and self-heals.
+	 */
+	let worldBeforeSandbox: string[] | null = null;
+	const sandboxed = (): boolean =>
+		[...activeGroups].some((group) => exclusive.has(group));
 	const refresh = (): void => {
 		const all = api.getAllTools().map((tool) => tool.name);
+		const sandbox = sandboxed();
+		// Going in, and only the first time: the live list is about to become the sandbox,
+		// so this is the last look at the world we are going to get.
+		if (sandbox) worldBeforeSandbox ??= api.getActiveTools();
+		// Coming out, the world to subtract from is the one we remembered on the way in.
+		// Otherwise it is simply what is active now, whoever put it there.
+		const activeNow = worldBeforeSandbox ?? api.getActiveTools();
+		if (!sandbox) worldBeforeSandbox = null;
 		api.setActiveTools(
-			computeActiveTools(all, groupMap, activeGroups, exclusive),
+			computeActiveTools(all, activeNow, groupMap, activeGroups, exclusive),
 		);
 	};
 	return {
