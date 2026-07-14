@@ -335,3 +335,59 @@ describe("migrateStorage: a legacy file is never the newer truth", () => {
 		expect(record.sent?.at(-1)).toBe(259);
 	});
 });
+
+describe("migrateStorage: the memory is never wiped on a guess", () => {
+	it("does not wipe facts when another process has already migrated", async () => {
+		// The race that would have cost somebody their memory. Two Pi processes start at the
+		// same moment; both read the version marker before either writes it, so both begin.
+		// The first migrates and deletes `memory-version.json`. The second reaches the fact
+		// step, finds no marker — and used to read that absence as "never migrated" and wipe
+		// the memory the first had just decided to keep. There is no legacy file left to see,
+		// and that is the evidence: this directory has been migrated, not neglected.
+		const { fs, run } = setup();
+		const contacts = createContactStore(fs, paths);
+		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
+		await contacts.addFact("5", { text: "Prefers voice notes", timestamp: 1 });
+		await write(fs, paths.legacy.memoryVersionPath, { version: 3 });
+
+		await run(); // the first process
+		await fs.removeFile(paths.schemaVersionPath); // the second read the marker before that
+
+		const second = await run();
+		expect(second.factsCleared).toBe(0);
+		expect(await contacts.getFacts("5")).toHaveLength(1);
+	});
+
+	it("still wipes the facts of an install from before the marker existed", async () => {
+		// The one case where a missing marker really does mean "never migrated": a directory
+		// that is demonstrably OLD — it still holds files from the old layout. Those facts
+		// were captured under rules we no longer trust, and consolidation will re-derive them
+		// from clean transcripts.
+		const { fs, run } = setup();
+		const contacts = createContactStore(fs, paths);
+		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
+		await contacts.addFact("5", { text: "Works at a bank", timestamp: 1 });
+		await write(fs, paths.legacy.topicsPath, {
+			ownerChatId: 7,
+			chat: 11,
+			log: 12,
+		});
+
+		const outcome = await run();
+		expect(outcome.factsCleared).toBe(1);
+		expect(await contacts.getFacts("5")).toEqual([]);
+	});
+
+	it("does not go looking through the contacts of a clean install", async () => {
+		// Nothing here at all: no marker, no old files, nothing to be suspicious of.
+		const { fs, run } = setup();
+		const contacts = createContactStore(fs, paths);
+		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
+		await contacts.addFact("5", { text: "Prefers voice notes", timestamp: 1 });
+
+		const outcome = await run();
+		expect(outcome.factsCleared).toBe(0);
+		expect(await contacts.getFacts("5")).toHaveLength(1);
+		expect(await fs.exists(paths.schemaVersionPath)).toBe(true);
+	});
+});

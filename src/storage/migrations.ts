@@ -133,10 +133,16 @@ export async function migrateStorage(
 	};
 	if (from >= LAYOUT_VERSION) return outcome;
 
+	// Snapshot what an OLDER version left here, BEFORE any step starts deleting it. The
+	// fact step needs this and cannot ask later: by the time it runs, the steps above have
+	// removed their sources, and "the file is not there" would look the same to it as "the
+	// file was never there". See {@link migrateFacts} — the difference is somebody's memory.
+	const hadLegacy = await anyLegacyFile(fs, paths);
+
 	if (await migrateSettingsKeys(fs, paths)) outcome.applied.push("settings");
 	if (await migrateChatState(fs, paths)) outcome.applied.push("chat-state");
 	if (await migrateDmState(fs, paths)) outcome.applied.push("dm-state");
-	const cleared = await migrateFacts(fs, paths, contactStore);
+	const cleared = await migrateFacts(fs, paths, contactStore, hadLegacy);
 	if (cleared > 0) {
 		outcome.applied.push("memory");
 		outcome.factsCleared = cleared;
@@ -356,27 +362,63 @@ async function migrateDmState(
  * The contact-fact schema, folded into the layout version.
  *
  * It had a marker file of its own, which is one file too many for one number. The rule is
- * unchanged: facts captured under older rules are discarded, not migrated, because a
- * claim about a person that we can no longer vouch for is worse than no claim. Consolidation
- * re-derives them from the transcripts, which are clean.
+ * unchanged: facts captured under older rules are discarded, not migrated, because a claim
+ * about a person we can no longer vouch for is worse than no claim, and consolidation
+ * re-derives them from transcripts that are clean.
  *
- * A directory with no contacts in it clears nothing, so a first install passes through
- * here without noticing.
+ * What is NOT unchanged is how "discard" is decided, and it is the most dangerous decision
+ * in this file: it throws away what the bot has learned about real people.
+ *
+ * It used to read the absence of `memory-version.json` as "never migrated" and wipe. That
+ * is wrong twice over. Facts are written by the manager, and the manager wrote that marker
+ * on the start that preceded them — so an install holding facts but no marker cannot exist,
+ * and the absence is not evidence of anything. And it is a trap: two Pi processes starting
+ * at the same moment both begin migrating, the first deletes the marker, the second reaches
+ * this step, finds it gone, and wipes the memory the first one had just decided to keep.
+ *
+ * So the wipe now needs POSITIVE evidence, and there are exactly two kinds:
+ *
+ *  - the marker is here and says an older fact schema (`< MEMORY_SCHEMA_VERSION`);
+ *  - the marker is absent but this directory is demonstrably an old install — some other
+ *    file from the old layout is here (`hadLegacy`, snapshotted before any step deleted
+ *    anything). That is the install from before the marker existed at all.
+ *
+ * Anything else — a clean directory, or one another process has already migrated — keeps
+ * its facts. When the two readings disagree, the one that does not destroy data wins.
  */
 async function migrateFacts(
 	fs: TelegramFs,
 	paths: TelegramPaths,
 	contactStore: ContactStore,
+	hadLegacy: boolean,
 ): Promise<number> {
 	const marker = await readJsonIfExists<VersionMarker>(
 		fs,
 		paths.legacy.memoryVersionPath,
 	).catch(() => null);
-	const applied = marker?.version ?? 0;
-	const cleared =
-		applied >= MEMORY_SCHEMA_VERSION ? 0 : await contactStore.clearAllFacts();
+	const stale =
+		marker !== null ? marker.version < MEMORY_SCHEMA_VERSION : hadLegacy;
+	const cleared = stale ? await contactStore.clearAllFacts() : 0;
 	await removeQuietly(fs, paths.legacy.memoryVersionPath);
 	return cleared;
+}
+
+/** Did an older version of this extension leave anything here? Asked once, first. */
+async function anyLegacyFile(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+): Promise<boolean> {
+	for (const path of [
+		paths.legacy.sentRegistryPath,
+		paths.legacy.consolidationQueuePath,
+		paths.legacy.chatCursorsPath,
+		paths.legacy.topicsPath,
+		paths.legacy.modePinPath,
+		paths.legacy.memoryVersionPath,
+	]) {
+		if (await fs.exists(path)) return true;
+	}
+	return false;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
