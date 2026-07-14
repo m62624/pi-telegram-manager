@@ -179,6 +179,18 @@ export interface ToolVisibility {
 	 * or pass `null` to clear it back to additive. Re-applies immediately.
 	 */
 	setExclusive(group: string, matcher: ToolMatcher | null): void;
+	/**
+	 * The exact list we last wrote, or `null` before the first refresh — our own
+	 * footprint on a global setter.
+	 *
+	 * `setActiveTools` has no notion of whose tools are whose, so a tool list arriving at
+	 * the provider is not self-evidently ours: another extension may have written after
+	 * us. Someone has to be able to ask "is this what WE decided?", and only the writer
+	 * can answer it. The prefix watchdog asks (`core/payload-probe.ts`): a prompt head
+	 * that changes mid-run is a defect when a stranger changed it, and merely a cost we
+	 * chose when we did.
+	 */
+	lastSet(): string[] | null;
 }
 
 /** Create a visibility controller over the tool registry for the given groups. */
@@ -204,6 +216,8 @@ export function createToolVisibility(
 	 * their next refresh, which is one turn later, and self-heals.
 	 */
 	let worldBeforeSandbox: string[] | null = null;
+	/** The last list we handed `setActiveTools` — see {@link ToolVisibility.lastSet}. */
+	let written: string[] | null = null;
 	const sandboxed = (): boolean =>
 		[...activeGroups].some((group) => exclusive.has(group));
 	const refresh = (): void => {
@@ -216,9 +230,15 @@ export function createToolVisibility(
 		// Otherwise it is simply what is active now, whoever put it there.
 		const activeNow = worldBeforeSandbox ?? api.getActiveTools();
 		if (!sandbox) worldBeforeSandbox = null;
-		api.setActiveTools(
-			computeActiveTools(all, activeNow, groupMap, activeGroups, exclusive),
+		const next = computeActiveTools(
+			all,
+			activeNow,
+			groupMap,
+			activeGroups,
+			exclusive,
 		);
+		written = next;
+		api.setActiveTools(next);
 	};
 	return {
 		refresh,
@@ -234,6 +254,9 @@ export function createToolVisibility(
 			if (matcher) exclusive.set(group, matcher);
 			else exclusive.delete(group);
 			refresh();
+		},
+		lastSet(): string[] | null {
+			return written === null ? null : [...written];
 		},
 	};
 }

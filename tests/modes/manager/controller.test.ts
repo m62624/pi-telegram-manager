@@ -1122,7 +1122,11 @@ describe("ManagerController", () => {
 		});
 		expect(await controller.stepConsolidation()).toBe("continue");
 
-		// verify → step reaches done: the context tells the model to stop.
+		// verify → step reaches done: the run STOPS here. The model is not sampled once
+		// more just to say it has nothing left to do — that call read nothing anybody
+		// used, and it re-read the whole prompt (the tool gate takes the probes away when
+		// the pass is done, and the tools sit at the head of the prompt, which is the
+		// prefix the backend caches).
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
 		).toContain("Step 3 of 3");
@@ -1131,11 +1135,11 @@ describe("ManagerController", () => {
 			keep: true,
 			evidenceQuote: "ordered a laptop",
 		});
-		expect(await controller.stepConsolidation()).toBe("continue");
-		expect(controller.turnDecided()).toBe(true);
-		// A memory pass ends in ITS own terms. Told "you have already decided this turn"
-		// — the reply turn's words — a model mid-memory-review concluded it had answered
-		// somebody, and wrote a word of prose for a chat it was never in.
+		expect(await controller.stepConsolidation()).toBe("abort");
+		expect(controller.isConsolidationDone()).toBe(true);
+		// The "you are finished" directive stays as the backstop for the path that can
+		// still reach a done pass with the run alive (a queued message defers the step
+		// above). Nothing reaches it on the ordinary path any more.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
 		).toContain("memory pass for this contact is finished");
@@ -1143,11 +1147,12 @@ describe("ManagerController", () => {
 		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
 		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
 
-		// The single run ends → agent_end persists the verified fact.
+		// The aborted run ends → agent_end persists the verified fact and closes the pass.
 		await controller.onAgentEnd();
 		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
 			"ordered a laptop",
 		]);
+		expect(controller.isConsolidating()).toBe(false);
 	});
 
 	it("pre-empts an in-flight consolidation for a live reply, then resumes from the next step", async () => {

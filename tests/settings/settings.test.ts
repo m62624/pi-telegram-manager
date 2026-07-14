@@ -180,6 +180,18 @@ describe("normalizeSettings", () => {
 		).toBe(true);
 	});
 
+	it("defaults the prompt-head alert on and accepts an explicit toggle", () => {
+		// On, because another extension quietly costing tens of thousands of tokens a turn
+		// is worth one card. Off, because it is a warning about something this extension
+		// cannot fix in someone else's code — and a warning you cannot act on and cannot
+		// silence is a warning you learn to ignore.
+		expect(normalizeSettings({}).manager.promptAlerts).toBe(true);
+		expect(
+			normalizeSettings({ manager: { promptAlerts: false } }).manager
+				.promptAlerts,
+		).toBe(false);
+	});
+
 	it("defaults topics on, with personal/manager names", () => {
 		expect(normalizeSettings({}).topics).toEqual({
 			enabled: true,
