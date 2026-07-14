@@ -15,6 +15,19 @@ export interface TelegramSettings {
 	assistant: {
 		rendering: "rich" | "html";
 		draftPreviews: boolean;
+		/**
+		 * The animated "Thinking… / ▸ bash — npm test (4s)" placeholder (mode 1).
+		 *
+		 * BETA, and OFF by default. It rides `<tg-thinking>`, the newest and most exotic
+		 * element we send, valid only inside a streaming draft — and a Telegram client
+		 * that renders it badly is not something we can fix from here. It is split from
+		 * `draftPreviews` so the streamed reply and the animated trace can be judged
+		 * separately: turning this off removes the placeholder and everything that drives
+		 * it, and leaves the reply preview alone.
+		 *
+		 * It rides the draft channel, so it does nothing while `draftPreviews` is off.
+		 */
+		thinkingPlaceholder: boolean;
 		/** Mirror each agent tool call to Telegram as a collapsible block (mode 1). */
 		toolActivity: boolean;
 		/**
@@ -261,6 +274,8 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	assistant: {
 		rendering: "rich",
 		draftPreviews: true,
+		// Beta: off until the animated placeholder has proven itself on every client.
+		thinkingPlaceholder: false,
 		toolActivity: true,
 		toolOutputMaxBytes: 26_214_400,
 	},
@@ -453,6 +468,11 @@ export function normalizeSettings(
 				assistant.draftPreviews,
 				"assistant.draftPreviews",
 				d.assistant.draftPreviews,
+			),
+			thinkingPlaceholder: asBoolean(
+				assistant.thinkingPlaceholder,
+				"assistant.thinkingPlaceholder",
+				d.assistant.thinkingPlaceholder,
 			),
 			toolActivity: asBoolean(
 				assistant.toolActivity,

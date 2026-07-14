@@ -586,6 +586,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let toolOutputDir = paths.toolOutputDir;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
+	// The animated trace — beta, and off unless the owner asked for it.
+	let thinkingEnabled = false;
 	// The turn's live trace — the steps taken so far and the one running — shown in
 	// the draft until the first token of the reply arrives.
 	const thinkingLog = new ThinkingLog();
@@ -986,13 +988,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * The placeholder rides the streaming draft, which exists only in the owner's own
-	 * chat: personal mode always, mixed mode only on a coding turn. `ownerRun` is
-	 * exactly that distinction — a MANAGER turn never gets one, and could not anyway
-	 * (a draft cannot be sent over a business connection).
+	 * Whether the animated trace may be shown at all.
+	 *
+	 * `thinkingPlaceholder` is its own switch, and it is OFF by default — the placeholder
+	 * is beta: it rides `<tg-thinking>`, the newest thing we send, and a client that
+	 * renders it badly is not something we can fix from here. Off, nothing about it runs:
+	 * no draft, no refresh timer, no trace kept.
+	 *
+	 * It still rides the streaming draft, which exists only in the owner's own chat:
+	 * personal mode always, mixed mode only on a coding turn. `ownerRun` is exactly that
+	 * distinction — a MANAGER turn never gets one, and could not anyway (a draft cannot be
+	 * sent over a business connection).
 	 */
 	const thinkingAllowed = (): boolean =>
-		connect !== null && draftPreviewsEnabled && ownerRun;
+		connect !== null && thinkingEnabled && draftPreviewsEnabled && ownerRun;
 
 	const stopThinking = (): void => {
 		thinkingUp = false;
@@ -1169,6 +1178,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
+		thinkingEnabled = false;
 		toolOutputMaxBytes = 0;
 		activeSettings = null;
 		contextReset.forget();
@@ -1219,6 +1229,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
+			thinkingEnabled = false;
 			toolOutputMaxBytes = 0;
 			contextReset.forget();
 			visibility.setActive("connect", false);
@@ -1442,15 +1453,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
-		// The live trace rides the draft, not the cards, so it updates even when the
-		// tool CARDS are switched off — `showThinking` applies its own gate.
-		thinkingLog.start({
-			callId: event.toolCallId,
-			toolName: event.toolName,
-			hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
-			startedAt: Date.now(),
-		});
-		showThinking();
+		// The live trace rides the draft, not the cards, so it updates even when the tool
+		// CARDS are switched off. With the placeholder itself off, none of it runs — not
+		// even the bookkeeping: `thinkingEnabled` gates the whole feature, not just its
+		// sends.
+		if (thinkingEnabled) {
+			thinkingLog.start({
+				callId: event.toolCallId,
+				toolName: event.toolName,
+				hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
+				startedAt: Date.now(),
+			});
+			showThinking();
+		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
 		const controller = connect;
 		// Queued here, synchronously, so the card takes the place in the chat that its
@@ -2268,6 +2283,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		thinkingEnabled = settings.assistant.thinkingPlaceholder;
 		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
 		toolOutputDir = resolveUserDir(
 			settings.assistant.toolOutputDir,
