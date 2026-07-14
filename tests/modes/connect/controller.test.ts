@@ -687,6 +687,30 @@ describe("ConnectController", () => {
 		expect(api.drafts[1].draft_id).not.toBe(first);
 	});
 
+	// Personal mode's half of the two-minute stall. `agent_end` is awaited from INSIDE
+	// the run that is ending, so the session cannot accept a prompt there — and it says
+	// so. The queued message used to be handed over anyway, and `sendFollowUp` then sat
+	// waiting for an idle that only its own return could produce.
+	it("hands a queued message to the settle pump, not to a run that is still ending", async () => {
+		const { controller, sendFollowUp, setIdle } = setup();
+		setIdle(false); // a turn is running
+		await controller.onEvent(messageEvent("and one more thing", 2));
+		expect(controller.pendingCount()).toBe(1);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+
+		// The run ends — but it is not over, and nothing may be handed to it.
+		await controller.onAgentEnd([{ role: "assistant", content: "done" }]);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(controller.pendingCount()).toBe(1);
+
+		// It settles; the host pumps. Only now is there a session to take the turn.
+		setIdle(true);
+		await controller.dispatch();
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		expect(sendFollowUp.mock.calls[0][0]).toContain("and one more thing");
+		expect(controller.pendingCount()).toBe(0);
+	});
+
 	it("arms and clears the abort handler around a turn", async () => {
 		const { controller, abort } = setup();
 		const stop = vi.fn();

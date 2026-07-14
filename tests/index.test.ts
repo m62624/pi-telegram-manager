@@ -62,6 +62,10 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"agent_start",
 			"turn_end",
 			"agent_end",
+			// Not the same moment as agent_end, and the difference was two minutes: the
+			// end fires from INSIDE the run (Pi awaits the handler), the settle fires
+			// once the run is really over. Every prompt hand-off waits for this one.
+			"agent_settled",
 			"session_shutdown",
 		]) {
 			expect(events.has(event)).toBe(true);
