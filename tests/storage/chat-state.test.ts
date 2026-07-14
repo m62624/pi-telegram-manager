@@ -187,8 +187,187 @@ describe("chat-state: one file, three writers", () => {
 		const { state } = setup();
 		await state.sentRegistry.recordSent("42", 1);
 		await state.cursors.markHandled("42", 500);
-		await state.cursors.remove("42");
+		await state.forget("42");
 		expect(await state.all()).toEqual([]);
-		await expect(state.cursors.remove("nobody")).resolves.toBeUndefined();
+		await expect(state.forget("nobody")).resolves.toBeUndefined();
+	});
+});
+
+/**
+ * The invariants of one file with several writers, stated one at a time.
+ *
+ * Three views share a record, every write is a read-modify-write of the WHOLE file, and
+ * the events that drive them (a message out, a message in, a turn settling, a memory pass
+ * finishing) genuinely overlap. This is where a merge like this gets people's data lost,
+ * so it is worth spelling out what may never happen.
+ */
+describe("chat-state: what may never happen", () => {
+	it("a writer never touches a field it does not own", async () => {
+		// Every field of one chat, written by a different view, all at once. If any writer
+		// carried a stale copy of the record back to disk, one of these would be missing —
+		// which is exactly how a merged file eats an update.
+		const { state } = setup();
+		await state.sentRegistry.recordSent("42", 1);
+		await state.consolidationQueue.upsert({
+			chatId: "42",
+			userId: "u",
+			activityAt: 100,
+		});
+		await state.cursors.markHandled("42", 500);
+		await state.cursors.markConsolidated("42", 400);
+
+		await Promise.all([
+			state.sentRegistry.recordSent("42", 2),
+			state.consolidationQueue.upsert({
+				chatId: "42",
+				userId: "u",
+				activityAt: 200,
+			}),
+			state.cursors.markHandled("42", 600),
+			state.cursors.markConsolidated("42", 450),
+		]);
+
+		expect(await state.all()).toEqual([
+			{
+				chatId: "42",
+				sent: [1, 2],
+				consolidation: { userId: "u", activityAt: 200 },
+				handledThrough: 600,
+				consolidatedThrough: 450,
+			},
+		]);
+	});
+
+	it("does not lose a write to one chat under a storm of writes to others", async () => {
+		// Different chats are different records in the same file, so "it is a different
+		// chat" is not the same as "it is a different file" any more. Twelve chats, four
+		// writers each, all interleaved: nothing may be dropped.
+		const { state } = setup();
+		const chats = Array.from({ length: 12 }, (_, i) => `chat-${i}`);
+		await Promise.all(
+			chats.flatMap((chatId, i) => [
+				state.sentRegistry.recordSent(chatId, i),
+				state.sentRegistry.recordSent(chatId, i + 100),
+				state.consolidationQueue.upsert({ chatId, activityAt: i }),
+				state.cursors.markHandled(chatId, i * 10),
+			]),
+		);
+
+		const all = await state.all();
+		expect(all).toHaveLength(12);
+		for (const [i, chatId] of chats.entries()) {
+			const record = all.find((chat) => chat.chatId === chatId);
+			expect(record?.sent).toEqual([i, i + 100]);
+			expect(record?.consolidation?.activityAt).toBe(i);
+			expect(record?.handledThrough).toBe(i * 10);
+		}
+	});
+
+	it("a cursor cannot go backwards, however the writes are ordered", async () => {
+		// A late write with an older stamp is not news, it is an echo — and honouring it
+		// would re-open a conversation that is finished, which is the bug the cursors exist
+		// to close. Fired all at once, the newest must win regardless of who lands last.
+		const { state } = setup();
+		await Promise.all([
+			state.cursors.markHandled("42", 300),
+			state.cursors.markHandled("42", 900),
+			state.cursors.markHandled("42", 100),
+			state.cursors.markConsolidated("42", 50),
+			state.cursors.markConsolidated("42", 800),
+			state.cursors.markConsolidated("42", 200),
+		]);
+		expect(await state.cursors.get("42")).toEqual({
+			chatId: "42",
+			handledThrough: 900,
+			consolidatedThrough: 800,
+		});
+	});
+
+	it("a cursor that refuses to move does not leave a ghost behind", async () => {
+		// The refusal is a legitimate no-op, and it used to write an empty `{ chatId }`
+		// record for a chat nothing is known about — a file that grows a line every time it
+		// is asked a question and answers no.
+		const { state } = setup();
+		await state.cursors.markHandled("42", 100);
+		await state.cursors.markHandled("42", 50); // an echo: ignored
+		await state.cursors.markHandled("never-seen", Number.NaN); // not a time at all
+		expect((await state.all()).map((chat) => chat.chatId)).toEqual(["42"]);
+	});
+
+	it("leaving the queue while a turn settles keeps both outcomes", async () => {
+		// The memory pass finishes (dequeue) exactly as the live turn settles (a cursor).
+		// They are one record now, and both must survive — dropping the cursor here is the
+		// answer-everything-again-on-launch bug, and dropping the dequeue is a memory pass
+		// that runs forever.
+		const { state } = setup();
+		await state.consolidationQueue.upsert({ chatId: "42", activityAt: 1 });
+		await Promise.all([
+			state.consolidationQueue.remove("42"),
+			state.cursors.markConsolidated("42", 700),
+			state.cursors.markHandled("42", 800),
+			state.sentRegistry.recordSent("42", 5),
+		]);
+		expect(await state.all()).toEqual([
+			{
+				chatId: "42",
+				sent: [5],
+				handledThrough: 800,
+				consolidatedThrough: 700,
+			},
+		]);
+	});
+
+	it("a chat that leaves the queue with nothing else to its name leaves the file", async () => {
+		const { state } = setup();
+		await state.consolidationQueue.upsert({ chatId: "42", activityAt: 1 });
+		await state.consolidationQueue.remove("42");
+		expect(await state.all()).toEqual([]);
+	});
+
+	it("forgetting a chat under load forgets that chat and no other", async () => {
+		const { state } = setup();
+		await state.sentRegistry.recordSent("keep", 1);
+		await state.cursors.markHandled("drop", 5);
+		await Promise.all([
+			state.forget("drop"),
+			state.sentRegistry.recordSent("keep", 2),
+			state.cursors.markHandled("keep", 9),
+		]);
+		expect(await state.all()).toEqual([
+			{ chatId: "keep", sent: [1, 2], handledThrough: 9 },
+		]);
+	});
+
+	it("holds up under a hundred overlapping writes", async () => {
+		// The real shape of a busy minute: several chats, every view firing, nothing awaited
+		// in order. Every single write must be in the file at the end of it.
+		const { state } = setup();
+		const writes: Promise<unknown>[] = [];
+		for (let i = 0; i < 25; i += 1) {
+			const chatId = `chat-${i % 5}`;
+			writes.push(state.sentRegistry.recordSent(chatId, i));
+			writes.push(state.consolidationQueue.upsert({ chatId, activityAt: i }));
+			writes.push(state.cursors.markHandled(chatId, i));
+			writes.push(state.cursors.markConsolidated(chatId, i));
+		}
+		await Promise.all(writes);
+
+		const all = await state.all();
+		expect(all).toHaveLength(5);
+		for (const record of all) {
+			const index = Number(record.chatId.split("-")[1]);
+			// Five writes per chat, ids index, index+5, … index+20 — all of them present.
+			expect(record.sent).toEqual([
+				index,
+				index + 5,
+				index + 10,
+				index + 15,
+				index + 20,
+			]);
+			// The newest stamp wins for the queue, and the highest for each cursor.
+			expect(record.consolidation?.activityAt).toBe(index + 20);
+			expect(record.handledThrough).toBe(index + 20);
+			expect(record.consolidatedThrough).toBe(index + 20);
+		}
 	});
 });

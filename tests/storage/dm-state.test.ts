@@ -70,3 +70,48 @@ describe("dm-state", () => {
 		});
 	});
 });
+
+describe("dm-state: what may never happen", () => {
+	it("a rename racing a re-pin loses neither", async () => {
+		// Both are whole-file read-modify-writes. Without a lock on the path they would each
+		// read the same base and write a copy missing the other's work — and these two
+		// really do overlap: the mode pin is rewritten on the same start that renames a
+		// topic whose name changed in settings.
+		const { dm } = setup();
+		await dm.saveTopics({ ownerChatId: 1, personal: 10, manager: 20 });
+		await dm.saveModePin({ ownerChatId: 1, messageIds: [1] });
+
+		await Promise.all([
+			dm.saveTopics({ ownerChatId: 1, personal: 11, manager: 21 }),
+			dm.saveModePin({ ownerChatId: 1, messageIds: [2] }),
+			dm.saveTopics({ ownerChatId: 1, personal: 12, manager: 22 }),
+		]);
+
+		// The last topic write wins (they are the same writer, in order), and the pin — a
+		// different writer entirely — is still there.
+		expect(await dm.loadTopics()).toEqual({
+			ownerChatId: 1,
+			personal: 12,
+			manager: 22,
+		});
+		expect(await dm.loadModePin()).toEqual({ ownerChatId: 1, messageIds: [2] });
+	});
+
+	it("dropping the pin while the threads are being written keeps the threads", async () => {
+		// `clearModePin` is an ERROR path — the pin went wrong, better a new one than a
+		// ghost. The topic ids are real Telegram threads holding the owner's history: they
+		// must not be collateral.
+		const { dm } = setup();
+		await Promise.all([
+			dm.saveTopics({ ownerChatId: 1, personal: 10, manager: 20 }),
+			dm.saveModePin({ ownerChatId: 1, messageIds: [7] }),
+			dm.clearModePin(),
+		]);
+		expect(await dm.loadTopics()).toEqual({
+			ownerChatId: 1,
+			personal: 10,
+			manager: 20,
+		});
+		expect(await dm.loadModePin()).toBeNull();
+	});
+});

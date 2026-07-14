@@ -252,3 +252,86 @@ describe("migrateStorage: the things that go wrong", () => {
 		expect(await fs.readText(paths.settingsPath)).toBe("{ not json at all");
 	});
 });
+
+describe("migrateStorage: a legacy file is never the newer truth", () => {
+	it("does not let a stale legacy file overwrite state the bot has since written", async () => {
+		// The path that matters: someone removes `schema-version.json` by hand, or downgrades
+		// and upgrades again, and the old files are still lying there. The file the bot has
+		// been WRITING is the truth; the legacy one is a fossil. Additive merges (`sent`, and
+		// the cursors, which take the max) are safe by construction — the queue entry, the
+		// topic ids and the pin are not, so they are guarded.
+		const { fs, run } = setup();
+		await write(fs, paths.chatStatePath, {
+			chats: [
+				{
+					chatId: "42",
+					sent: [9],
+					consolidation: { userId: "5", activityAt: 9000 },
+					handledThrough: 9000,
+				},
+			],
+		});
+		await write(fs, paths.dmStatePath, {
+			topics: { ownerChatId: 7, personal: 500, manager: 501 },
+			modePin: { ownerChatId: 7, messageIds: [500] },
+		});
+		// …and the fossils, all pointing at an older world.
+		await write(fs, paths.legacy.sentRegistryPath, { "42": [1] });
+		await write(fs, paths.legacy.consolidationQueuePath, {
+			entries: [{ chatId: "42", userId: "OLD", activityAt: 1 }],
+		});
+		await write(fs, paths.legacy.chatCursorsPath, {
+			cursors: [{ chatId: "42", handledThrough: 1 }],
+		});
+		await write(fs, paths.legacy.topicsPath, {
+			ownerChatId: 7,
+			chat: 11,
+			log: 12,
+		});
+		await write(fs, paths.legacy.modePinPath, {
+			ownerChatId: 7,
+			messageId: 99,
+		});
+
+		await run();
+
+		const state = createChatState(fs, paths.chatStatePath);
+		expect(await state.all()).toEqual([
+			{
+				chatId: "42",
+				// The union — an id we sent is an id we sent, whichever file remembered it.
+				sent: [9, 1],
+				// NOT the fossil's userId, and NOT its activity stamp.
+				consolidation: { userId: "5", activityAt: 9000 },
+				// The max: a cursor never moves backwards, and that is exactly what this is.
+				handledThrough: 9000,
+			},
+		]);
+
+		const dm = createDmState<TopicsState>(fs, paths.dmStatePath);
+		expect(await dm.loadTopics()).toEqual({
+			ownerChatId: 7,
+			personal: 500,
+			manager: 501,
+		});
+		expect(await dm.loadModePin()).toEqual({
+			ownerChatId: 7,
+			messageIds: [500],
+		});
+	});
+
+	it("keeps a merged id list inside the bound the store keeps", async () => {
+		// The merge must not be the one way a chat's id list grows past the cap everything
+		// else respects.
+		const { fs, run } = setup();
+		await write(fs, paths.legacy.sentRegistryPath, {
+			"42": Array.from({ length: 260 }, (_, i) => i),
+		});
+		await run();
+		const record = (await createChatState(fs, paths.chatStatePath).all())[0];
+		expect(record.sent).toHaveLength(200);
+		// The NEWEST are the ones that matter: they are what an inbound update is checked
+		// against, and an id from 260 messages ago is never coming back.
+		expect(record.sent?.at(-1)).toBe(259);
+	});
+});

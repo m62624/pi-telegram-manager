@@ -25,7 +25,7 @@ import type { TelegramFs } from "./fs";
 import { readJsonIfExists, writeJson } from "./json";
 
 /** How many of the bot's own message ids are kept per chat. */
-const DEFAULT_MAX_SENT_PER_CHAT = 200;
+export const DEFAULT_MAX_SENT_PER_CHAT = 200;
 
 /** A chat queued for an idle memory-consolidation pass. */
 export interface ConsolidationEntry {
@@ -111,8 +111,6 @@ export interface ChatCursorStore {
 	markHandled(chatId: string, at: number): Promise<void>;
 	/** This chat's memory is consolidated through `at` (same monotonic rule). */
 	markConsolidated(chatId: string, at: number): Promise<void>;
-	/** Forget a chat entirely (its transcript is gone). */
-	remove(chatId: string): Promise<void>;
 }
 
 /** The three views, over one file. */
@@ -122,6 +120,12 @@ export interface ChatState {
 	cursors: ChatCursorStore;
 	/** Every record, for migrations and diagnostics. */
 	all(): Promise<ChatStateRecord[]>;
+	/**
+	 * Forget a chat entirely — every view of it at once. For a chat whose transcript is
+	 * gone; it is deliberately NOT on one of the views, because it is not one view's
+	 * decision to make.
+	 */
+	forget(chatId: string): Promise<void>;
 }
 
 type StateFile = { chats: ChatStateRecord[] };
@@ -142,10 +146,18 @@ export function createChatState(
 	}
 
 	/**
-	 * Read, hand the caller the chat's record to change, write back. The record is created
-	 * if this is the first thing we have ever known about the chat, and the whole file is
-	 * dropped back to disk under the lock — the same read-modify-write the three files
-	 * each did on their own, done once.
+	 * Read, hand the caller the chat's record to change, write back — under the lock, and
+	 * the WHOLE file, exactly as each of the three files did on its own.
+	 *
+	 * Two rules make it safe to have three writers on one file:
+	 *
+	 *  - a writer touches ONLY its own fields. `change` is handed the live record and every
+	 *    caller below sets one thing on it; nothing here reads a field it does not own, and
+	 *    nothing writes one. That is what stops a `recordSent` from carrying a stale copy of
+	 *    a cursor back to disk — it never had a copy, it had the record.
+	 *  - empty records do not survive the trip. A change can legitimately decide to do
+	 *    nothing (a cursor that would move backwards), and without this the file would grow
+	 *    a `{ chatId }` for every chat that was ever asked about and answered "no".
 	 */
 	async function edit(
 		chatId: string,
@@ -159,7 +171,9 @@ export function createChatState(
 				chats.push(record);
 			}
 			change(record);
-			await writeJson<StateFile>(fs, path, { chats });
+			await writeJson<StateFile>(fs, path, {
+				chats: chats.filter((chat) => !isEmpty(chat)),
+			});
 		});
 	}
 
@@ -228,14 +242,12 @@ export function createChatState(
 				});
 			},
 			async remove(chatId) {
-				await withFileWriteLock(path, async () => {
-					const chats = await read();
-					const record = chats.find((chat) => chat.chatId === chatId);
-					if (!record?.consolidation) return;
+				// Leaving the queue is not being forgotten. The cursors on this record are how
+				// a restart knows the conversation has already been dealt with; taking them
+				// out along with the queue entry would bring the whole
+				// answer-everything-again-on-launch bug straight back.
+				await edit(chatId, (record) => {
 					record.consolidation = undefined;
-					await writeJson<StateFile>(fs, path, {
-						chats: chats.filter((chat) => !isEmpty(chat)),
-					});
 				});
 			},
 			all: queued,
@@ -288,14 +300,15 @@ export function createChatState(
 			markConsolidated(chatId, at) {
 				return advanceCursor(chatId, at, "consolidatedThrough");
 			},
-			async remove(chatId) {
-				await withFileWriteLock(path, async () => {
-					const chats = await read();
-					const next = chats.filter((chat) => chat.chatId !== chatId);
-					if (next.length === chats.length) return;
-					await writeJson<StateFile>(fs, path, { chats: next });
-				});
-			},
+		},
+
+		async forget(chatId) {
+			await withFileWriteLock(path, async () => {
+				const chats = await read();
+				const next = chats.filter((chat) => chat.chatId !== chatId);
+				if (next.length === chats.length) return;
+				await writeJson<StateFile>(fs, path, { chats: next });
+			});
 		},
 	};
 }

@@ -30,9 +30,10 @@
  * The version marker is the only thing that decides whether any of this runs, and it is
  * written last.
  */
-import type { ChatStateRecord } from "./chat-state";
+import { type ChatStateRecord, DEFAULT_MAX_SENT_PER_CHAT } from "./chat-state";
 import type { ContactStore } from "./contact-store";
 import type { DmState, ModePin } from "./dm-state";
+import { withFileWriteLock } from "./file-lock";
 import type { TelegramFs } from "./fs";
 import { readJsonIfExists, writeJson } from "./json";
 import type { TelegramPaths } from "./paths";
@@ -202,8 +203,11 @@ async function migrateSettingsKeys(
 	}
 
 	if (!changed) return false;
+	// The backup first: the only irreversible thing here is the line after it.
 	await writeJson(fs, paths.legacy.settingsBackupPath, raw);
-	await writeJson(fs, paths.settingsPath, settings);
+	await withFileWriteLock(paths.settingsPath, async () => {
+		await writeJson(fs, paths.settingsPath, settings);
+	});
 	return true;
 }
 
@@ -247,11 +251,22 @@ async function migrateChatState(
 	for (const [chatId, ids] of Object.entries(sent ?? {})) {
 		if (!Array.isArray(ids)) continue;
 		const record = of(chatId);
-		record.sent = [...new Set([...(record.sent ?? []), ...ids])];
+		// The union, then the same cap the store keeps: a merge must not be the one way a
+		// chat's id list grows past the bound everything else respects.
+		record.sent = [...new Set([...(record.sent ?? []), ...ids])].slice(
+			-DEFAULT_MAX_SENT_PER_CHAT,
+		);
 	}
 	for (const entry of queue?.entries ?? []) {
 		if (!entry?.chatId) continue;
-		of(entry.chatId).consolidation = {
+		const record = of(entry.chatId);
+		// Never let a legacy file overwrite state that is already here. On the ordinary path
+		// there is nothing to overwrite; the path that matters is a re-run (the marker was
+		// removed by hand, a downgrade and an upgrade), where the file on disk is the NEWER
+		// truth and the legacy one is a fossil. Additive merges (`sent`, and the cursors,
+		// which take the max) are safe by construction. This one is not, so it is guarded.
+		if (record.consolidation) continue;
+		record.consolidation = {
 			userId: entry.userId,
 			activityAt: entry.activityAt,
 		};
@@ -266,7 +281,11 @@ async function migrateChatState(
 		);
 	}
 
-	await writeJson(fs, paths.chatStatePath, { chats: [...records.values()] });
+	// Under the file's own lock. Nothing else should be running yet — the migration goes
+	// before any store opens anything — but "should" is not an invariant, and this is.
+	await withFileWriteLock(paths.chatStatePath, async () => {
+		await writeJson(fs, paths.chatStatePath, { chats: [...records.values()] });
+	});
 	// Only now. Until this line the old files are the only copy that has been through a
 	// full fsync-and-rename, and a crash between them is a crash we can recover from.
 	await removeQuietly(fs, paths.legacy.sentRegistryPath);
@@ -295,7 +314,8 @@ async function migrateDmState(
 			() => null,
 		)) ?? {};
 
-	if (topics?.ownerChatId !== undefined) {
+	// Same rule as the chat merge: what is already in the new file is the newer truth.
+	if (state.topics === undefined && topics?.ownerChatId !== undefined) {
 		// `chat`/`log` were renamed to `personal`/`manager`. The threads themselves are
 		// real Telegram forum topics with the owner's history in them — adopting the ids is
 		// the whole point, or a rename would orphan every message ever filed there.
@@ -314,7 +334,7 @@ async function migrateDmState(
 		}
 	}
 
-	if (pin?.ownerChatId !== undefined) {
+	if (state.modePin === undefined && pin?.ownerChatId !== undefined) {
 		// The first version pinned one message and stored one id; there may be several now.
 		const messageIds = [
 			...(pin.messageIds ?? []),
@@ -324,7 +344,9 @@ async function migrateDmState(
 		if (messageIds.length > 0) state.modePin = merged;
 	}
 
-	await writeJson(fs, paths.dmStatePath, state);
+	await withFileWriteLock(paths.dmStatePath, async () => {
+		await writeJson(fs, paths.dmStatePath, state);
+	});
 	await removeQuietly(fs, paths.legacy.topicsPath);
 	await removeQuietly(fs, paths.legacy.modePinPath);
 	return true;
