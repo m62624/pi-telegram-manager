@@ -1160,25 +1160,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		const controller = connect;
 		if (controller) {
-			// Both of these WRITE to the chat, so they go through the lane like everything
-			// else: the run's last word must not overtake a log still being uploaded.
+			// A card still open here belongs to a call that never returned — the turn was
+			// aborted under it. Nothing will ever complete it, so close it as cancelled
+			// instead of leaving it wearing the running state. It edits the chat, so it
+			// waits its turn like every other write.
 			await chatLane
-				.run(async () => {
-					// A card still open here belongs to a call that never returned — the turn
-					// was aborted under it. Nothing will ever complete it, so close it as
-					// cancelled instead of leaving it wearing the running state.
-					await controller.cancelOpenToolCards();
-					// A manager run in mixed still pumps the connect queue (an owner message
-					// may be waiting behind the aborted moderation turn) but its text is NOT a
-					// reply to the owner — only an owner run delivers to the chat topic.
-					// The run's messages were mirrored one by one as they ended; the agent_end
-					// fallback only fires when none of them was (an aborted or otherwise odd
-					// run), so an answer can never be lost.
-					await controller.onAgentEnd(
-						event.messages,
-						ownerRun && !mirroredThisRun,
-					);
-				})
+				.run(() => controller.cancelOpenToolCards())
+				.catch(() => {});
+			// Then let the whole turn land before the run has its last word. Draining here
+			// rather than queueing behind it keeps the lane free: `onAgentEnd` also pumps
+			// the message queue, which waits for the SESSION to go idle — a wait that has
+			// no business holding up the chat.
+			await chatLane.drain();
+			// A manager run in mixed still pumps the connect queue (an owner message may be
+			// waiting behind the aborted moderation turn) but its text is NOT a reply to the
+			// owner — only an owner run delivers to the chat topic. The run's messages were
+			// mirrored one by one as they ended; this fallback only fires when none of them
+			// was (an aborted or otherwise odd run), so an answer can never be lost.
+			await controller
+				.onAgentEnd(event.messages, ownerRun && !mirroredThisRun)
 				.catch(() => {});
 		}
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
