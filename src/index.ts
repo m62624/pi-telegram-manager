@@ -62,6 +62,7 @@ import {
 	planAttachment,
 	toolOutputFileName,
 } from "./core/tool-output-file";
+import { TurnSignal } from "./core/turn-signal";
 import type { TurnSavedFile } from "./core/turns";
 import { resolveUserDir } from "./core/user-path";
 import {
@@ -426,6 +427,17 @@ const ESC_SETTLE_MS = 3_000;
 const STUCK_WARN_AFTER_MS = 120_000;
 /** Retry the queue on this beat, so a message never waits on an event that never comes. */
 const QUEUE_PUMP_MS = 15_000;
+/**
+ * How long a delivered prompt has to become a turn before we call the hand-off failed.
+ *
+ * A prompt Pi accepted starts its turn at once, so this is generous by a wide margin —
+ * it exists to catch the hand-off that was silently thrown away, not to race a slow one.
+ */
+const TURN_START_WAIT_MS = 15_000;
+/** …unless a compaction is running ahead of the turn. Then we wait it out, up to this. */
+const TURN_START_MAX_WAIT_MS = 300_000;
+/** A compaction that has not reported back in this long is not running any more. */
+const COMPACTION_MAX_MS = 300_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -625,6 +637,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// everything `/context` reports. Null until the first turn.
 	let lastContext: ContextSnapshot | null = null;
 	let lastCompaction: CompactionMemory | null = null;
+	// Fires on `agent_start`. It is how a hand-off is confirmed — see `deliverPrompt`.
+	const turnStarted = new TurnSignal();
+	// One hand-off at a time (see `deliverPrompt`).
+	let deliveryInFlight = false;
+	// When the running compaction began; 0 = none. A compaction runs BEFORE the turn it
+	// delays (Pi checks for one inside `prompt()`), so a prompt waiting behind one has
+	// not failed — and on a local model it can take minutes. The stamp expires on its
+	// own, so a compaction that never reports back cannot wedge the delivery path.
+	let compactingSince = 0;
+	const compactionInFlight = (): boolean =>
+		compactingSince > 0 && Date.now() - compactingSince < COMPACTION_MAX_MS;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -842,7 +865,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Hand a prompt to the agent — and only ever while the session is REALLY idle.
+	 * Hand a prompt to the agent — and only ever while the session is REALLY idle, and
+	 * only ever ONE hand-off at a time.
 	 *
 	 * `sendUserMessage` starts a turn when the agent is idle and QUEUES otherwise. A
 	 * queued message is not safe: on any abort the TUI calls
@@ -855,17 +879,52 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
 	 * still finishing, so a message sent from that handler (the queue pump does exactly
 	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
-	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes. The
-	 * message stays in our queue (the caller only drops it once it is really sent) and
-	 * the pump tries again; a session that never comes back is reported, not waited on.
+	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes.
+	 *
+	 * And then we CONFIRM. `pi.sendUserMessage` is fire-and-forget (it returns `void`;
+	 * the SDK swallows the promise), so awaiting it proves nothing, and it fails for
+	 * real: right after an abort the session says idle while the run is still unwinding,
+	 * `agent.prompt()` throws "Agent is already processing a prompt", and the message is
+	 * gone — silently, because the call could not tell us. A prompt that was accepted
+	 * starts a turn, so we wait for `agent_start` (see {@link TurnSignal}) and treat its
+	 * absence as a failed hand-off: the message stays in our queue, and the pump tries
+	 * again.
 	 */
 	const deliverPrompt = async (content: PromptContent): Promise<void> => {
-		if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
-			noteSessionStuck();
-			throw new Error("the Pi session did not go idle; message kept in queue");
+		// One at a time: a second attempt while the first is still unconfirmed cannot be
+		// told apart from a retry, and a retry that lands twice sends the message twice.
+		if (deliveryInFlight) {
+			throw new Error("a hand-off is already in flight; message kept in queue");
 		}
-		sessionStuckSince = 0;
-		await pi.sendUserMessage(content, { deliverAs: "followUp" });
+		deliveryInFlight = true;
+		try {
+			if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
+				noteSessionStuck();
+				throw new Error(
+					"the Pi session did not go idle; message kept in queue",
+				);
+			}
+			// Armed BEFORE the send, so a turn that starts immediately is not missed.
+			let started = turnStarted.next(TURN_START_WAIT_MS);
+			pi.sendUserMessage(content, { deliverAs: "followUp" });
+			const deadline = Date.now() + TURN_START_MAX_WAIT_MS;
+			while (!(await started)) {
+				// Pi runs a compaction INSIDE `prompt()`, before the turn — and a local model
+				// summarising a full context takes minutes. A prompt waiting behind one has
+				// not failed, and re-sending it would both duplicate the message and pile a
+				// second compaction on the first.
+				if (!compactionInFlight() || Date.now() >= deadline) {
+					noteSessionStuck();
+					throw new Error(
+						"the prompt never started a turn; message kept in queue",
+					);
+				}
+				started = turnStarted.next(TURN_START_WAIT_MS);
+			}
+			sessionStuckSince = 0;
+		} finally {
+			deliveryInFlight = false;
+		}
 	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
@@ -1212,6 +1271,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		connectSystemBlock = null;
+		// Nothing will ever confirm a hand-off that is still waiting: the mode is gone.
+		turnStarted.clear();
+		compactingSince = 0;
 		// The next mode builds its own context; reporting the last one built by the mode
 		// that just ended would be a true number about a thread that is gone.
 		lastContext = null;
@@ -1253,6 +1315,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerUi = null;
 		// See `stopConnect`: the context that was measured belonged to the mode that is
 		// ending, and /context must not report it as if it were still the one in use.
+		turnStarted.clear();
+		compactingSince = 0;
 		lastContext = null;
 		// Tear down mixed-mode state (a no-op for the standalone manager). Deactivate
 		// the lifecycle record for whichever mode was actually running.
@@ -1370,6 +1434,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		busy = true;
+		// The turn started — which is the only proof we can get that the prompt behind it
+		// was ever accepted. See `deliverPrompt`.
+		turnStarted.fire();
+		// A turn is running, so whatever compaction preceded it is over, whether or not it
+		// said so.
+		compactingSince = 0;
 		managerTurnTools = [];
 		aboutCallsThisTurn = 0;
 		// Whose run is this? Personal mode: always the owner's. Mixed: only a coding
@@ -1738,6 +1808,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// thread — so the moderation turns come out of the summary here, before it is
 	// written. See `stripTelegramTurnsFromCompaction`.
 	pi.on("session_before_compact", async (event, ctx) => {
+		// A compaction runs INSIDE `prompt()`, ahead of the turn it delays, and on a local
+		// model it takes minutes. `deliverPrompt` reads this so it waits for the turn
+		// instead of concluding the prompt was thrown away and sending it a second time.
+		compactingSince = Date.now();
 		if (mixedActive) stripTelegramTurnsFromCompaction(event.preparation);
 		const controller = connect;
 		if (!controller) return;
@@ -1750,6 +1824,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.catch(() => {});
 	});
 	pi.on("session_compact", async (event) => {
+		compactingSince = 0;
 		// Remembered, not just announced: a compaction is the answer to "why did it
 		// forget the beginning", and that question is asked hours later, when the card
 		// has scrolled away. /context still says so.
