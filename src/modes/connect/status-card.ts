@@ -62,8 +62,11 @@ export function renderStatusCard(input: StatusInput): string {
 	if (input.thinkingLevel) body.push(bullet("Thinking", input.thinkingLevel));
 	// The directory decides what `read` and `bash` can even reach, so it belongs in a
 	// status you check before asking the bot to touch a file.
-	if (input.cwd) body.push(bullet("Working in", `\`${input.cwd}\``));
-	if (input.sessionName) body.push(bullet("Session", input.sessionName));
+	if (input.cwd) body.push(bullet("Working in", code(input.cwd)));
+	// In code, like the path: the session name is whatever it was named, not a string we
+	// wrote. Our cards go out with entity detection on, and no value we merely PASS
+	// THROUGH gets to look like a command in one of them.
+	if (input.sessionName) body.push(bullet("Session", code(input.sessionName)));
 
 	body.push(bullet("Agent", input.busy ? "working on a turn" : "idle"));
 	if (input.queued !== undefined && input.queued > 0) {
@@ -80,6 +83,11 @@ export function renderStatusCard(input: StatusInput): string {
 	}
 
 	return card("📊", "Status", body);
+}
+
+/** A value we did not write: shown verbatim, and never as something you can press. */
+function code(value: string): string {
+	return `\`${value.replace(/`/g, "'")}\``;
 }
 
 function modeLine(runtime: StatusMode): string {

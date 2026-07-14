@@ -107,6 +107,23 @@ describe("renderStatusCard", () => {
 		expect(partial).not.toContain("%");
 	});
 
+	it("never lets a value it merely passes through look like a command", () => {
+		// Our cards are sent with entity detection ON, so a bare "/switch" in them is a
+		// button. Values we did not write — a path, a session name — must not be able to
+		// smuggle one in: they are shown as code, where Telegram detects nothing.
+		const text = renderStatusCard({
+			...base,
+			cwd: "/srv/pi",
+			sessionName: "/stop me",
+		});
+		expect(text).toContain("`/srv/pi`");
+		expect(text).toContain("`/stop me`");
+		// A backtick in the value cannot break out of the span it is quoted in.
+		expect(renderStatusCard({ ...base, sessionName: "a`/stop`b" })).toContain(
+			"`a'/stop'b`",
+		);
+	});
+
 	it("names the model even when only an id came back", () => {
 		const text = renderStatusCard({ ...base, model: { id: "qwen3.6-35b" } });
 		expect(text).toContain("qwen3.6-35b");

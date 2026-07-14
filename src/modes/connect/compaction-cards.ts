@@ -62,8 +62,11 @@ export function compactedCard(tokensBefore?: number): string {
  */
 export function compactionFailedCard(reason: string): string {
 	const detail = reason.trim() || "no reason given";
+	// In code, because this string is not ours: it comes from whatever failed. Our own
+	// messages are sent with entity detection on so their /commands are tappable, and a
+	// foreign string must not be able to smuggle a button into one of our cards.
 	return card("❌", "Compaction failed", [
-		bullet("Reason", detail),
+		bullet("Reason", `\`${detail.replace(/`/g, "'")}\``),
 		note("The context was left as it is — nothing was lost."),
 	]);
 }

@@ -70,4 +70,13 @@ describe("compactionFailedCard", () => {
 	it("never renders an empty reason", () => {
 		expect(compactionFailedCard("   ")).toContain("no reason given");
 	});
+
+	it("does not let the failure's own text become a button", () => {
+		// The reason comes from whatever failed — it is not a string we wrote. Our cards
+		// go out with entity detection on, so it is quoted as code, where Telegram makes
+		// nothing tappable.
+		const text = compactionFailedCard("try /stop first");
+		expect(text).toContain("`try /stop first`");
+		expect(compactionFailedCard("a`/stop`b")).toContain("`a'/stop'b`");
+	});
 });
