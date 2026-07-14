@@ -39,6 +39,7 @@ import {
 	createAboutTools,
 } from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { conversationOnly } from "./core/compaction-material";
 import { runFocusedCompaction } from "./core/compaction-run";
 import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
@@ -74,6 +75,7 @@ import {
 import {
 	compactedCard,
 	compactingCard,
+	compactionEmptyCard,
 	compactionFailedCard,
 } from "./modes/connect/compaction-cards";
 import {
@@ -442,6 +444,11 @@ const TURN_START_WAIT_MS = 15_000;
 const TURN_START_MAX_WAIT_MS = 300_000;
 /** A compaction that has not reported back in this long is not running any more. */
 const COMPACTION_MAX_MS = 300_000;
+/**
+ * How long after our own cancel Pi's "Compaction cancelled" throw is still an echo of it
+ * rather than news. Pi rethrows synchronously, inside the same call — seconds are plenty.
+ */
+const CANCEL_ECHO_MS = 30_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -656,6 +663,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let compactingSince = 0;
 	const compactionInFlight = (): boolean =>
 		compactingSince > 0 && Date.now() - compactingSince < COMPACTION_MAX_MS;
+	// When WE cancelled a compaction (the summariser wrote nothing) — because Pi answers a
+	// cancel on the manual path by throwing "Compaction cancelled" into `onError`, and the
+	// owner would then get a second, vaguer card about the thing we just explained.
+	let compactionCancelledAt = 0;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -1799,6 +1810,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		ctx.compact({
 			onError: (error) => {
+				// Our own cancel comes back here as a throw. It is not a failure and it has
+				// already been explained by a card that says what actually happened.
+				if (Date.now() - compactionCancelledAt < CANCEL_ECHO_MS) return;
 				void chatLane
 					.run(() => controller.sendToChat(compactionFailedCard(error.message)))
 					.catch(() => {});
@@ -1837,14 +1851,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// in a long session — tells the summariser nothing, so it weighs the conversation
 		// by mass and keeps the tool output, which is four fifths of it, over the person,
 		// who is two percent of it. We run the same `compact()` Pi would have run, with the
-		// one argument its automatic path leaves empty. Undefined = Pi compacts as usual.
-		const compaction = await runFocusedCompaction({
+		// one argument its automatic path leaves empty — and we READ what comes back, which
+		// Pi does not: an empty summary once replaced an hour of this owner's session with
+		// a list of file paths.
+		const outcome = await runFocusedCompaction({
 			thread: manager ? (mixedActive ? "mixed" : "manager") : "personal",
 			model: ctx.model,
 			preparation: event.preparation,
 			callerInstructions: event.customInstructions,
 			signal: event.signal,
 			auth: (model) => ctx.modelRegistry.getApiKeyAndHeaders(model),
+			conversationOnly,
 			compact: (args) =>
 				compact(
 					args.preparation,
@@ -1855,7 +1872,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					args.signal,
 				),
 		});
-		return compaction ? { compaction } : undefined;
+		if (outcome.kind === "compaction")
+			return { compaction: outcome.compaction };
+		if (outcome.kind === "delegate") return undefined;
+		// Cancelled: no compaction will follow, so `session_compact` will never fire and
+		// nothing else will clear the flag that makes `deliverPrompt` wait for us.
+		compactingSince = 0;
+		compactionCancelledAt = Date.now();
+		if (connect) {
+			const controller = connect;
+			await chatLane
+				.run(() => controller.sendToChat(compactionEmptyCard()))
+				.catch(() => {});
+		}
+		return { cancel: true };
 	});
 	pi.on("session_compact", async (event) => {
 		compactingSince = 0;

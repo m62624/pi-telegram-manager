@@ -57,6 +57,25 @@ export function compactedCard(tokensBefore?: number): string {
 }
 
 /**
+ * The summariser wrote nothing, twice, so the compaction was called off and the history
+ * kept. This is a good outcome standing in for a bad one, and the card has to say both:
+ * nothing was lost, and nothing was freed either — the next turn starts from the same
+ * full context, and it will keep happening until the owner does something about it.
+ */
+export function compactionEmptyCard(): string {
+	return card("🪫", "Compaction produced no summary", [
+		bullet(
+			"Kept",
+			"the full history — a summary that says nothing is not a summary",
+		),
+		note(
+			"The summariser had no room to answer. /clear starts fresh, or give the model " +
+				"more output budget (`maxTokens`) and send /compact again.",
+		),
+	]);
+}
+
+/**
  * It failed. The reason is shown as the model gave it, because the owner is the only
  * one who can act on it (a summariser model that is down, a key that expired).
  */
