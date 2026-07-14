@@ -291,6 +291,25 @@ Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/se
 
 ---
 
+## Known issue: Telegram on Android hangs the first time a chat is opened
+
+Reported on Android: opening the bot chat for the first time freezes the app, and it may be killed before it recovers. **After the first message it renders, it behaves normally** and stays that way. Desktop is unaffected.
+
+**The cause is not established.** This bot sends things very few bots do — Bot API 10.1 rich messages, streaming drafts, an animated `<tg-thinking>` block, forum topics — and any of them could be what a given client chokes on. Rather than guess and rip out a feature that works, each suspect has its own switch, so you can find out on your own installation:
+
+| Try | What it turns off |
+| --- | --- |
+| `"assistant": { "thinkingPlaceholder": false }` | The animated `Thinking… / ▸ bash — npm test (4s)` trace. **Already the default** — it is beta for exactly this reason. |
+| `"assistant": { "draftPreviews": false }` | Streaming drafts entirely — no live preview of the reply as it is written. |
+| `"topics": { "enabled": false }` | Forum topics in the bot DM; everything goes to one flat chat instead. |
+| `"assistant": { "toolActivity": false }` | The tool cards, and with them the large highlighted code blocks in them. |
+
+Settings are read when a mode starts, so restart the mode after changing one (`/switch`, or the terminal command). Change **one at a time** — otherwise you learn nothing.
+
+**If you find the one that fixes it, please [open an issue](https://github.com/m62624/pi-telegram-manager/issues) and say which.** That is the difference between us guessing and us knowing, and it is the only way this gets fixed properly rather than by deleting a feature that was never at fault.
+
+---
+
 ## Why the `personal` topic is new every session
 
 Start a mode and you get a **fresh `personal` topic**; the one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted. So the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind — its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
