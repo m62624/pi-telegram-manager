@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	defaultDescribeArgs,
 	formatToolArgs,
+	shortenPath,
 	toolActivityHtml,
 	toolActivityLabel,
 	toolActivityMessage,
@@ -37,6 +38,72 @@ describe("formatToolArgs", () => {
 	});
 });
 
+describe("shortenPath", () => {
+	it("keeps the end of a POSIX path — the part that says which file it is", () => {
+		expect(
+			shortenPath(
+				"/home/m62624/Projects/main/pi-telegram-manager/src/index.ts",
+			),
+		).toBe("…/src/index.ts");
+		expect(shortenPath("./src/telegram/tool-activity.ts")).toBe(
+			"…/telegram/tool-activity.ts",
+		);
+		expect(shortenPath("~/Projects/app/src/main.rs")).toBe("…/src/main.rs");
+	});
+
+	it("keeps a Windows path a Windows path", () => {
+		// The separator it comes back with is the one it went in with — a path shown with
+		// the wrong slashes reads as a path from another machine.
+		expect(shortenPath("C:\\Users\\m\\proj\\src\\main.rs")).toBe(
+			"…\\src\\main.rs",
+		);
+		expect(shortenPath("D:\\a\\b\\c")).toBe("…\\b\\c");
+		// UNC.
+		expect(shortenPath("\\\\server\\share\\dir\\file.txt")).toBe(
+			"…\\dir\\file.txt",
+		);
+	});
+
+	it("does not invent a separator the path never used", () => {
+		// A Windows path written with forward slashes (Node accepts them) stays that way.
+		expect(shortenPath("C:/Users/m/proj/src/main.rs")).toBe("…/src/main.rs");
+		// Mixed separators: the "/" it already contains is the one it keeps.
+		expect(shortenPath("C:\\Users\\m/proj/src/main.rs")).toBe("…/src/main.rs");
+	});
+
+	it("leaves a path that is already short exactly as it is", () => {
+		expect(shortenPath("src/index.ts")).toBe("src/index.ts");
+		expect(shortenPath("index.ts")).toBe("index.ts");
+		expect(shortenPath("/etc/hosts")).toBe("/etc/hosts");
+		expect(shortenPath("C:\\file.txt")).toBe("C:\\file.txt");
+		expect(shortenPath("")).toBe("");
+	});
+
+	it("survives the shapes a path takes in the wild", () => {
+		// A trailing separator: the last real segment is still the last real segment.
+		expect(shortenPath("/home/m/Projects/app/src/")).toBe("…/app/src");
+		// Repeated separators.
+		expect(shortenPath("/home//m///Projects/app/src/index.ts")).toBe(
+			"…/src/index.ts",
+		);
+		// A directory, not a file.
+		expect(shortenPath("/home/m/Projects/app/src")).toBe("…/app/src");
+		// Spaces and dots survive untouched — they are part of the name.
+		expect(shortenPath("/home/m/My Projects/app v2/main .ts")).toBe(
+			"…/app v2/main .ts",
+		);
+		// Non-ASCII names are names.
+		expect(shortenPath("/home/m/Проекты/приложение/индекс.ts")).toBe(
+			"…/приложение/индекс.ts",
+		);
+	});
+
+	it("is idempotent — shortening a shortened path changes nothing", () => {
+		const once = shortenPath("/home/m/Projects/app/src/index.ts");
+		expect(shortenPath(once)).toBe(once);
+	});
+});
+
 describe("defaultDescribeArgs", () => {
 	it("picks the salient arg for well-known tools", () => {
 		expect(
@@ -48,6 +115,40 @@ describe("defaultDescribeArgs", () => {
 		expect(
 			defaultDescribeArgs({ toolName: "grep", args: { pattern: "TODO" } }),
 		).toBe("TODO");
+	});
+
+	it("shortens a path, and shortens NOTHING else", () => {
+		// We know what a path means, so we know which end of it carries the file. A shell
+		// command, a regex or a URL is not ours to cut — guessing where would be a lie.
+		expect(
+			defaultDescribeArgs({
+				toolName: "read",
+				args: { file_path: "/home/m/Projects/app/src/index.ts" },
+			}),
+		).toBe("…/src/index.ts");
+		expect(
+			defaultDescribeArgs({
+				toolName: "bash",
+				args: { command: "cat /home/m/Projects/app/src/index.ts" },
+			}),
+		).toBe("cat /home/m/Projects/app/src/index.ts");
+		expect(
+			defaultDescribeArgs({
+				toolName: "fetch",
+				args: { url: "https://example.com/a/b/c/d" },
+			}),
+		).toBe("https://example.com/a/b/c/d");
+	});
+
+	it("still names the whole path inside the card", () => {
+		// The summary is shortened; the parameters are not. The full path stays one tap
+		// away, which is the point of folding it in the first place.
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "/home/m/Projects/app/src/index.ts" },
+		}).html;
+		expect(html).toContain("…/src/index.ts"); // the summary
+		expect(html).toContain("<pre>/home/m/Projects/app/src/index.ts</pre>"); // the body
 	});
 
 	it("returns undefined when nothing obvious fits", () => {

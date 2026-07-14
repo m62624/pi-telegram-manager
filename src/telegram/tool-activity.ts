@@ -200,15 +200,33 @@ export function defaultDescribeArgs(
 	const record = args as Record<string, unknown>;
 	const pick = (key: string): string | undefined =>
 		typeof record[key] === "string" ? (record[key] as string) : undefined;
+	// A PATH is shortened; nothing else is. We know what a path means, so we know which
+	// end of it carries the information — but a shell command, a regex or a URL is not
+	// ours to cut, and guessing where to cut it would just be a lie in the summary line.
+	const path = pick("file_path") ?? pick("path");
+	if (path !== undefined) return shortenPath(path);
 	return (
 		pick("command") ??
-		pick("file_path") ??
-		pick("path") ??
 		pick("pattern") ??
 		pick("query") ??
 		pick("url") ??
 		undefined
 	);
+}
+
+/**
+ * `…/src/index.ts` — the end of a path, which is the part that says which file this is.
+ *
+ * The summary line has one line to tell you what the call did, and a full path spends it
+ * on the bit that is identical in every card (`/home/you/Projects/thing/…`) — so the
+ * name of the file, the only thing that differs, is what gets truncated away. The whole
+ * path is still inside the card, where there is room for it.
+ */
+export function shortenPath(path: string): string {
+	const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+	const segments = path.split(/[\\/]/).filter((segment) => segment.length > 0);
+	if (segments.length <= 2) return path;
+	return `…${separator}${segments.slice(-2).join(separator)}`;
 }
 
 /** The single string argument of a one-key object (e.g. `{ command }`), else undefined. */
