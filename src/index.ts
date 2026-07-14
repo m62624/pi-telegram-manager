@@ -41,6 +41,12 @@ import {
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
 import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
+import {
+	type ContextSnapshot,
+	type MeasurableMessage,
+	type ContextSource as MeasuredSource,
+	measureContext,
+} from "./core/context-measure";
 import { ContextReset } from "./core/context-reset";
 import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
@@ -68,6 +74,12 @@ import {
 	compactingCard,
 	compactionFailedCard,
 } from "./modes/connect/compaction-cards";
+import {
+	type CompactionMemory,
+	type ContextReportInput,
+	renderContextCard,
+	renderContextText,
+} from "./modes/connect/context-card";
 import {
 	ConnectController,
 	MIRROR_URL,
@@ -448,6 +460,7 @@ const MANAGER_HELP_TEXT = [
 	"",
 	"/switch — change mode (manager / personal / mixed)",
 	"/status — model, context, working directory, queue",
+	"/context — what I am carrying, and what filled it up",
 	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
@@ -507,6 +520,23 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const withConnectBlock = <T>(messages: readonly T[]): unknown[] =>
 		connect ? withSystemBlock(messages, connectSystemBlock) : [...messages];
 
+	/**
+	 * The exact array we are about to hand the model, measured on the way out — this
+	 * is the only place it exists, and the only place that knows what we changed. It
+	 * is what `/context` reports. See `core/context-measure.ts`.
+	 */
+	const measured = <T>(
+		source: MeasuredSource,
+		messages: readonly T[],
+	): { messages: readonly T[] } => {
+		lastContext = measureContext(
+			source,
+			messages as readonly MeasurableMessage[],
+			Date.now(),
+		);
+		return { messages };
+	};
+
 	// Rebuild the LLM context per mode: the manager replaces it with the active
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
 	// mode / no boundary → leave the context untouched.
@@ -518,25 +548,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// block belongs here exactly as it does in Personal mode.
 		if (source === "coding-filtered") {
 			const stripped = stripTelegramTurns(event.messages);
-			return {
-				messages: withConnectBlock(contextReset.apply(stripped) ?? stripped),
-			} as never;
+			return measured(
+				"mixed-coding",
+				withConnectBlock(contextReset.apply(stripped) ?? stripped),
+			) as never;
 		}
 		// Manager / mixed-telegram: replace context with the active chat's isolated
 		// history so the model sees only that one conversation.
 		if (source === "manager-chat" && manager) {
 			const isolated = await manager.buildContextForActive();
 			if (!isolated) return {};
-			return {
-				messages: toRebuiltMessages(isolated, Date.now()),
-			} as never;
+			return measured(
+				"manager-chat",
+				toRebuiltMessages(isolated, Date.now()),
+			) as never;
 		}
 		const filtered = contextReset.apply(event.messages);
 		// Mode 1: the owner's thread, with the bridge's system block.
 		if (connect && connectSystemBlock) {
-			return {
-				messages: withConnectBlock(filtered ?? event.messages),
-			} as never;
+			return measured(
+				"personal",
+				withConnectBlock(filtered ?? event.messages),
+			) as never;
 		}
 		return filtered ? { messages: filtered } : {};
 	});
@@ -587,6 +620,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
+	// The last context handed to the model, and the last compaction of this session —
+	// everything `/context` reports. Null until the first turn.
+	let lastContext: ContextSnapshot | null = null;
+	let lastCompaction: CompactionMemory | null = null;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -920,6 +957,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	const buildStatus = (): string => renderStatusCard(statusInput());
+
+	/**
+	 * What `/context` reports: the context we last built (ours, measured), the size of
+	 * the last call (Pi's, exact), and the last compaction (the usual answer to "why
+	 * did it forget the beginning").
+	 */
+	const contextInput = (): ContextReportInput => {
+		const usage = activeCtx?.getContextUsage();
+		return {
+			snapshot: lastContext ?? undefined,
+			usage: usage
+				? {
+						tokens: usage.tokens,
+						contextWindow: usage.contextWindow,
+						percent: usage.percent,
+					}
+				: undefined,
+			compaction: lastCompaction ?? undefined,
+			now: Date.now(),
+		};
+	};
+	const buildContextReport = (): string => renderContextCard(contextInput());
 
 	/** What the chat is told about an /esc — including the outcome that used to be silence. */
 	const escapeCard = (outcome: "aborted" | "idle" | "stuck"): string => {
@@ -1676,6 +1735,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.catch(() => {});
 	});
 	pi.on("session_compact", async (event) => {
+		// Remembered, not just announced: a compaction is the answer to "why did it
+		// forget the beginning", and that question is asked hours later, when the card
+		// has scrolled away. /context still says so.
+		lastCompaction = {
+			at: Date.now(),
+			tokensBefore: event.compactionEntry.tokensBefore,
+		};
 		const controller = connect;
 		if (!controller) return;
 		await chatLane
@@ -2247,6 +2313,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 			onCompact: compactContext,
 			onStatus: buildStatus,
+			onContextReport: buildContextReport,
 			onAbort: async () => {
 				await connect?.sendToChat(escapeCard(await escapeSession()));
 			},
@@ -3142,6 +3209,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						chat_id: ownerUserId,
 						message_thread_id: threadOf(event) ?? personalThread(),
 						text: renderStatusText(statusInput()),
+						link_preview_options: { is_disabled: true },
+					})
+					.catch(() => {});
+				return true;
+			}
+			// /context, likewise: in manager mode it reports the rebuilt per-chat context,
+			// which is the one place you can see the isolation actually holding.
+			if (!connect && /^\/context(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: renderContextText(contextInput()),
 						link_preview_options: { is_disabled: true },
 					})
 					.catch(() => {});

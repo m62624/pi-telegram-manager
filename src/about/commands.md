@@ -18,6 +18,10 @@ every MODE" — never "to everyone".
 - `/status` — what the session is doing right now: the model and its provider, how full
   the context is, the working directory, whether a turn is running, what is queued, and —
   in mixed — whether the owner or the manager currently holds the session.
+- `/context` — what the model is actually carrying: which thread it was built from (the
+  owner's session, or one isolated chat), how big the last call really was, what the
+  context is made OF (tool output is usually most of it), and whether a compaction has
+  already replaced part of the history with a summary.
 - `/esc` — cancel whatever the agent is doing, exactly as the Escape key does in the
   terminal. If the session does not stop, the bot says so rather than staying quiet.
 - `/switch` — change the mode (manager / personal / mixed) with buttons.

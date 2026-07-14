@@ -106,6 +106,11 @@ export interface ConnectControllerDeps {
 	 * fetch any.
 	 */
 	onStatus?: () => string;
+	/**
+	 * Build the `/context` card — what the model is actually carrying, and what put it
+	 * there. `/status` says how full the context is; this says what it is full OF.
+	 */
+	onContextReport?: () => string;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
@@ -156,6 +161,7 @@ const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const COMPACT_COMMANDS = new Set(["compact"]);
 const STATUS_COMMANDS = new Set(["status"]);
+const CONTEXT_COMMANDS = new Set(["context"]);
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
 
@@ -172,6 +178,7 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/clear", "clear the conversation history"),
 	bullet("/compact", "summarise the history to free up context"),
 	bullet("/status", "model, context, working directory, queue"),
+	bullet("/context", "what I am carrying, and what filled it up"),
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
@@ -445,6 +452,10 @@ export class ConnectController {
 		}
 		if (STATUS_COMMANDS.has(command.name) && this.deps.onStatus) {
 			await this.sendToChat(this.deps.onStatus());
+			return true;
+		}
+		if (CONTEXT_COMMANDS.has(command.name) && this.deps.onContextReport) {
+			await this.sendToChat(this.deps.onContextReport());
 			return true;
 		}
 		if (HELP_COMMANDS.has(command.name)) {
