@@ -772,7 +772,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (!mixedActive || polarity === "telegram") return;
 			setPolarity("telegram");
 			// Kick the manager immediately rather than waiting for the next tick.
-			void manager?.onTick().then(updateManagerBanner);
+			// A tick must never take the process with it: an escaping rejection here is an
+			// unhandled rejection, and Node ends the process for one.
+			void manager
+				?.onTick()
+				.then(updateManagerBanner)
+				.catch(() => {});
 		}, mixedReturnMs);
 	};
 
@@ -2624,7 +2629,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				// Through `deliverPrompt`, so a turn injected while the session is still
 				// settling cannot land in the SDK queue — from which the next abort would
 				// dump it into the terminal editor instead of answering anyone.
-				await deliverPrompt(content);
+				//
+				// `deliverPrompt` THROWS when the session will not go idle, and this call
+				// sits under the manager's 5-second tick (`void onTick().then(…)`) — an
+				// escaping rejection there is an unhandled rejection, which ends the Pi
+				// process. It is not the tick's job to die for a session that is wedged:
+				// the chat stays unserved, so the very next tick tries again, and the owner
+				// is told once (see `noteSessionStuck`).
+				await deliverPrompt(content).catch(() => {});
 			},
 			// Business connections reject the rich-message API, so mode-2 replies go out
 			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
@@ -2748,7 +2760,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		).catch(() => {});
 		updateManagerBanner();
 		managerTick = setInterval(() => {
-			void manager?.onTick().then(updateManagerBanner);
+			// A tick must never take the process with it: an escaping rejection here is an
+			// unhandled rejection, and Node ends the process for one.
+			void manager
+				?.onTick()
+				.then(updateManagerBanner)
+				.catch(() => {});
 		}, MANAGER_TICK_MS);
 		managerHeartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
