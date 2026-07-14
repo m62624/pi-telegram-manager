@@ -427,6 +427,26 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 
+	it("answers /status with the report, without prompting the agent", async () => {
+		const onStatus = vi.fn(() => "📊 **Status**\n\n- Mode — Personal");
+		const { controller, api, sendFollowUp } = setup({ onStatus });
+		expect(await controller.onEvent(messageEvent("/status"))).toBe(true);
+		expect(onStatus).toHaveBeenCalledTimes(1);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(api.sent.at(-1)?.rich_message.markdown).toContain("Status");
+	});
+
+	it("never gives the status to anyone but the owner", async () => {
+		// The report names the model, the working directory and the queue. A stranger
+		// asking for it is not asking a question — they are asking for the machine.
+		const onStatus = vi.fn(() => "📊 Status");
+		const { controller } = setup({ onStatus });
+		expect(await controller.onEvent(messageEvent("/status", 1, 999))).toBe(
+			false,
+		);
+		expect(onStatus).not.toHaveBeenCalled();
+	});
+
 	it("intercepts /compact as a control command instead of a prompt", async () => {
 		const onCompact = vi.fn(async () => {});
 		const { controller, sendFollowUp } = setup({ onCompact });

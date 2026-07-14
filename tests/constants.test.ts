@@ -16,7 +16,16 @@ describe("command menus", () => {
 		const publicCommands = new Set(
 			TELEGRAM_PUBLIC_COMMANDS.map((c) => c.command),
 		);
-		for (const control of ["stop", "switch", "clear", "esc"]) {
+		// `status` and `compact` belong here too: the status report names the model, the
+		// working directory and the queue — the owner's business, and nobody else's.
+		for (const control of [
+			"stop",
+			"switch",
+			"clear",
+			"esc",
+			"compact",
+			"status",
+		]) {
 			expect(publicCommands.has(control)).toBe(false);
 			// …while the owner's own menu still carries them.
 			expect(TELEGRAM_BOT_COMMANDS.some((c) => c.command === control)).toBe(

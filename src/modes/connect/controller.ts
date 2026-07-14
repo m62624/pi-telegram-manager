@@ -99,6 +99,12 @@ export interface ConnectControllerDeps {
 	 * announced by the compaction cards, not by this call.
 	 */
 	onCompact?: () => Promise<void>;
+	/**
+	 * Build the `/status` card — what the session is doing right now (model, context,
+	 * directory, queue). Synchronous on purpose: it reports state, it does not go and
+	 * fetch any.
+	 */
+	onStatus?: () => string;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
@@ -142,6 +148,7 @@ export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const COMPACT_COMMANDS = new Set(["compact"]);
+const STATUS_COMMANDS = new Set(["status"]);
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
 
@@ -157,6 +164,7 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
 	bullet("/compact", "summarise the history to free up context"),
+	bullet("/status", "model, context, working directory, queue"),
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
@@ -421,6 +429,10 @@ export class ConnectController {
 		}
 		if (COMPACT_COMMANDS.has(command.name) && this.deps.onCompact) {
 			await this.deps.onCompact();
+			return true;
+		}
+		if (STATUS_COMMANDS.has(command.name) && this.deps.onStatus) {
+			await this.sendToChat(this.deps.onStatus());
 			return true;
 		}
 		if (HELP_COMMANDS.has(command.name)) {

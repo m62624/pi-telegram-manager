@@ -85,6 +85,12 @@ import {
 	parseSlashCommand,
 } from "./modes/connect/messages";
 import {
+	renderStatusCard,
+	renderStatusText,
+	type StatusInput,
+	type StatusMode,
+} from "./modes/connect/status-card";
+import {
 	lastInterlocutorName,
 	lastInterlocutorUserId,
 	selectCatchUpChats,
@@ -443,6 +449,7 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (manager / personal / mixed)",
+	"/status — model, context, working directory, queue",
 	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
@@ -558,6 +565,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 	// Retries the connect queue on a beat — see where it is armed.
 	let queuePump: ReturnType<typeof setInterval> | null = null;
+	// When the running mode started, for the "up for" line of /status. 0 = nothing running.
+	let modeStartedAt = 0;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
 	// Whether the agent run in flight belongs to the owner's own thread (personal
@@ -880,6 +889,51 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * So we ask the SESSION, not ourselves, and we report what actually happened —
 	 * including "it did not stop", which is a real outcome and used to be silence.
 	 */
+	/**
+	 * The `/status` card: what the session is doing RIGHT NOW.
+	 *
+	 * Every value is read from Pi at the moment it is asked for — the model, the context
+	 * usage, the working directory, the thinking level — because a status assembled from
+	 * what we remembered at mode start is a status about the past. Anything Pi does not
+	 * report is simply left out of the card; see `renderStatusCard`.
+	 */
+	const statusInput = (): StatusInput => {
+		const ctx = activeCtx;
+		const mode: StatusMode["mode"] = manager
+			? mixedActive
+				? "mixed"
+				: "manager"
+			: "personal";
+		const usage = ctx?.getContextUsage();
+		return {
+			runtime: { mode, polarity: mixedActive ? polarity : undefined },
+			model: ctx?.model
+				? {
+						name: ctx.model.name,
+						id: ctx.model.id,
+						provider: ctx.model.provider,
+					}
+				: undefined,
+			context: usage
+				? {
+						tokens: usage.tokens,
+						contextWindow: usage.contextWindow,
+						percent: usage.percent,
+					}
+				: undefined,
+			cwd: ctx?.cwd,
+			// These live on `pi`, not on the command context.
+			sessionName: pi.getSessionName(),
+			thinkingLevel: pi.getThinkingLevel(),
+			busy,
+			queued: connect?.pendingCount(),
+			manager: manager?.status(),
+			uptimeMs: modeStartedAt > 0 ? Date.now() - modeStartedAt : undefined,
+		};
+	};
+
+	const buildStatus = (): string => renderStatusCard(statusInput());
+
 	/** What the chat is told about an /esc — including the outcome that used to be silence. */
 	const escapeCard = (outcome: "aborted" | "idle" | "stuck"): string => {
 		if (outcome === "aborted") {
@@ -2131,6 +2185,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			},
 			onCompact: compactContext,
+			onStatus: buildStatus,
 			onAbort: async () => {
 				await connect?.sendToChat(escapeCard(await escapeSession()));
 			},
@@ -2239,6 +2294,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			STATUS_KEY,
 			fitLine(`Telegram: connected (chat ${allowedUserId})`, terminalWidth()),
 		);
+		modeStartedAt = Date.now();
 		ctx.ui.notify("Telegram connect: active.");
 		// The pin IS the connection notice, in every mode — a separate "Connected"
 		// card would say the same thing twice, and only personal mode ever sent one.
@@ -2641,6 +2697,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
+		modeStartedAt = Date.now();
 		if (mixed) {
 			// Mixed shows the footer indicator in the TUI AND a pinned indicator in the
 			// bot DM (so the bot chat reflects it too); arm the idle timer so an idle
@@ -2976,6 +3033,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 								: outcome === "idle"
 									? "💤 Nothing to cancel — the agent is idle."
 									: "⚠️ It did not stop. The session is still busy with nothing running — restart Pi to recover.",
+					})
+					.catch(() => {});
+				return true;
+			}
+			// /status works in every mode. Manager mode has no ConnectController to render
+			// the rich card, so the same report goes out as plain text.
+			if (!connect && /^\/status(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: renderStatusText(statusInput()),
+						link_preview_options: { is_disabled: true },
 					})
 					.catch(() => {});
 				return true;

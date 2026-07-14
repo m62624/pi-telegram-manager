@@ -275,7 +275,9 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/esc`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`.
+
+`/status` answers the questions you cannot check from a phone: which model is answering and through which provider, how full the context is (`~77k of 131.1k tokens (59% full)` — the number that tells you a compaction is coming), the directory the agent is working in, whether it is mid-turn, what is still queued, and — in mixed — who currently holds the session. Every command above is refused to anyone but the owner, and none of them appear in the menu strangers see.
 
 `/compact` summarises the history the model carries, so a long session keeps going instead of running into the context window. The chat says what it is doing and how it went — how full the context was, what the history weighed, and a red card if the compaction failed (Pi has no event for that, so without it a failure would simply go quiet). In manager mode there is nothing to compact: the context is built fresh for each conversation.
 
