@@ -444,4 +444,32 @@ describe("living with another extension that also owns the tool list", () => {
 		expect(api.active).toContain("bash");
 		for (const name of PLANNER) expect(api.active).not.toContain(name);
 	});
+
+	it("remembers what WE wrote, so a rewrite can be attributed to whoever did it", () => {
+		// `setActiveTools` is global and anonymous: a list arriving at the provider does not
+		// say who put it there. The prefix watchdog has to ask, because a head rewritten by
+		// a stranger is a bug and a head rewritten by us is a decision — and, told nothing,
+		// it reported our own memory pass as an intrusion, once per pass, to the owner.
+		const { api, rivalRefresh } = world();
+		const visibility = gate(api);
+		expect(visibility.lastSet()).toBeNull(); // nothing written yet: claim nothing
+
+		visibility.setActive("connect", true);
+		expect(visibility.lastSet()).toEqual(api.active); // ours, and it matches the world
+
+		rivalRefresh(); // the planner writes over us
+		expect(api.active).not.toEqual(visibility.lastSet()); // → attributable: not ours
+
+		visibility.refresh(); // we get the last word back
+		expect(visibility.lastSet()).toEqual(api.active);
+	});
+
+	it("hands out a copy, so nobody can edit our record of what we set", () => {
+		const { api } = world();
+		const visibility = gate(api);
+		visibility.setActive("connect", true);
+		const stolen = visibility.lastSet() as string[];
+		stolen.push("intruder");
+		expect(visibility.lastSet()).not.toContain("intruder");
+	});
 });

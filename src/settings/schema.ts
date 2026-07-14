@@ -234,6 +234,19 @@ export interface TelegramSettings {
 		 */
 		log: boolean;
 		/**
+		 * Announce in the log feed when ANOTHER extension rewrites the tool list in the
+		 * middle of a turn. The tools sit at the head of the prompt, so a rewrite there
+		 * invalidates the prefix every backend caches and the whole prompt is re-read —
+		 * tens of thousands of tokens, silently, per turn. It is worth knowing about, and
+		 * it is not something this extension can fix in someone else's code.
+		 *
+		 * Said once per kind of intrusion, never on a change of our own. Default true;
+		 * `/context` reports the head and the count either way, so switching this off
+		 * silences the card, not the measurement. Rides on `manager.log` (no feed, no
+		 * card).
+		 */
+		promptAlerts: boolean;
+		/**
 		 * The Owner's display name, surfaced to the model so it can introduce itself
 		 * as "{name}'s assistant" on first contact. Optional; when unset the model
 		 * refers to "the owner" generically.
@@ -310,6 +323,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
 		log: true,
+		promptAlerts: true,
 		strictReplyGuard: true,
 		labeler: "LLM agent 🤖:",
 		labelerRule: "────────────",
@@ -651,6 +665,11 @@ export function normalizeSettings(
 				manager.log ?? manager.debugFeed,
 				"manager.log",
 				d.manager.log,
+			),
+			promptAlerts: asBoolean(
+				manager.promptAlerts,
+				"manager.promptAlerts",
+				d.manager.promptAlerts,
 			),
 			ownerName: asOptionalString(manager.ownerName, "manager.ownerName"),
 			strictReplyGuard: asBoolean(

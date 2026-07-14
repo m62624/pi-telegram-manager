@@ -46,6 +46,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "reopenAfterMs": 86400000,
     "reviseThreshold": 2,
     "log": true,
+    "promptAlerts": true,
     "strictReplyGuard": true,
     "labeler": "LLM agent 🤖:",
     "labelerRule": "────────────",
@@ -183,6 +184,7 @@ The two thread ids are remembered on disk (`topics.json`); a topic you delete wh
 | `manager.labeler` | `"LLM agent 🤖:"` | replaces | The banner prefixed to each outgoing business reply, rendered as a blockquote so it stands apart from a message you typed. `""` removes the banner entirely (and the rule line with it) — the bot still tells people what it is when it introduces itself and whenever it is asked (see [Telling people it is a bot](#telling-people-it-is-a-bot)). A label with nothing visible in it (zero-width characters only) counts as `""`. |
 | `manager.labelerRule` | `"────────────"` | replaces | A second line under the labeler, inside the same blockquote — a horizontal rule that makes the banner taller and easier to spot. You control its look and length by the string itself; `""` removes just the rule line (the labeler stays). Ignored when `labeler` is `""`. |
 | `manager.log` | `true` | replaces | Mirror every turn (thinking, tool calls, decision) to your bot DM — the moderation log for manager and mixed. With `topics` on it goes to its own **manager** topic, so it never buries the conversation; without topics it shares the single DM and is chatty (turn it off there). Renamed from `manager.debugFeed`, which is still read when this key is unset. |
+| `manager.promptAlerts` | `true` | replaces | Warn in the log feed when **another extension** rewrites the tool list in the middle of a turn. The tool schemas sit at the head of the prompt, so a rewrite there invalidates the prefix your backend caches and the entire prompt is re-read — tens of thousands of tokens, silently, every turn. Said once per kind of intrusion, never about a change of our own. `/context` reports the head and the count either way, so switching this off silences the card, not the measurement. Rides on `manager.log`. |
 | `manager.media.images` | `true` | replaces | Let the model see interlocutor images (vision). |
 | `manager.media.documents` | `false` | replaces | Accept non-image documents (otherwise refused). |
 | `manager.allowedTools` | `[]` | **adds to base** | Regex names of extra tools the model may call, on top of the built-in messaging tools. Empty = telegram-sandbox (messaging tools only, no computer access). |

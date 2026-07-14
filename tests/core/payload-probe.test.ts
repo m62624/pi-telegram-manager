@@ -112,22 +112,69 @@ describe("PrefixWatch", () => {
 		expect(watch.defects()).toHaveLength(0);
 	});
 
-	it("catches the head changing between two calls of ONE run — always a defect", () => {
+	it("catches a STRANGER changing the head between two calls of ONE run", () => {
 		// The live bug this file exists for. Two consecutive calls inside one turn:
 		//     prefill=    97  cached=24 348   → called bash ×2
 		//     prefill=11 653  cached=     0   → called bash
 		// The cache went to zero and the prompt HALVED while the conversation GREW. Nothing
-		// about the model's situation had changed. Only the tool list had.
+		// about the model's situation had changed. Only the tool list had — and not by us:
+		// what reached the model is not what we set.
 		const watch = new PrefixWatch();
+		const ours = ["read", "bash", "write", "grep"];
 		watch.runStarted();
-		watch.record(payload(["read", "bash", "write", "grep"]));
-		const churn = watch.record(payload(["read", "bash"], "hi, and more"));
+		watch.record(payload(ours), ours);
+		const churn = watch.record(payload(["read", "bash"], "hi, and more"), ours);
 
 		expect(churn).not.toBeNull();
 		expect(churn?.midRun).toBe(true);
+		expect(churn?.foreign).toBe(true);
 		expect(churn?.delta.toolsRemoved).toEqual(["write", "grep"]);
 		expect(churn?.delta.headCharsDelta).toBeLessThan(0);
 		expect(watch.defects()).toHaveLength(1);
+	});
+
+	it("does not report OUR OWN mid-run change as an intrusion", () => {
+		// A finished memory pass withdraws its probes — deliberately, because a pass that
+		// can still see step one's tool will call step one again. That rewrites the head
+		// and costs the cache, and we knew it when we wrote it. Reported as a defect, it
+		// woke the owner once per memory pass with a warning about ourselves.
+		const watch = new PrefixWatch();
+		watch.runStarted();
+		const probes = ["manager_identify", "manager_candidates", "manager_verify"];
+		watch.record(payload(probes), probes);
+		const churn = watch.record(payload([]), []); // the pass is done: no tools left
+
+		expect(churn?.midRun).toBe(true);
+		expect(churn?.foreign).toBe(false);
+		expect(churn?.delta.toolsRemoved).toEqual(probes);
+		// It happened, and history says so. It is simply not somebody else's doing.
+		expect(watch.history()).toHaveLength(1);
+		expect(watch.defects()).toHaveLength(0);
+	});
+
+	it("accuses nobody when it does not know whose list it is", () => {
+		// Before the first refresh we have written nothing, so we can claim nothing — and
+		// an alarm that fires on what it cannot attribute is an alarm that fires on noise.
+		const watch = new PrefixWatch();
+		watch.runStarted();
+		watch.record(payload(["read", "bash"]), null);
+		const churn = watch.record(payload(["read"]), null);
+		expect(churn?.foreign).toBe(false);
+		expect(watch.defects()).toHaveLength(0);
+	});
+
+	it("does not care about the ORDER we set the tools in, only which ones arrived", () => {
+		// Pi builds the payload from its own registry; the list is ours whether or not it
+		// comes back in the order we handed it over.
+		const watch = new PrefixWatch();
+		watch.runStarted();
+		watch.record(payload(["read", "bash"]), ["read", "bash"]);
+		const churn = watch.record(payload(["read"], "more"), ["bash", "read"]);
+		expect(churn?.foreign).toBe(true); // "read" alone is not {read, bash}
+		expect(
+			watch.record(payload(["bash", "read"], "more"), ["read", "bash"])
+				?.foreign,
+		).toBe(false);
 	});
 
 	it("says nothing at all while the head holds", () => {

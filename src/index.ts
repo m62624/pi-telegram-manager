@@ -53,7 +53,7 @@ import { ContextReset } from "./core/context-reset";
 import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
-import { PrefixWatch } from "./core/payload-probe";
+import { type HeadChurn, PrefixWatch } from "./core/payload-probe";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
@@ -574,28 +574,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * `measured()` above never sees and which sit AHEAD of every message it does see.
 	 *
 	 * `before_provider_request` is the only place the real bytes exist. We do not modify the
-	 * payload — we read it, and we say so when its head changes between two calls of one
-	 * run, because that is the difference between a backend re-reading nothing and a backend
-	 * re-reading everything. See `core/payload-probe.ts` for the live incident that made
-	 * this necessary.
+	 * payload — we read it, and we say so when a head we did NOT write changes between two
+	 * calls of one run, because that is the difference between a backend re-reading nothing
+	 * and a backend re-reading everything. See `core/payload-probe.ts` for the live incident
+	 * that made this necessary, and for why the watchdog has to know its own footprint.
 	 */
 	pi.on("before_provider_request", async (event) => {
-		const churn = prefixWatch.record(event.payload);
-		// Only the mid-run case is a defect worth interrupting anyone about: a head that
-		// changes BETWEEN runs can be legitimate (a mode switch really does change which
-		// tools exist). One that changes between two calls of the SAME run cannot be.
-		if (churn?.midRun) {
-			const lost = churn.delta.toolsRemoved;
-			const gained = churn.delta.toolsAdded;
-			const delta = churn.delta.headCharsDelta;
-			mirrorManagerNotice?.(
-				"warning",
-				`Prompt head changed mid-turn (${delta > 0 ? "+" : ""}${delta} chars` +
-					(lost.length > 0 ? `, lost ${lost.join(", ")}` : "") +
-					(gained.length > 0 ? `, gained ${gained.join(", ")}` : "") +
-					") — the whole prompt is re-read. /context has the details.",
-			);
-		}
+		// `visibility.lastSet()` is the list WE wrote. Without it the watchdog cannot tell
+		// a stranger's rewrite from our own — and it duly reported our own, once per memory
+		// pass, in the owner's log topic.
+		const churn = prefixWatch.record(event.payload, visibility.lastSet());
+		// A defect is both: mid-run (a head that changes BETWEEN runs can be legitimate — a
+		// mode switch really does change which tools exist) and foreign (a head WE rewrite
+		// mid-run costs the same cache, but it is a decision, not news).
+		if (churn?.midRun && churn.foreign) warnHeadChurn(churn);
 		// Read, never rewrite: the payload goes on exactly as Pi built it.
 		return event.payload;
 	});
@@ -690,6 +682,32 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// The head of every provider request — the half of the prompt `lastContext` cannot see,
 	// and the half a backend charges us for when it changes. See `core/payload-probe.ts`.
 	const prefixWatch = new PrefixWatch();
+	// Whether a foreign rewrite of the prompt head is announced in the log feed
+	// (`manager.promptAlerts`). Set when the manager starts; `/context` reports the head
+	// either way, so switching this off silences the card, not the measurement.
+	let promptAlerts = true;
+	// The kinds of intrusion already announced. The extension that rewrites our tool list
+	// does it on EVERY run for as long as it is loaded, and a warning repeated every minute
+	// is how people learn to scroll past warnings. Said once per kind; the count lives in
+	// /context. Cleared when a mode starts, so a new session is heard out afresh.
+	const churnWarned = new Set<string>();
+	const warnHeadChurn = (churn: HeadChurn): void => {
+		if (!promptAlerts) return;
+		const lost = churn.delta.toolsRemoved;
+		const gained = churn.delta.toolsAdded;
+		const key = `${lost.join(",")}|${gained.join(",")}`;
+		if (churnWarned.has(key)) return;
+		churnWarned.add(key);
+		const delta = churn.delta.headCharsDelta;
+		mirrorManagerNotice?.(
+			"warning",
+			`Prompt head changed mid-turn (${delta > 0 ? "+" : ""}${delta} chars` +
+				(lost.length > 0 ? `, lost ${lost.join(", ")}` : "") +
+				(gained.length > 0 ? `, gained ${gained.join(", ")}` : "") +
+				") — another extension rewrote the tool list, so the whole prompt is " +
+				"re-read. Said once per kind; /context has the count.",
+		);
+	};
 	// Fires on `agent_start`. It is how a hand-off is confirmed — see `deliverPrompt`.
 	const turnStarted = new TurnSignal();
 	// One hand-off at a time (see `deliverPrompt`).
@@ -2722,6 +2740,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!loaded) return;
 		const { settings, token } = loaded;
 		ownerUserId = settings.allowedUserId ?? null;
+		// A fresh session is heard out afresh: whatever we warned about last time was
+		// about a tool list that no longer exists.
+		promptAlerts = settings.manager.promptAlerts;
+		churnWarned.clear();
 		// Prime mixed-mode state before anything reads it (context handler, isIdle):
 		// the owner is at the keyboard when they launch it, so start in the coding
 		// polarity with the return timer disarmed until the first coding turn ends.

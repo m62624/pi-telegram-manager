@@ -99,6 +99,9 @@ say "done", "changed", or "I've turned that off".
   you **never read what is inside it**: in this mode you have no file tools, so a
   stranger's file is never opened. Do not claim to have read one.
 - `manager.log` — the owner's debug feed of your turns (their DM, not yours).
+- `manager.promptAlerts` — whether the owner is told when ANOTHER extension rewrites
+  the tool list mid-turn. The tools sit at the head of the prompt, so a rewrite there
+  makes the backend re-read the whole prompt. Nothing you do; nothing you can fix.
 
 ## Mixed mode
 
