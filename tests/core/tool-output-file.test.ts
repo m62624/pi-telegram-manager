@@ -120,9 +120,16 @@ describe("planAttachment", () => {
 });
 
 describe("toolOutputFileName", () => {
+	it("delivers the log as .txt, which a phone can actually open", () => {
+		// A `.log` reaches the owner's phone as an unknown blob — no preview, and a hunt
+		// for an app to open it. It is plain text; the name should say so.
+		const name = toolOutputFileName("bash", 1_700_000_000_000);
+		expect(name).toBe("bash-1700000000000.txt");
+		expect(name.endsWith(".txt")).toBe(true);
+	});
+
 	it("never smuggles a character Windows forbids into a filename", () => {
 		const name = toolOutputFileName("bash", 1_700_000_000_000);
-		expect(name).toBe("bash-1700000000000.log");
 		for (const forbidden of ["\\", "/", ":", "*", "?", '"', "<", ">", "|"]) {
 			expect(name).not.toContain(forbidden);
 		}
@@ -132,7 +139,7 @@ describe("toolOutputFileName", () => {
 		// Dots survive (harmless inside a filename); separators and colons do not, so
 		// the result cannot climb out of the directory it is written to.
 		const name = toolOutputFileName("../../etc/pa:sswd", 1);
-		expect(name).toBe("..-..-etc-pa-sswd-1.log");
+		expect(name).toBe("..-..-etc-pa-sswd-1.txt");
 		expect(name).not.toContain("/");
 		expect(name).not.toContain("\\");
 		expect(name).not.toContain(":");

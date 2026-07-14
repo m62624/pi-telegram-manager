@@ -97,12 +97,19 @@ export function byteLength(text: string): number {
 }
 
 /**
- * A filename for the output we save ourselves. Windows forbids `:` `\` `/` `*` `?`
- * `"` `<` `>` `|` in a name — and a timestamp is the first thing that would smuggle
- * a colon in — so everything outside a safe set is folded to `-`.
+ * The name a tool's full output is DELIVERED under.
+ *
+ * `.txt`, not `.log`: the file is plain text either way, but a phone knows how to open
+ * a `.txt` and offers to preview it, while a `.log` it treats as an unknown blob you
+ * have to find an app for. The extension is the only thing standing between the owner
+ * and the log they asked for, so it says what the file actually is.
+ *
+ * Windows forbids `:` `\` `/` `*` `?` `"` `<` `>` `|` in a name — and a timestamp is
+ * the first thing that would smuggle a colon in — so everything outside a safe set is
+ * folded to `-`.
  */
 export function toolOutputFileName(toolName: string, at: number): string {
 	const safeTool =
 		toolName.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 40) || "tool";
-	return `${safeTool}-${at}.log`;
+	return `${safeTool}-${at}.txt`;
 }

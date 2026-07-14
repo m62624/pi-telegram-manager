@@ -86,6 +86,8 @@ export interface ConnectControllerDeps {
 		caption?: string;
 		/** Thread the upload under an existing message (the tool card it completes). */
 		replyToMessageId?: number;
+		/** Deliver it under this name instead of the one on disk. */
+		filename?: string;
 	}) => Promise<void>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
@@ -730,10 +732,11 @@ export class ConnectController {
 		path: string,
 		caption: string,
 		replyToMessageId?: number,
+		filename?: string,
 	): Promise<void> {
 		if (!this.deps.uploadFile) return;
 		await this.deps
-			.uploadFile({ path, caption, replyToMessageId })
+			.uploadFile({ path, caption, replyToMessageId, filename })
 			.catch(() => {});
 	}
 

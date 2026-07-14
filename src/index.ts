@@ -1415,21 +1415,28 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		if (plan.attach === false) return;
 		const caption = `📄 full output — ${toolName}`;
+		// One name for both routes. A tool writes its log where and how it likes
+		// (`/tmp/pi-bash-1.log`), but what arrives on the owner's PHONE is judged by its
+		// extension: a `.txt` opens and previews, a `.log` is an unknown blob you must go
+		// find an app for. So the file is delivered as the plain text it is.
+		const filename = toolOutputFileName(toolName, Date.now());
 		if (plan.attach === "file") {
-			await connect.attachToolOutput(plan.path, caption, cardMessageId);
+			await connect.attachToolOutput(
+				plan.path,
+				caption,
+				cardMessageId,
+				filename,
+			);
 			return;
 		}
 		// Nobody saved this but us: the tool returned everything and the CARD is what
 		// cut it. Write it out inside the extension dir (never the system temp dir, so
 		// the path is ours on every platform), send it, and delete it — this file has
 		// no life beyond the message it rode in on.
-		const scratch = join(
-			toolOutputDir,
-			toolOutputFileName(toolName, Date.now()),
-		);
+		const scratch = join(toolOutputDir, filename);
 		try {
 			await fs.writeText(scratch, plan.text);
-			await connect.attachToolOutput(scratch, caption, cardMessageId);
+			await connect.attachToolOutput(scratch, caption, cardMessageId, filename);
 		} catch {
 			// A scratch file we could not write or send is not worth a word to the user:
 			// the card still carries the truncated output.
@@ -2077,6 +2084,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			url?: string;
 			caption?: string;
 			replyToMessageId?: number;
+			filename?: string;
 		}) => {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);

@@ -116,8 +116,16 @@ export class TelegramClient {
 		caption?: string;
 		/** Thread it under the message it belongs to (e.g. the tool card it completes). */
 		replyToMessageId?: number;
+		/**
+		 * The name the file is DELIVERED under, when it should not be the one on disk.
+		 * A tool writes its log wherever and however it likes (`/tmp/pi-bash-1.log`); the
+		 * owner receives it on a phone, which opens a `.txt` and shrugs at a `.log`.
+		 */
+		filename?: string;
 	}): Promise<void> {
-		const document = input.path ? new InputFile(input.path) : input.url;
+		const document = input.path
+			? new InputFile(input.path, input.filename)
+			: input.url;
 		if (!document) {
 			throw new Error("sendDocument requires a local path or a url");
 		}

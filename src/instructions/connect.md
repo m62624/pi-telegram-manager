@@ -47,10 +47,20 @@ upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 
 ## Code
 
-Fence every code block with its language (```rust, ```python, ```bash) — Telegram
-highlights a fenced block and shows a copy button, and an unfenced one arrives as
-flat grey text. Use the language's real name: Telegram knows `rust`, `cpp` and
-`typescript` (and the short `py`, `ts`, `js`, `rb`, `sh`), but not `rs` or `c++`.
+Put every snippet — a script, a command, a config, a function — in a fenced block:
+three backticks, the language, the code, then three backticks on their own line to
+CLOSE it. Both fences are required; an unclosed one swallows the rest of the reply.
+
+````
+```python
+print("hello")
+```
+````
+
+Telegram highlights a fenced block and gives the reader a copy button; unfenced code
+arrives as flat grey text they have to retype. Name the language as Telegram knows
+it — `rust` (not `rs`), `cpp` (not `c++`), `bash`, `python`, `typescript`; the short
+`py`, `ts`, `js`, `rb`, `sh`, `yml` work too.
 
 ## Questions about this bridge itself
 

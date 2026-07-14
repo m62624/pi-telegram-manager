@@ -119,6 +119,29 @@ describe("the order a turn lands in the chat", () => {
 		);
 	});
 
+	it("delivers a tool's log under the name it should arrive as", async () => {
+		// The file on disk is the tool's own `/tmp/pi-bash-1.log`; what reaches the phone
+		// must be a `.txt`, or it arrives as a blob the phone will not open.
+		const { controller, uploadFile } = chat(0);
+		const lane = createSerialLane();
+
+		await lane.run(() =>
+			controller.attachToolOutput(
+				"/tmp/pi-bash-1.log",
+				"full output",
+				undefined,
+				"bash-1700000000000.txt",
+			),
+		);
+
+		expect(uploadFile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				path: "/tmp/pi-bash-1.log",
+				filename: "bash-1700000000000.txt",
+			}),
+		);
+	});
+
 	it("one failed upload does not silence the answer behind it", async () => {
 		const { controller, landed } = chat(0, true);
 		const lane = createSerialLane();
