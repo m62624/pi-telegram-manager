@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { COMMANDS, TELEGRAM_BOT_COMMANDS } from "../../src/constants";
 import { MIRROR_URL, REPO_URL } from "../../src/modes/connect/controller";
 import { DEFAULT_SETTINGS } from "../../src/settings/schema";
 
@@ -29,6 +30,35 @@ function settingsKeys(value: unknown, prefix = ""): string[] {
 }
 
 describe("about pages match the code", () => {
+	it("documents every command the bot actually publishes", () => {
+		// Same failure as the settings page, one surface over: a command added to the menu
+		// and not to the page means the owner asks "how do I free up context?" and the
+		// model answers from imagination — the exact thing this tool exists to prevent.
+		const doc = page("commands.md");
+		const missing = TELEGRAM_BOT_COMMANDS.map(
+			(entry) => `/${entry.command}`,
+		).filter((command) => !doc.includes(command));
+		expect(missing).toEqual([]);
+	});
+
+	it("does not promise a command the bot does not have", () => {
+		const published = new Set(
+			TELEGRAM_BOT_COMMANDS.map((entry) => `/${entry.command}`),
+		);
+		// The terminal's own Pi commands are named on the page on purpose, as the thing
+		// the chat does NOT accept.
+		const terminal = new Set(Object.values(COMMANDS).map((name) => `/${name}`));
+		const claimed =
+			page("commands.md")
+				.match(/\/[a-z][a-z-]*/g)
+				?.map((c) => c.toLowerCase()) ?? [];
+		for (const command of claimed) {
+			if (published.has(command) || terminal.has(command)) continue;
+			// `settings.json` and the like are not commands.
+			expect(command).toMatch(/^\/(settings|help)/);
+		}
+	});
+
 	it("documents every setting the schema actually has", () => {
 		// The bug this pins: the page was written by hand and silently missed 24 keys,
 		// so the model simply did not know they existed.

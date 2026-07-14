@@ -453,6 +453,9 @@ const MANAGER_HELP_TEXT = [
 	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
+	"/help — show this help",
+	"",
+	"/clear and /compact belong to personal and mixed mode: here I build the context fresh for each conversation, so there is no history to clear or compact.",
 	"",
 	"⚠️ Privacy & terms — read and follow these before using the bot:",
 	`• ${COMPLIANCE_LINKS.botTerms}`,
@@ -3124,17 +3127,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					.catch(() => {});
 				return true;
 			}
-			// The command menu is one list for every mode, so it offers /compact in manager
-			// mode too — where it would do nothing: the manager REBUILDS the model's context
-			// from the chat store on every turn (see pi.on("context")), so compacting the
-			// session history changes nothing it reads. Say that, rather than let a menu
-			// entry go silently nowhere. (In mixed, `connect` is live and handles it.)
-			if (!connect && /^\/compact(@\w+)?$/i.test(text)) {
+			// The command menu is one list for every mode, so it offers /compact and /clear
+			// in manager mode too — where neither means anything: the manager REBUILDS the
+			// model's context from the chat store on every turn (see pi.on("context")), so
+			// there is no accumulated session history to compact or to clear. Answer them,
+			// rather than let a menu entry go silently nowhere — a button that does nothing
+			// is worse than one that is not there. (In mixed, `connect` is live and handles
+			// both for real.)
+			if (!connect && /^\/(compact|clear|new|reset)(@\w+)?$/i.test(text)) {
 				await api
 					.sendMessage({
 						chat_id: ownerUserId,
 						message_thread_id: threadOf(event) ?? personalThread(),
-						text: "🗜 /compact applies to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is nothing to compact.",
+						text: "🗜 /compact and /clear apply to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is no history to compact or clear.",
 					})
 					.catch(() => {});
 				return true;
