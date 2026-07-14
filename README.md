@@ -283,6 +283,8 @@ Then open Pi and start a mode.
 
 `/compact` summarises the history so a long session keeps going instead of hitting the context window. The chat shows the outcome: how full the context was, what the history weighed, and a card if the compaction failed. In manager mode there is nothing to compact — the context is built fresh for each conversation.
 
+**Every compaction is summarised with instructions**, whoever started it. Pi decides when to compact and what to cut; the bridge writes the summary, using Pi's own `compact()` with the one argument its automatic path leaves empty. The instructions say the thing the token counts hide: tool output is 80-90% of a working context and your words are two or three, so a summariser weighing the conversation by mass keeps the files it read and forgets what you asked it to do with them. A file can be read again; a thing you said an hour ago cannot. The manager's summaries are briefed differently — they are told never to reproduce what other people wrote, because a chat summary outlives the chat. If the summarisation fails for any reason, Pi's own compaction runs instead, exactly as before.
+
 ---
 
 ## Settings

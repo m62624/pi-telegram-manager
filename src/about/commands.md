@@ -35,7 +35,9 @@ every MODE" — never "to everyone".
   the terminal sees the cleared context too. Refused while a turn is running.
 - `/compact` — summarise the history so a long session keeps going instead of running
   into the context window. The chat is told how it went: how full the context was, what
-  the history weighed, and a card if the compaction failed.
+  the history weighed, and a card if the compaction failed. Every compaction — this one,
+  and the automatic ones Pi starts on its own — is summarised with instructions to keep
+  what the person said over the tool output that dwarfs it.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
 each conversation, so there is no accumulated history to clear or to compact.

@@ -11,10 +11,12 @@ export type {
 	AgentEndEvent,
 	AgentStartEvent,
 	BeforeAgentStartEvent,
+	CompactionResult,
 	ContextEvent,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	SessionBeforeCompactEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SlashCommandInfo,
@@ -22,4 +24,15 @@ export type {
 	ToolCallEventResult,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-export { defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
+/**
+ * `compact` is Pi's own compaction — the same function its automatic path runs, exported
+ * from the package for exactly this. We call it from `session_before_compact` and hand
+ * the result back, because that path passes `undefined` for `customInstructions` and the
+ * summary it writes without them keeps the tool output and loses the person. See
+ * `core/compaction-run.ts`.
+ */
+export {
+	compact,
+	defineTool,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent";

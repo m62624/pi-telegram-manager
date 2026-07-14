@@ -39,6 +39,7 @@ import {
 	createAboutTools,
 } from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { runFocusedCompaction } from "./core/compaction-run";
 import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import {
@@ -150,6 +151,7 @@ import {
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import { compact } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
 	RESOLVE_DRAFT_END_TURN_HINT,
@@ -1812,16 +1814,42 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// model it takes minutes. `deliverPrompt` reads this so it waits for the turn
 		// instead of concluding the prompt was thrown away and sending it a second time.
 		compactingSince = Date.now();
+		// The material, first — including for the fallback path below, where Pi summarises
+		// `preparation` itself and never asks us anything again.
 		if (mixedActive) stripTelegramTurnsFromCompaction(event.preparation);
-		const controller = connect;
-		if (!controller) return;
-		await chatLane
-			.run(() =>
-				controller.sendToChat(
-					compactingCard(event.reason, ctx.getContextUsage()),
+		if (connect) {
+			const controller = connect;
+			await chatLane
+				.run(() =>
+					controller.sendToChat(
+						compactingCard(event.reason, ctx.getContextUsage()),
+					),
+				)
+				.catch(() => {});
+		}
+		// Then the summary itself. Pi's automatic compaction — the one that actually fires
+		// in a long session — tells the summariser nothing, so it weighs the conversation
+		// by mass and keeps the tool output, which is four fifths of it, over the person,
+		// who is two percent of it. We run the same `compact()` Pi would have run, with the
+		// one argument its automatic path leaves empty. Undefined = Pi compacts as usual.
+		const compaction = await runFocusedCompaction({
+			thread: manager ? (mixedActive ? "mixed" : "manager") : "personal",
+			model: ctx.model,
+			preparation: event.preparation,
+			callerInstructions: event.customInstructions,
+			signal: event.signal,
+			auth: (model) => ctx.modelRegistry.getApiKeyAndHeaders(model),
+			compact: (args) =>
+				compact(
+					args.preparation,
+					args.model,
+					args.apiKey,
+					args.headers,
+					args.customInstructions,
+					args.signal,
 				),
-			)
-			.catch(() => {});
+		});
+		return compaction ? { compaction } : undefined;
 	});
 	pi.on("session_compact", async (event) => {
 		compactingSince = 0;
