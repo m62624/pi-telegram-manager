@@ -86,6 +86,19 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(0);
 	});
 
+	it("stamps the arrival time into the turn it hands the agent", async () => {
+		// The model has to know when a message reached it — and it must learn that from
+		// the message, not from a clock message of its own, which it would answer.
+		const { controller, sendFollowUp } = setup({
+			clock: { now: () => Date.UTC(2026, 6, 13, 5, 33) },
+			timezone: "Asia/Almaty",
+		});
+		await controller.onEvent(messageEvent("hello"));
+		expect(sendFollowUp.mock.calls[0][0]).toContain(
+			"at:Mon 2026-07-13 10:33 +05:00",
+		);
+	});
+
 	it("queues without dispatching while the agent is busy", async () => {
 		const { controller, sendFollowUp, setIdle } = setup();
 		setIdle(false);

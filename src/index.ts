@@ -39,13 +39,10 @@ import {
 	createAboutTools,
 } from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
 import { ContextReset } from "./core/context-reset";
-import {
-	backgroundNowMessage,
-	formatClock,
-	formatNowLine,
-} from "./core/datetime";
+import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
@@ -64,7 +61,6 @@ import { resolveUserDir } from "./core/user-path";
 import {
 	loadConnectInstructions,
 	loadManagerInstructions,
-	SYSTEM_INSTRUCTIONS_HEADER,
 	verifyBundledInstructions,
 } from "./instructions/builtin";
 import {
@@ -504,30 +500,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	/**
 	 * Prepend the connect system instructions so the agent knows it is bridged to
 	 * Telegram (files saved to disk, telegram_attach to send back), for Personal mode
-	 * and for mixed's coding polarity alike.
-	 *
-	 * The prepended block is kept byte-identical across calls (constant content + a
-	 * stable timestamp) so the provider's prompt cache holds over the whole shared
-	 * terminal session; the volatile date/time goes in a SEPARATE trailing message,
-	 * outside the cached prefix, so a fresh clock never invalidates the entire context
-	 * (which made a big terminal session re-prefill every turn).
+	 * and for mixed's coding polarity alike. Nothing is appended — see
+	 * `core/connect-context.ts` for why that sentence is the important one.
 	 */
-	const withConnectBlock = <T>(messages: readonly T[]): unknown[] => {
-		if (!connect || !connectSystemBlock) return [...messages];
-		return [
-			{
-				role: "user",
-				content: `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${connectSystemBlock}`,
-				timestamp: 0,
-			},
-			...messages,
-			{
-				role: "user",
-				content: backgroundNowMessage(Date.now(), connectTimezone),
-				timestamp: Date.now(),
-			},
-		];
-	};
+	const withConnectBlock = <T>(messages: readonly T[]): unknown[] =>
+		connect ? withSystemBlock(messages, connectSystemBlock) : [...messages];
 
 	// Rebuild the LLM context per mode: the manager replaces it with the active
 	// chat's isolated history (mode 2); mode 1 applies the /clear boundary. No
@@ -609,8 +586,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
-	// Timezone for the mode-1 `[Now: …]` line (from settings; system zone if unset).
-	let connectTimezone: string | undefined;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -1176,7 +1151,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		connectSystemBlock = null;
-		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		thinkingEnabled = false;
@@ -1227,7 +1201,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			stopThinking();
 			connect = null;
 			connectSystemBlock = null;
-			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
 			thinkingEnabled = false;
@@ -2124,7 +2097,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			overrideText: connectOverride.text,
 		});
-		connectTimezone = settings.timezone;
 
 		// Warn once (not per-message) when native rich rendering isn't reaching
 		// Telegram and we degraded to plain text — so a tester can tell a real
@@ -2279,6 +2251,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			chatThread: personalThread,
 			onTurnVisible: mirrorStraysIntoPersonal,
 			forwards: settings.forwards,
+			timezone: settings.timezone,
 			outbound,
 			abort,
 		});

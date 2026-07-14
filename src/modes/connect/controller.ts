@@ -14,6 +14,7 @@
 import type { Message, User } from "@grammyjs/types";
 import { COMPLIANCE_LINKS, COMPLIANCE_NOTICE } from "../../constants";
 import type { AbortRegistry } from "../../core/abort";
+import { formatClock } from "../../core/datetime";
 import {
 	DEFAULT_FORWARD_POLICY,
 	ForwardBursts,
@@ -136,6 +137,12 @@ export interface ConnectControllerDeps {
 	clearTimer?: (handle: unknown) => void;
 	/** Clock port, injected so forward batching is testable without real time. */
 	clock?: { now(): number };
+	/**
+	 * IANA zone for the arrival time stamped into each turn's header (system zone
+	 * when unset). The model is told when a message reached it inside the message
+	 * itself — never as a message of its own; see `core/connect-context.ts`.
+	 */
+	timezone?: string;
 	outbound: OutboundSender;
 	abort: AbortRegistry;
 }
@@ -330,6 +337,7 @@ export class ConnectController {
 				forward && input.text
 					? limitForwardText(input.text, this.forwardPolicy.maxChars)
 					: input.text,
+			receivedAt: formatClock(this.now(), this.deps.timezone),
 			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
 			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
 		});

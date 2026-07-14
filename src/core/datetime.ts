@@ -57,17 +57,11 @@ export function formatNowLine(now: number, timezone?: string): string {
 }
 
 /**
- * The clock as a standalone context message (mode 1 / mixed-coding), where it is
- * the LAST message the model reads and is therefore easy to mistake for a fresh
- * prompt: traces showed the model stopping mid-task to reason about "the system is
- * telling me the current time". So it is labelled as background and says outright
- * that no reply is wanted. The manager's contexts embed the clock in a message that
- * already carries a directive, so they keep the bare {@link formatNowLine}.
+ * There used to be a third function here: the clock as a standalone context
+ * message for mode 1, appended before every call to the model. It is gone. A
+ * message is a turn, and the model answered it — every few seconds, out loud, into
+ * the chat. The clock now rides in the header of the message it belongs to
+ * (`TurnInput.receivedAt`) in mode 1, and in the manager's own turn directive in
+ * mode 2 — both of which are things the model is meant to read. See
+ * `core/connect-context.ts`.
  */
-export function backgroundNowMessage(now: number, timezone?: string): string {
-	return (
-		"[Background, not a message from anyone: the clock, refreshed every turn. " +
-		"Do not reply to it, do not comment on it — just carry on with the task " +
-		`above. ${formatNowLine(now, timezone)}]`
-	);
-}
