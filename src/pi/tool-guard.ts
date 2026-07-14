@@ -60,6 +60,17 @@ export const CONSOLIDATION_END_TURN_HINT =
 	"anyone, and manager_reply / manager_silent do not exist on this turn. Answer the " +
 	"interrogation step shown in the directive, by calling the one tool it names.";
 
+/**
+ * Steer for a memory pass that has already answered every step. Its predecessor —
+ * "answer the interrogation step shown in the directive" — told the model to do the one
+ * thing that no longer existed, and a model told to answer a step that is not there
+ * answers the last one it remembers: step 1, again.
+ */
+export const CONSOLIDATION_DONE_END_TURN_HINT =
+	"The memory pass for this contact is finished — every step has been answered, and " +
+	"no tool exists on this turn. Do not call anything. Reply with a single word to end " +
+	"the turn.";
+
 /** The steer text returned to the model when it calls a blocked tool. */
 export function blockedToolReason(
 	toolName: string,

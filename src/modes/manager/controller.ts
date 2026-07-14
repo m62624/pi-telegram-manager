@@ -44,10 +44,11 @@ import {
 	ownWords,
 } from "../../storage/chat-store";
 import type { ConsolidationQueue } from "../../storage/consolidation-queue";
-import type {
-	ContactFact,
-	ContactStore,
-	FactKind,
+import {
+	type ContactFact,
+	type ContactStore,
+	dedupeFacts,
+	type FactKind,
 } from "../../storage/contact-store";
 import type { SentRegistry } from "../../storage/sent-registry";
 import { describeAttachments, isImage } from "../../telegram/media";
@@ -618,6 +619,16 @@ export class ManagerController {
 	}
 
 	/**
+	 * Whether the running memory pass has answered every step and is only waiting for
+	 * the run to end. Public so the tool gate can take the probes away: a finished pass
+	 * has no step left to answer, and a model that can still see step one's tool will
+	 * call step one again (it did — every pass, until the runtime aborted the run).
+	 */
+	isConsolidationDone(): boolean {
+		return this.consolidating !== null && isDone(this.consolidating.loop);
+	}
+
+	/**
 	 * Step the consolidation interrogation at a `turn_end`, WITHIN one agent run.
 	 * Reads the probe the model just called, advances the state machine, and tells
 	 * the caller whether to abort the run:
@@ -626,36 +637,70 @@ export class ManagerController {
 	 *    is paused and resumed later), or the model kept calling tools after the
 	 *    interrogation was already done (backstop against a spin);
 	 *  - `"continue"` — let the agent loop re-sample; `pi.on("context")` rebuilds the
-	 *    context showing the next probe's directive (or MANAGER_TURN_DONE when done),
+	 *    context showing the next probe's directive (or CONSOLIDATION_DONE when done),
 	 *    so the whole interrogation flows in a single run with no per-probe abort.
+	 *
+	 * Async because a fact that has just passed verification is WRITTEN here, before the
+	 * next step is taken — see {@link persistConfirmed}.
 	 */
-	stepConsolidation(): "continue" | "abort" {
+	async stepConsolidation(): Promise<"continue" | "abort"> {
 		const current = this.consolidating;
 		if (!current) return "continue";
 		const probe = this.probes.current();
 		if (isDone(current.loop)) {
-			// Already finished: MANAGER_TURN_DONE should have ended the run. If the
+			// Already finished: CONSOLIDATION_DONE should have ended the run. If the
 			// model called another tool anyway, abort as a backstop against a spin.
 			return probe ? "abort" : "continue";
 		}
 		// Preserve this turn's progress (a recorded probe) BEFORE possibly yielding, so
 		// a live pre-empt never discards a completed step — it resumes from the next.
 		if (probe) {
-			this.consolidating = {
-				...current,
-				loop: advanceInterrogation(
-					current.loop,
-					probe,
-					current.interlocutorLines,
-					this.deps.verifyLimit,
-				),
-			};
+			const loop = advanceInterrogation(
+				current.loop,
+				probe,
+				current.interlocutorLines,
+				this.deps.verifyLimit,
+			);
+			this.consolidating = { ...current, loop };
 			this.probes.reset();
+			await this.persistConfirmed(current.loop, loop, current);
 		}
 		// A reply is now waiting: yield so a live answer is never delayed by an
 		// in-flight consolidation. onAgentEnd pauses the pass (progress kept).
 		if (this.unserved.size > 0) return "abort";
 		return "continue";
+	}
+
+	/**
+	 * Write the facts this step just confirmed — now, not at the end of the pass.
+	 *
+	 * A fact reaches `confirmed` only after the model verified it against a quote that
+	 * code found in the interlocutor's own lines. It is knowledge at that moment. Holding
+	 * it in memory until the whole interrogation finishes made it hostage to everything
+	 * that can end a pass early: an interlocutor writing mid-pass (pre-empt), the run
+	 * being aborted, the bot being restarted. All of it was dropped, the chat stayed in
+	 * the queue, and the next pass asked the same questions from step one — which is
+	 * exactly what the owner saw: "I thought it had already saved fact, fact, fact".
+	 *
+	 * Written per fact, the worst an interruption can now cost is the candidates that
+	 * were not verified yet. Re-running the pass re-confirms what is already stored, and
+	 * the store drops the repeat (`contact-store.appendFacts` dedupes) — so a fact is
+	 * written once, however many times it is learned.
+	 */
+	private async persistConfirmed(
+		before: InterrogationState,
+		after: InterrogationState,
+		current: { chatId: string; userId?: string },
+	): Promise<void> {
+		const fresh = after.confirmed.slice(before.confirmed.length);
+		if (fresh.length === 0) return;
+		for (const fact of fresh) {
+			this.facts.record([
+				{ text: fact.text, subject: "interlocutor", kind: fact.kind },
+			]);
+		}
+		const contactName = this.chats.get(current.chatId)?.contactName;
+		await this.persistRecordedFacts(current.userId, contactName);
 	}
 
 	/** Persist a connected/updated business account. */
@@ -1436,8 +1481,13 @@ export class ManagerController {
 	 */
 	private async knownFactsBlock(meta: ChatMeta | undefined): Promise<string> {
 		if (!meta?.userId) return "";
-		const facts = await this.deps.contactStore.getFacts(meta.userId);
-		if (facts.length === 0) return "";
+		const stored = await this.deps.contactStore.getFacts(meta.userId);
+		if (stored.length === 0) return "";
+		// Deduped BEFORE the cap, not after: a store written before the dedupe landed
+		// still holds repeats, and slicing first would spend the budget on them — a
+		// contact whose memory is one sentence three times, and whose fourth fact fell
+		// off the end. Telling the model something twice does not make it truer.
+		const facts = dedupeFacts(stored);
 		const recent = facts.slice(-this.deps.factsLimit);
 		const byKind = new Map<FactKind, string[]>();
 		for (const fact of recent) {
@@ -1652,6 +1702,12 @@ export class ManagerController {
 	 * Persist a finished interrogation's confirmed facts (through the who-is-who
 	 * firewall), clear consolidation state, drop the chat from the queue, and serve
 	 * any reply that queued while it ran.
+	 *
+	 * Most of these facts are already on disk — {@link persistConfirmed} wrote each one
+	 * the moment it passed verification. This stays as the backstop for the path that
+	 * does not go through a probe (a run that ended early, whose last step is settled
+	 * here by {@link finishConsolidationRun}), and re-writing a fact that is already
+	 * stored costs nothing: the store keeps one copy.
 	 */
 	private async finalizeConsolidation(current: {
 		chatId: string;

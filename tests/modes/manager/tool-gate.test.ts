@@ -71,6 +71,29 @@ describe("managerToolGate", () => {
 		expect(gate.matches("write")).toBe(false);
 	});
 
+	it("leaves a finished memory pass with no tool to call", () => {
+		// Every step answered, nothing left to do — and the model, still holding the tool
+		// for step one, called step one. Again. On a pass whose every step was answered,
+		// until the runtime aborted the run: "Operation aborted", once per memory pass, in
+		// the owner's feed. A finished instruction contradicted by a live tool is not an
+		// instruction.
+		const gate = managerToolGate(base, {
+			consolidating: true,
+			consolidationDone: true,
+			revising: false,
+		});
+		for (const name of [
+			"manager_identify",
+			"manager_candidates",
+			"manager_verify",
+			"manager_reply",
+			"manager_silent",
+			"about",
+		]) {
+			expect(gate.matches(name)).toBe(false);
+		}
+	});
+
 	it("lets the memory pass win when a chat also holds a draft", () => {
 		// Both can be true at once: a chat can be holding a drafted reply while the idle
 		// memory pass runs. The pass owns the turn, and the draft waits — resolving it

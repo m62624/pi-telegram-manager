@@ -1108,7 +1108,7 @@ describe("ManagerController", () => {
 			sameAsOwner: false,
 			interlocutorName: "Alice",
 		});
-		expect(controller.stepConsolidation()).toBe("continue");
+		expect(await controller.stepConsolidation()).toBe("continue");
 
 		// candidates → step.
 		expect(
@@ -1120,7 +1120,7 @@ describe("ManagerController", () => {
 				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
 			],
 		});
-		expect(controller.stepConsolidation()).toBe("continue");
+		expect(await controller.stepConsolidation()).toBe("continue");
 
 		// verify → step reaches done: the context tells the model to stop.
 		expect(
@@ -1131,7 +1131,7 @@ describe("ManagerController", () => {
 			keep: true,
 			evidenceQuote: "ordered a laptop",
 		});
-		expect(controller.stepConsolidation()).toBe("continue");
+		expect(await controller.stepConsolidation()).toBe("continue");
 		expect(controller.turnDecided()).toBe(true);
 		// A memory pass ends in ITS own terms. Told "you have already decided this turn"
 		// — the reply turn's words — a model mid-memory-review concluded it had answered
@@ -1183,7 +1183,7 @@ describe("ManagerController", () => {
 			message: fresh,
 		});
 		// The step preserves the identify progress, then yields for the live work.
-		expect(controller.stepConsolidation()).toBe("abort");
+		expect(await controller.stepConsolidation()).toBe("abort");
 		await controller.onAgentEnd(); // finishConsolidationRun → pause
 		expect(controller.isConsolidating()).toBe(false);
 
@@ -1201,6 +1201,65 @@ describe("ManagerController", () => {
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
 		).toContain("Step 2 of 3");
+	});
+
+	it("writes a fact the moment it is verified, not when the pass finishes", async () => {
+		// The owner's report: "I thought it had already saved fact, fact, fact — and if you
+		// interrupt it, it starts over." It did. A confirmed fact was held in memory until
+		// the whole interrogation finished, so anything that ended a pass early — a live
+		// message pre-empting it, an abort, a restart — dropped every fact it had already
+		// verified, and the next pass asked the same questions from step one.
+		const { controller, deps, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i just ordered a laptop for work"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		await controller.onAgentEnd();
+		clock.advance(1_800_001);
+		await controller.onTick(); // starts the interrogation
+
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		await controller.stepConsolidation();
+		controller.probeSink().record({
+			tool: "candidates",
+			items: [
+				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
+				{
+					text: "works from an office",
+					subject: "interlocutor",
+					durable: true,
+				},
+			],
+		});
+		await controller.stepConsolidation();
+
+		// One fact verified. It is on disk NOW — the pass has not finished, and the second
+		// fact has not even been asked about yet.
+		controller.probeSink().record({
+			tool: "verify",
+			keep: true,
+			evidenceQuote: "ordered a laptop",
+		});
+		await controller.stepConsolidation();
+		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
+			"ordered a laptop",
+		]);
+
+		// The pass is now interrupted for good (the process could die here). What was
+		// verified survives; only the unasked candidate is lost, and it is cheap to redo.
+		await controller.onAgentEnd();
+		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
+			"ordered a laptop",
+		]);
 	});
 
 	it("aborts the interrogation (saves nothing) when identify flags a self-chat", async () => {
@@ -1892,7 +1951,7 @@ describe("a memory pass is not a conversation", () => {
 		await controller.onAgentEnd();
 		controller.probeSink().record({ tool: "candidates", items: [] });
 		expect(controller.turnDecided()).toBe(false);
-		controller.stepConsolidation();
+		await controller.stepConsolidation();
 
 		// Nothing to verify → the pass is finished, and the directive says so in its own
 		// terms: a memory pass, nobody to answer, no tool to call.

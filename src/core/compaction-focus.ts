@@ -41,6 +41,30 @@
 /** Which thread a compaction is summarising. Mirrors the mode the bridge is running. */
 export type CompactionThread = "personal" | "mixed" | "manager";
 
+/**
+ * Every thread gets this, and it is not a style note.
+ *
+ * The summariser is given one output budget for the whole summary, and a model that
+ * spends it before it reaches the end is cut off mid-sentence — or, as happened live,
+ * produces nothing at all and lets a file list stand in for an hour of conversation
+ * (`core/compaction-run.ts` tells that story). A brief that does not name a size is a
+ * brief that invites the model to write until it is stopped.
+ */
+const LENGTH = [
+	"Write the summary and nothing else: no preamble, no deliberation, no restating of this brief.",
+	"Aim for 400-600 words. Being complete matters more than being long: a summary that runs out of room mid-thought is worse than a short one that finishes.",
+].join("\n");
+
+/**
+ * Added on the retry, when the first attempt came back empty and we are summarising the
+ * conversation with the tool traffic taken out. The holes are ours; say so, or the model
+ * will try to explain them.
+ */
+export const RETRY_FOCUS = [
+	"The tool calls and their output have been removed from the history below — only what was SAID remains.",
+	"That is deliberate and it is the point: summarise the conversation. Do not mention the missing tool output or try to reconstruct it.",
+].join("\n");
+
 /** The part every thread gets: the person outranks the output. */
 const OWNER_THREAD = [
 	"This is a person talking to an assistant over Telegram, not only a coding session.",
@@ -69,11 +93,13 @@ const MANAGER_THREAD = [
 /**
  * The summariser's brief for `thread`, plus whatever the caller of `ctx.compact()` asked
  * for (a caller who says something more specific is answering a question we did not know
- * to ask, so their words go last, where they carry the most weight).
+ * to ask, so their words go last, where they carry the most weight), plus `extra` for the
+ * one caller that knows something about the ATTEMPT rather than the thread — the retry.
  */
 export function compactionFocus(
 	thread: CompactionThread,
 	callerInstructions?: string,
+	extra?: string,
 ): string {
 	const parts =
 		thread === "manager"
@@ -81,6 +107,9 @@ export function compactionFocus(
 			: thread === "mixed"
 				? [OWNER_THREAD, MIXED_GAPS]
 				: [OWNER_THREAD];
+	parts.push(LENGTH);
+	const more = extra?.trim();
+	if (more) parts.push(more);
 	const caller = callerInstructions?.trim();
 	if (caller) parts.push(caller);
 	return parts.join("\n\n");

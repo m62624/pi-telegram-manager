@@ -89,6 +89,52 @@ export interface ContactStore {
 	clearAllFacts(): Promise<void>;
 }
 
+/**
+ * A fact's identity: what it says, with nothing that is not what it says. Case, spacing
+ * and a trailing full stop are how the same sentence comes back looking different.
+ */
+export function factKey(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/\s+/g, " ")
+		.replace(/[.!…\s]+$/u, "")
+		.trim();
+}
+
+/**
+ * The facts in `incoming` that `existing` does not already hold — and the reason this
+ * function exists at all.
+ *
+ * A memory pass re-runs over a chat whenever it gets new messages, and it re-confirms
+ * what it confirmed last time: the same sentence, verified against the same quote, is
+ * genuinely true again. Appended blindly, "true again" became "stored again". In the
+ * owner's live store one contact's memory was five facts, three of which were the same
+ * line — and because `factsLimit` keeps the NEWEST facts, a repeat does not just take up
+ * room, it evicts a real fact to do it. Memory that fills up with one sentence.
+ *
+ * Deduping on write also makes an interrupted pass free to redo (see
+ * `ManagerController.persistConfirmed`): learn a fact twice, store it once.
+ */
+export function newFacts(
+	existing: readonly ContactFact[],
+	incoming: readonly ContactFact[],
+): ContactFact[] {
+	const seen = new Set(existing.map((fact) => factKey(fact.text)));
+	const fresh: ContactFact[] = [];
+	for (const fact of incoming) {
+		const key = factKey(fact.text);
+		if (!key || seen.has(key)) continue;
+		seen.add(key);
+		fresh.push(fact);
+	}
+	return fresh;
+}
+
+/** Facts with the repeats removed, keeping the FIRST time each one was learned. */
+export function dedupeFacts(facts: readonly ContactFact[]): ContactFact[] {
+	return newFacts([], facts);
+}
+
 export function createContactStore(
 	fs: TelegramFs,
 	paths: TelegramPaths,
@@ -125,8 +171,10 @@ export function createContactStore(
 			await withFileWriteLock(path, async () => {
 				const existing = await read(userId);
 				if (!existing) return; // a fact needs a known contact
-				existing.facts.push(fact);
-				existing.updatedAt = fact.timestamp;
+				const [kept] = newFacts(existing.facts, [fact]);
+				if (!kept) return; // already known — nothing to write
+				existing.facts.push(kept);
+				existing.updatedAt = kept.timestamp;
 				await writeJson(fs, path, existing);
 			});
 		},
@@ -137,11 +185,13 @@ export function createContactStore(
 			await withFileWriteLock(path, async () => {
 				const existing = await read(userId);
 				if (!existing) return; // facts need a known contact
-				existing.facts.push(...facts);
+				const fresh = newFacts(existing.facts, facts);
+				if (fresh.length === 0) return;
+				existing.facts.push(...fresh);
 				if (limit !== undefined && existing.facts.length > limit) {
 					existing.facts = existing.facts.slice(-limit);
 				}
-				existing.updatedAt = facts[facts.length - 1].timestamp;
+				existing.updatedAt = fresh[fresh.length - 1].timestamp;
 				await writeJson(fs, path, existing);
 			});
 		},

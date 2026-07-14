@@ -39,6 +39,7 @@ import {
 	createAboutTools,
 } from "./core/about";
 import { createAttachmentTools, TELEGRAM_TOOL_NAMES } from "./core/attachments";
+import { conversationOnly } from "./core/compaction-material";
 import { runFocusedCompaction } from "./core/compaction-run";
 import { withSystemBlock } from "./core/connect-context";
 import { watchdogVerdict } from "./core/connection-watchdog";
@@ -74,6 +75,7 @@ import {
 import {
 	compactedCard,
 	compactingCard,
+	compactionEmptyCard,
 	compactionFailedCard,
 } from "./modes/connect/compaction-cards";
 import {
@@ -155,6 +157,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { compact } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
+	CONSOLIDATION_DONE_END_TURN_HINT,
 	CONSOLIDATION_END_TURN_HINT,
 	RESOLVE_DRAFT_END_TURN_HINT,
 	registerToolGuard,
@@ -442,6 +445,11 @@ const TURN_START_WAIT_MS = 15_000;
 const TURN_START_MAX_WAIT_MS = 300_000;
 /** A compaction that has not reported back in this long is not running any more. */
 const COMPACTION_MAX_MS = 300_000;
+/**
+ * How long after our own cancel Pi's "Compaction cancelled" throw is still an echo of it
+ * rather than news. Pi rethrows synchronously, inside the same call — seconds are plenty.
+ */
+const CANCEL_ECHO_MS = 30_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -525,11 +533,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// a blocked manager_reply is answered with "call manager_reply", and the model
 		// spins until the turn is wasted. Each turn kind has its own way out.
 		endTurnHint: () =>
-			manager?.isConsolidating()
-				? CONSOLIDATION_END_TURN_HINT
-				: manager?.isReviseTurn()
-					? RESOLVE_DRAFT_END_TURN_HINT
-					: undefined,
+			manager?.isConsolidationDone()
+				? CONSOLIDATION_DONE_END_TURN_HINT
+				: manager?.isConsolidating()
+					? CONSOLIDATION_END_TURN_HINT
+					: manager?.isReviseTurn()
+						? RESOLVE_DRAFT_END_TURN_HINT
+						: undefined,
 	});
 
 	/**
@@ -656,6 +666,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let compactingSince = 0;
 	const compactionInFlight = (): boolean =>
 		compactingSince > 0 && Date.now() - compactingSince < COMPACTION_MAX_MS;
+	// When WE cancelled a compaction (the summariser wrote nothing) — because Pi answers a
+	// cancel on the manual path by throwing "Compaction cancelled" into `onError`, and the
+	// owner would then get a second, vaguer card about the thing we just explained.
+	let compactionCancelledAt = 0;
 
 	// Topics in the owner's bot DM (chat + log), shared by both modes; null until a
 	// mode starts, and inert whenever the bot has no topic mode (plain DM as before).
@@ -1476,7 +1490,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// times until it happens to emit plain text. Aborting here caps it at one
 	// inference; the reply is still delivered from onAgentEnd (reading the recorded
 	// decision, not the messages the abort may orphan).
-	pi.on("turn_end", (_event, ctx) => {
+	pi.on("turn_end", async (_event, ctx) => {
 		// Only cap a manager turn. In mixed mode's coding polarity the owner is
 		// running the turn — never abort it on the manager's stale decision flag.
 		if (!managerHoldsSession(mixedActive, polarity) || !manager) return;
@@ -1491,12 +1505,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// state machine here (no per-probe abort) and abort only when it asks — live
 		// conversation work is waiting, or the interrogation is already done and the
 		// model kept calling tools (backstop). Otherwise let the loop re-sample; the
-		// context rebuild shows the next probe (or MANAGER_TURN_DONE when finished).
+		// context rebuild shows the next probe (or CONSOLIDATION_DONE when finished).
+		//
+		// The tool list is re-applied AFTER the step, and that order is the fix: Pi
+		// re-reads `agent.state.tools` between turns, right after this handler returns
+		// (`AgentSession._installAgentNextTurnRefresh`), so a refresh here is the last
+		// moment at which the next turn's tools can still be changed. Refreshed before
+		// the step, it would carry the tools of the step just finished — which is how a
+		// finished memory pass kept being offered the tool for step one, and kept
+		// calling it.
 		if (manager.isConsolidating()) {
-			if (manager.stepConsolidation() === "abort") ctx.abort();
+			const next = await manager.stepConsolidation();
+			visibility.refresh();
+			if (next === "abort") ctx.abort();
 			return;
 		}
-		// A normal reply/silent turn: cap re-sampling once the decision is recorded.
+		// A normal reply/silent turn: cap re-sampling once the decision is recorded. The
+		// refresh matters here too — a turn that drafted a reply becomes a revise turn,
+		// and the next sample must see manager_resolve_draft rather than be told to use
+		// a tool that is not in its list.
+		visibility.refresh();
 		if (manager.turnDecided()) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
@@ -1799,6 +1827,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 		ctx.compact({
 			onError: (error) => {
+				// Our own cancel comes back here as a throw. It is not a failure and it has
+				// already been explained by a card that says what actually happened.
+				if (Date.now() - compactionCancelledAt < CANCEL_ECHO_MS) return;
 				void chatLane
 					.run(() => controller.sendToChat(compactionFailedCard(error.message)))
 					.catch(() => {});
@@ -1837,14 +1868,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// in a long session — tells the summariser nothing, so it weighs the conversation
 		// by mass and keeps the tool output, which is four fifths of it, over the person,
 		// who is two percent of it. We run the same `compact()` Pi would have run, with the
-		// one argument its automatic path leaves empty. Undefined = Pi compacts as usual.
-		const compaction = await runFocusedCompaction({
+		// one argument its automatic path leaves empty — and we READ what comes back, which
+		// Pi does not: an empty summary once replaced an hour of this owner's session with
+		// a list of file paths.
+		const outcome = await runFocusedCompaction({
 			thread: manager ? (mixedActive ? "mixed" : "manager") : "personal",
 			model: ctx.model,
 			preparation: event.preparation,
 			callerInstructions: event.customInstructions,
 			signal: event.signal,
 			auth: (model) => ctx.modelRegistry.getApiKeyAndHeaders(model),
+			conversationOnly,
 			compact: (args) =>
 				compact(
 					args.preparation,
@@ -1855,7 +1889,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					args.signal,
 				),
 		});
-		return compaction ? { compaction } : undefined;
+		if (outcome.kind === "compaction")
+			return { compaction: outcome.compaction };
+		if (outcome.kind === "delegate") return undefined;
+		// Cancelled: no compaction will follow, so `session_compact` will never fire and
+		// nothing else will clear the flag that makes `deliverPrompt` wait for us.
+		compactingSince = 0;
+		compactionCancelledAt = Date.now();
+		if (connect) {
+			const controller = connect;
+			await chatLane
+				.run(() => controller.sendToChat(compactionEmptyCard()))
+				.catch(() => {});
+		}
+		return { cancel: true };
 	});
 	pi.on("session_compact", async (event) => {
 		compactingSince = 0;
@@ -2674,11 +2721,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		// One turn kind, one tool set — `modes/manager/tool-gate.ts` owns the rule and the
 		// reason it exists. The matcher drives BOTH the visibility gate (what the model
-		// sees) and the runtime guard (what it may call), and both are recomputed before
-		// every request, so a turn never carries the tools of the one before it.
+		// sees) and the runtime guard (what it may call). The getters are live, so the two
+		// can never disagree — but WHEN the visibility gate is re-applied decides whether
+		// the model sees this turn's tools or the last one's, and that is `before_agent_start`
+		// plus the `turn_end` refresh below. See `pi/tool-visibility.ts`.
 		managerMatcher = managerToolGate(baseMatcher, {
 			get consolidating() {
 				return manager?.isConsolidating() ?? false;
+			},
+			get consolidationDone() {
+				return manager?.isConsolidationDone() ?? false;
 			},
 			get revising() {
 				return manager?.isReviseTurn() ?? false;
