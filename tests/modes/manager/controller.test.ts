@@ -7,6 +7,7 @@ import {
 	type ManagerControllerDeps,
 } from "../../../src/modes/manager/controller";
 import { createBusinessStore } from "../../../src/storage/business-store";
+import { createChatCursorStore } from "../../../src/storage/chat-cursors";
 import { createChatStore, ownWords } from "../../../src/storage/chat-store";
 import { createConsolidationQueue } from "../../../src/storage/consolidation-queue";
 import { createContactStore } from "../../../src/storage/contact-store";
@@ -83,6 +84,7 @@ async function setup(mentionWords: string[] = []) {
 			fs,
 			paths.consolidationQueuePath,
 		),
+		chatCursors: createChatCursorStore(fs, paths.chatCursorsPath),
 		sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
 		businessStore,
 		isIdle: () => idle,
@@ -322,15 +324,13 @@ describe("ManagerController", () => {
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
-			message: interlocutorMsg("do you understand how you fit in 20GB?", 5, 1),
+			message: interlocutorMsg("how does the delivery fee work?", 5, 1),
 		});
 		clock.advance(300_001);
 		await controller.onTick();
 
 		// The model answers as plain text → held as a draft, not delivered yet.
-		await controller.onAgentEnd(
-			"20GB is compression, not storage — like a brain.",
-		);
+		await controller.onAgentEnd("It is charged once per order, not per item.");
 		expect(sendReply).not.toHaveBeenCalled();
 		expect(controller.isReviseTurn()).toBe(true);
 		// The revise turn must not be prompted for the tools it has disabled.
@@ -346,9 +346,7 @@ describe("ManagerController", () => {
 		controller.resolveSink().record({ action: "send" });
 		await controller.onAgentEnd();
 		expect(sendReply).toHaveBeenCalledTimes(1);
-		expect(sendReply.mock.calls[0][0].text).toContain(
-			"compression, not storage",
-		);
+		expect(sendReply.mock.calls[0][0].text).toContain("once per order");
 	});
 
 	it("returns a turn log describing the decision (for the owner debug feed)", async () => {
@@ -1517,6 +1515,107 @@ describe("consolidation pause/resume under live work", () => {
 		// No interrogation turn was started, and the self-chat was dropped from the queue.
 		expect(triggerAgent).not.toHaveBeenCalled();
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+	});
+
+	it("writes down a decision to stay silent, which the transcript cannot hold", async () => {
+		// A reply is a message and lands in the transcript. Silence is not, and does not —
+		// so the chat went on looking, to every later launch, exactly like someone whose
+		// message nobody had answered, and catch-up went and answered it. Days-old banter,
+		// replied to on every restart. The turn settled; the cursor says so.
+		const { controller, deps, sendReply, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("😂😂😂"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "silent", reason: "just banter" });
+		await controller.onAgentEnd();
+
+		expect(sendReply).not.toHaveBeenCalled();
+		const records = await deps.chatStore.getRecent("42", 20);
+		// The transcript still ends on them — it has no way to say we read it and passed.
+		expect(records.at(-1)?.author).toBe("interlocutor");
+		const cursor = await deps.chatCursors.get("42");
+		expect(cursor?.handledThrough).toBe(records.at(-1)?.timestamp);
+	});
+
+	// The bug this whole cursor exists for. Activation seeds every stored transcript back
+	// into the queue — that is what makes memory survive a restart at all — stamped with
+	// its real last-activity time. For a conversation that ended yesterday that stamp is
+	// far past the quiet threshold, so the chat is eligible AT ONCE. With nothing on disk
+	// saying what had already been read, the entire interrogation ran again, on the same
+	// messages, at every single launch: the owner watched one contact be interrogated six
+	// or seven times over. The facts were deduplicated on write, so nothing was corrupted
+	// — it just burned a full pass of inference per chat, forever.
+	it("does not interrogate a chat again over messages a pass has already read", async () => {
+		const { controller, deps, triggerAgent, clock } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i just ordered a laptop for work"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Noted!" });
+		await controller.onAgentEnd();
+
+		// An idle gap → the memory pass runs, start to finish.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		await controller.stepConsolidation();
+		controller.probeSink().record({
+			tool: "candidates",
+			items: [
+				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
+			],
+		});
+		await controller.stepConsolidation();
+		controller.probeSink().record({
+			tool: "verify",
+			keep: true,
+			evidenceQuote: "ordered a laptop",
+		});
+		await controller.stepConsolidation();
+		await controller.onAgentEnd(); // the pass finalizes
+		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+		const passes = countConsolidation(triggerAgent.mock.calls);
+		expect(passes).toBe(1);
+
+		// Now a restart: the transcript on disk is seeded back exactly as activation does
+		// it, with the time of its newest message. Nothing has been said since, so there
+		// is nothing here to read — and the chat does not even enter the queue.
+		const records = await deps.chatStore.getRecent("42", 20);
+		const lastActivity = records[records.length - 1].timestamp;
+		await controller.seedConsolidation(
+			"42",
+			{ connectionId: CONN, contactName: "Alice", userId: "5" },
+			lastActivity,
+		);
+		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(countConsolidation(triggerAgent.mock.calls)).toBe(passes);
+
+		// New words, though, are new material — and those it must go and read.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				...interlocutorMsg("and a second monitor", 5, 7),
+				date: Math.floor(clock.now() / 1000),
+			},
+		});
+		expect(await deps.consolidationQueue.all()).toHaveLength(1);
 	});
 
 	it("queues a chat known only from disk, so a restart does not lose its memory", async () => {

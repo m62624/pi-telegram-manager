@@ -28,6 +28,34 @@ describe("selectCatchUpChats", () => {
 		expect(selectCatchUpChats(chats, NOW, OPTS)).toEqual(["1"]);
 	});
 
+	it("leaves a chat alone once a turn has settled on its last message", () => {
+		// The bot read this message and chose to say nothing — banter, a sticker, a
+		// laugh. That decision writes NOTHING to a transcript, so the chat looks exactly
+		// like someone waiting for an answer, and looked that way at every launch: the
+		// same day-old message, picked up and answered again, restart after restart. The
+		// cursor is the only thing that knows better.
+		const chats = [chat("1", [rec("interlocutor", NOW - 600_000)])];
+		const handledThrough = new Map([["1", NOW - 600_000]]);
+		expect(selectCatchUpChats(chats, NOW, { ...OPTS, handledThrough })).toEqual(
+			[],
+		);
+	});
+
+	it("still chases a message that arrived after the mark", () => {
+		// The mark says how far we got, not "this chat is finished". A newer message is
+		// past it, and is waiting on us exactly as it always was.
+		const chats = [
+			chat("1", [
+				rec("interlocutor", NOW - 600_000),
+				rec("interlocutor", NOW - 400_000),
+			]),
+		];
+		const handledThrough = new Map([["1", NOW - 600_000]]);
+		expect(selectCatchUpChats(chats, NOW, { ...OPTS, handledThrough })).toEqual(
+			["1"],
+		);
+	});
+
 	it("skips a chat the owner already answered", () => {
 		const chats = [
 			chat("1", [
