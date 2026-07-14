@@ -36,10 +36,12 @@ export function tagTelegramPrompt(prompt: string): string {
 	return `${MIXED_TELEGRAM_MARKER}${prompt}`;
 }
 
-/** A text or image content block (structural subset of the SDK's blocks). */
+/** A content block of a message (structural subset of the SDK's blocks). */
 interface ContentBlock {
 	type?: string;
 	text?: string;
+	/** A `toolCall` block names the tool. */
+	name?: string;
 }
 
 /** The minimal message shape the filter reads (structurally an `AgentMessage`). */
@@ -48,6 +50,49 @@ export interface FilterableMessage {
 	// Optional: some custom `AgentMessage` variants (e.g. bash-execution) carry no
 	// `content`. They are never user messages, so they are simply not Telegram turns.
 	content?: string | ContentBlock[] | unknown;
+	/** A `toolResult` message names the tool it answers. */
+	toolName?: string;
+}
+
+/** Every tool the manager can call is named for it; nothing else may be. */
+const MANAGER_TOOL_PREFIX = "manager_";
+
+/**
+ * Whether a message is a manager tool call or its result — the one signature of a
+ * Telegram turn that survives when its tagged user prompt is gone.
+ */
+function isManagerToolActivity(message: FilterableMessage): boolean {
+	if (message.role === "toolResult") {
+		return message.toolName?.startsWith(MANAGER_TOOL_PREFIX) === true;
+	}
+	if (message.role !== "assistant" || !Array.isArray(message.content)) {
+		return false;
+	}
+	return (message.content as ContentBlock[]).some(
+		(block) =>
+			block?.type === "toolCall" &&
+			block.name?.startsWith(MANAGER_TOOL_PREFIX) === true,
+	);
+}
+
+/**
+ * Whether the transcript OPENS in the middle of a Telegram turn — i.e. the messages
+ * before the first user message are a manager turn whose tagged prompt is missing.
+ *
+ * This is not a hypothetical. Pi's compaction cuts the history at "a user OR an
+ * assistant message, never a tool result", so a cut can land inside a manager turn
+ * and keep its assistant/tool-result tail while discarding the tagged user prompt
+ * that opened it. Nothing then says whose turn that tail was — except the tools it
+ * called, which are ours.
+ */
+function opensInsideTelegramTurn(
+	messages: readonly FilterableMessage[],
+): boolean {
+	for (const message of messages) {
+		if (message.role === "user") return false;
+		if (isManagerToolActivity(message)) return true;
+	}
+	return false;
 }
 
 /** Flatten a message's text so the marker can be detected regardless of shape. */
@@ -78,12 +123,15 @@ export function isTelegramTurn(message: FilterableMessage): boolean {
  * only the owner's coding thread. A contiguous block is dropped from a tagged
  * user message up to (but not including) the next untagged user message, so an
  * assistant tool_use and its trailing tool result never orphan each other.
+ *
+ * A transcript that OPENS inside a manager turn (a compaction cut away the tagged
+ * prompt) starts in the dropping state — see {@link opensInsideTelegramTurn}.
  */
 export function stripTelegramTurns<T extends FilterableMessage>(
 	messages: readonly T[],
 ): T[] {
 	const kept: T[] = [];
-	let dropping = false;
+	let dropping = opensInsideTelegramTurn(messages);
 	for (const message of messages) {
 		if (message.role === "user") {
 			// A user message is the only boundary: a tagged one opens a drop block,
@@ -93,4 +141,50 @@ export function stripTelegramTurns<T extends FilterableMessage>(
 		if (!dropping) kept.push(message);
 	}
 	return kept;
+}
+
+/**
+ * The two message arrays a compaction is about to summarise (structurally Pi's
+ * `CompactionPreparation`). They are the SAME arrays Pi will read after our hook
+ * returns — the runner hands the event by reference — so rewriting them here is
+ * what makes the summary a summary of the coding thread and nothing else.
+ */
+export interface CompactionPreparationLike {
+	/** History that will be replaced by the summary. */
+	messagesToSummarize: FilterableMessage[];
+	/** The prefix of a turn cut in half, summarised separately. */
+	turnPrefixMessages: FilterableMessage[];
+}
+
+/**
+ * Take the manager's Telegram turns out of what a compaction will summarise, in
+ * mixed mode.
+ *
+ * `pi.on("context")` — where the isolation normally happens — does NOT run for a
+ * compaction: Pi summarises the raw session, and in mixed mode the raw session is
+ * the owner's coding thread with the manager's moderation turns interleaved. So
+ * without this, a compaction takes strangers' private messages, writes them into a
+ * summary, and hands that summary back to the owner's coding thread as its memory
+ * of what happened — the isolation the mode is built on, undone by the one code
+ * path that never asks us what the model may see. It also spends the owner's whole
+ * summary budget on chat moderation instead of the work.
+ *
+ * Returns how many messages were taken out, so the removal is observable.
+ */
+export function stripTelegramTurnsFromCompaction(
+	preparation: CompactionPreparationLike,
+): { removed: number } {
+	const before =
+		preparation.messagesToSummarize.length +
+		preparation.turnPrefixMessages.length;
+	preparation.messagesToSummarize = stripTelegramTurns(
+		preparation.messagesToSummarize,
+	);
+	preparation.turnPrefixMessages = stripTelegramTurns(
+		preparation.turnPrefixMessages,
+	);
+	const after =
+		preparation.messagesToSummarize.length +
+		preparation.turnPrefixMessages.length;
+	return { removed: before - after };
 }

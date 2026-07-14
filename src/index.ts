@@ -125,6 +125,7 @@ import {
 import { withLabelerMention } from "./modes/manager/mention";
 import {
 	stripTelegramTurns,
+	stripTelegramTurnsFromCompaction,
 	tagTelegramPrompt,
 } from "./modes/manager/mixed-context";
 import {
@@ -1656,7 +1657,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Narrate compaction, whoever started it: the owner (/compact), the context
 	// threshold, or an overflow recovery. It rewrites what the model remembers and takes
 	// long enough that saying nothing reads as a hang.
+	//
+	// It is also the ONE path that reads the session without asking us what the model
+	// may see: `pi.on("context")` does not run for a compaction. In mixed mode that
+	// matters — the manager's Telegram turns share the session with the owner's coding
+	// thread — so the moderation turns come out of the summary here, before it is
+	// written. See `stripTelegramTurnsFromCompaction`.
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (mixedActive) stripTelegramTurnsFromCompaction(event.preparation);
 		const controller = connect;
 		if (!controller) return;
 		await chatLane
