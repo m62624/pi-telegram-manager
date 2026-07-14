@@ -633,12 +633,28 @@ export class ManagerController {
 	 * Reads the probe the model just called, advances the state machine, and tells
 	 * the caller whether to abort the run:
 	 *
-	 *  - `"abort"` — live conversation work is now waiting (pre-empt at once; the run
-	 *    is paused and resumed later), or the model kept calling tools after the
+	 *  - `"abort"` — the interrogation just answered its last step (end the run: see
+	 *    below), live conversation work is now waiting (pre-empt at once; the run is
+	 *    paused and resumed later), or the model kept calling tools after the
 	 *    interrogation was already done (backstop against a spin);
 	 *  - `"continue"` — let the agent loop re-sample; `pi.on("context")` rebuilds the
-	 *    context showing the next probe's directive (or CONSOLIDATION_DONE when done),
-	 *    so the whole interrogation flows in a single run with no per-probe abort.
+	 *    context showing the next probe's directive, so the whole interrogation flows
+	 *    in a single run with no per-probe abort.
+	 *
+	 * A pass used to end one LLM call later than this: the last probe answered, the tool
+	 * gate withdrew the probes (a finished pass that can still see step one's tool calls
+	 * step one — it did), and the model was sampled once more with an empty tool list so
+	 * that it could say a word and stop. That word was never read by anything. It cost a
+	 * whole inference — and worse, withdrawing the tools rewrites the head of the prompt,
+	 * which is the prefix every backend caches, so the closing call re-read the entire
+	 * interrogation from byte zero. Once per pass, and the owner watched the prefix
+	 * watchdog (`core/payload-probe.ts`) report it as the defect it was.
+	 *
+	 * So the run ends where the questions end. Nothing is lost by stopping here: every
+	 * confirmed fact is already on disk ({@link persistConfirmed} writes each one the
+	 * moment it passes verification), and `agent_end` reaches
+	 * {@link finishConsolidationRun}, which sees `isDone` and finalizes exactly as it
+	 * does for a pass that ends any other way.
 	 *
 	 * Async because a fact that has just passed verification is WRITTEN here, before the
 	 * next step is taken — see {@link persistConfirmed}.
@@ -648,8 +664,9 @@ export class ManagerController {
 		if (!current) return "continue";
 		const probe = this.probes.current();
 		if (isDone(current.loop)) {
-			// Already finished: CONSOLIDATION_DONE should have ended the run. If the
-			// model called another tool anyway, abort as a backstop against a spin.
+			// Already finished and the run is somehow still going (a queued message can
+			// skip the step below, leaving the pass unsettled for a turn). If the model
+			// called another tool anyway, abort as a backstop against a spin.
 			return probe ? "abort" : "continue";
 		}
 		// Preserve this turn's progress (a recorded probe) BEFORE possibly yielding, so
@@ -664,6 +681,10 @@ export class ManagerController {
 			this.consolidating = { ...current, loop };
 			this.probes.reset();
 			await this.persistConfirmed(current.loop, loop, current);
+			// The last question has been answered. There is nothing left to ask and
+			// nothing left to say: stop, rather than pay for a call whose only job is to
+			// end the turn.
+			if (isDone(loop)) return "abort";
 		}
 		// A reply is now waiting: yield so a live answer is never delayed by an
 		// in-flight consolidation. onAgentEnd pauses the pass (progress kept).
