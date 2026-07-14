@@ -375,6 +375,58 @@ describe("ConnectController", () => {
 		expect(sendFollowUp).not.toHaveBeenCalled();
 	});
 
+	it("keeps a turn queued when the agent refuses to take it", async () => {
+		// The live wedge: the Pi session stopped going idle, so the hand-off threw. The
+		// turn was already dequeued by then — the owner's message was simply gone, and
+		// the bot went quiet with no trace of it anywhere.
+		const sendFollowUp = vi.fn(async () => {
+			throw new Error("the Pi session did not go idle");
+		});
+		const { controller } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("do not lose me"));
+
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		expect(controller.pendingCount()).toBe(1);
+	});
+
+	it("delivers the kept turn on the next pump, once the session recovers", async () => {
+		let broken = true;
+		const sendFollowUp = vi.fn(async () => {
+			if (broken) throw new Error("the Pi session did not go idle");
+		});
+		const { controller } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("hello"));
+		expect(controller.pendingCount()).toBe(1);
+
+		broken = false;
+		await controller.dispatch(); // the queue pump's beat
+		expect(sendFollowUp).toHaveBeenCalledTimes(2);
+		expect(sendFollowUp.mock.calls[1][0]).toContain("hello");
+		expect(controller.pendingCount()).toBe(0);
+	});
+
+	it("keeps the queue in order when a hand-off fails", async () => {
+		let broken = true;
+		const sendFollowUp = vi.fn(async () => {
+			if (broken) throw new Error("the Pi session did not go idle");
+		});
+		const { controller, setIdle } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("first", 1));
+		setIdle(false);
+		await controller.onEvent(messageEvent("second", 2));
+		setIdle(true);
+		broken = false;
+
+		await controller.dispatch();
+		// The message that failed is still the FIRST one out — a retry must not reorder
+		// the conversation.
+		expect(sendFollowUp.mock.calls.at(-1)?.[0]).toContain("first");
+		expect(controller.pendingCount()).toBe(1);
+	});
+
 	it("intercepts /compact as a control command instead of a prompt", async () => {
 		const onCompact = vi.fn(async () => {});
 		const { controller, sendFollowUp } = setup({ onCompact });

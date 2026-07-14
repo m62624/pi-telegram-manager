@@ -76,7 +76,7 @@ import {
 	MIRROR_URL,
 	REPO_URL,
 } from "./modes/connect/controller";
-import { card, note } from "./modes/connect/format";
+import { bullet, card, note } from "./modes/connect/format";
 import {
 	extractText,
 	lastAssistantReply,
@@ -394,6 +394,21 @@ const THINKING_KEEPALIVE_MS = 15_000;
  * finish uploading — the one moment the agent is done but the chat is not.
  */
 const SENDING_OUTPUT_HEADLINE = "📎 Sending the tool output…";
+/**
+ * How long the queue pump waits for the session before giving up on this attempt.
+ *
+ * Generous — a real turn can take minutes on a local model, and a message that waits
+ * is better than a message shoved into the session's own queue (from where the next
+ * abort dumps it into the terminal editor). What it must never be is unbounded: an
+ * unbounded wait on a session that never settles is how the bot went silent for good.
+ */
+const IDLE_WAIT_MS = 120_000;
+/** How long /esc gives the session to actually stop before calling it stuck. */
+const ESC_SETTLE_MS = 3_000;
+/** How long a session may refuse to go idle before the owner is told it is wedged. */
+const STUCK_WARN_AFTER_MS = 120_000;
+/** Retry the queue on this beat, so a message never waits on an event that never comes. */
+const QUEUE_PUMP_MS = 15_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -428,6 +443,7 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (manager / personal / mixed)",
+	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
 	"",
@@ -540,6 +556,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let connect: ConnectController | null = null;
 	let client: TelegramClient | null = null;
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
+	// Retries the connect queue on a beat — see where it is armed.
+	let queuePump: ReturnType<typeof setInterval> | null = null;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
 	// Whether the agent run in flight belongs to the owner's own thread (personal
@@ -760,6 +778,36 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
+	 * Wait for the session to go idle — but never forever.
+	 *
+	 * `waitForIdle()` resolves from ONE place in Pi: the `finally` of the run that is
+	 * currently active. A run that ends without settling (an abort the agent does not
+	 * come back from) leaves that promise unresolved for the rest of the process, and
+	 * whoever awaited it is simply gone. That is how a wedged session turned into a
+	 * silent bot: the queue pump was parked on this await, and the owner's messages sat
+	 * in our queue with nothing left alive to send them.
+	 *
+	 * Returns whether it actually went idle.
+	 */
+	const waitForIdle = async (
+		ctx: ExtensionCommandContext,
+		timeoutMs: number,
+	): Promise<boolean> => {
+		if (ctx.isIdle()) return true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = new Promise<false>((resolve) => {
+			timer = setTimeout(() => resolve(false), timeoutMs);
+		});
+		try {
+			return await Promise.race([ctx.waitForIdle().then(() => true), timedOut]);
+		} catch {
+			return ctx.isIdle();
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	};
+
+	/**
 	 * Hand a prompt to the agent — and only ever while the session is REALLY idle.
 	 *
 	 * `sendUserMessage` starts a turn when the agent is idle and QUEUES otherwise. A
@@ -773,20 +821,89 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
 	 * still finishing, so a message sent from that handler (the queue pump does exactly
 	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
-	 * we ask it, not ourselves.
-	 *
-	 * The messages themselves are never at risk: they wait in OUR queues (the connect
-	 * MessageQueue, the manager's scheduler) until the agent can actually take one.
+	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes. The
+	 * message stays in our queue (the caller only drops it once it is really sent) and
+	 * the pump tries again; a session that never comes back is reported, not waited on.
 	 */
 	const deliverPrompt = async (content: PromptContent): Promise<void> => {
-		if (activeCtx && !activeCtx.isIdle()) {
-			await activeCtx.waitForIdle().catch(() => {});
+		if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
+			noteSessionStuck();
+			throw new Error("the Pi session did not go idle; message kept in queue");
 		}
+		sessionStuckSince = 0;
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
 	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
 		await deliverPrompt(content);
+	};
+
+	/**
+	 * A session that will not go idle is not a slow session — nothing is running, and
+	 * nothing ever will. Say so once, and say what actually recovers it, instead of
+	 * leaving the chat to wonder why the bot went quiet.
+	 */
+	let sessionStuckSince = 0;
+	let sessionStuckWarned = false;
+	const noteSessionStuck = (): void => {
+		const now = Date.now();
+		if (sessionStuckSince === 0) {
+			sessionStuckSince = now;
+			return;
+		}
+		if (sessionStuckWarned || now - sessionStuckSince < STUCK_WARN_AFTER_MS)
+			return;
+		sessionStuckWarned = true;
+		void connect
+			?.sendToChat(
+				card("⚠️", "The Pi session is not responding", [
+					"It has been busy with nothing running for several minutes, so I cannot hand it your messages.",
+					bullet(
+						"Kept",
+						"your messages are still queued here — nothing is lost",
+					),
+					note("Try /esc. If that does not free it, restart Pi."),
+				]),
+			)
+			.catch(() => {});
+	};
+
+	/**
+	 * The real Escape — the one the keyboard does.
+	 *
+	 * `ctx.abort()` IS the Escape key's own handler (it empties the queues and aborts
+	 * the agent). Our AbortRegistry only knows the turn we armed on `agent_start` and
+	 * disarmed on `agent_end` — so the moment our bookkeeping disagreed with the
+	 * session (a run that ended for us but never settled for Pi), /esc answered
+	 * "nothing to cancel" and did nothing at all, which is the one moment it was needed.
+	 *
+	 * So we ask the SESSION, not ourselves, and we report what actually happened —
+	 * including "it did not stop", which is a real outcome and used to be silence.
+	 */
+	/** What the chat is told about an /esc — including the outcome that used to be silence. */
+	const escapeCard = (outcome: "aborted" | "idle" | "stuck"): string => {
+		if (outcome === "aborted") {
+			return card("⎋", "Cancelled", [note("Stopped the current turn.")]);
+		}
+		if (outcome === "idle") {
+			return card("💤", "Nothing to cancel", [note("The agent is idle.")]);
+		}
+		return card("⚠️", "It did not stop", [
+			"The session is still busy after the abort — which means nothing is actually running in it.",
+			note("Restart Pi to recover. Your messages stay queued here."),
+		]);
+	};
+
+	const escapeSession = async (): Promise<"aborted" | "idle" | "stuck"> => {
+		const ctx = activeCtx;
+		if (!ctx) return (await abort.abort()) ? "aborted" : "idle";
+		const wasBusy = !ctx.isIdle();
+		ctx.abort();
+		if (!wasBusy) return "idle";
+		// An abort is not instant: the run unwinds, the tool call rejects, the session
+		// settles. Give it that, then tell the truth about where we ended up.
+		const settled = await waitForIdle(ctx, ESC_SETTLE_MS);
+		return settled ? "aborted" : "stuck";
 	};
 
 	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
@@ -942,6 +1059,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (heartbeat) {
 			clearInterval(heartbeat);
 			heartbeat = null;
+		}
+		if (queuePump) {
+			clearInterval(queuePump);
+			queuePump = null;
 		}
 		await client?.stop().catch(() => {});
 		client = null;
@@ -2003,13 +2124,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			},
 			onCompact: compactContext,
 			onAbort: async () => {
-				// Interrupt the running turn via the handler armed on agent_start.
-				const stopped = await abort.abort();
-				await connect?.sendToChat(
-					stopped
-						? card("⎋", "Cancelled", [note("Stopped the current turn.")])
-						: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
-				);
+				await connect?.sendToChat(escapeCard(await escapeSession()));
 			},
 			onContact: async (user) => {
 				await contactStore.upsertProfile(
@@ -2104,6 +2219,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		heartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
+		// The queue used to be pumped only by the events that normally follow a message:
+		// the turn ending, or the next message arriving. When a hand-off fails — a session
+		// that will not go idle — neither of those ever comes, and the message waits
+		// forever for its own delivery. So the pump also has a beat of its own.
+		queuePump = setInterval(() => {
+			void connect?.dispatch().catch(() => {});
+		}, QUEUE_PUMP_MS);
 		armWatchdog(settings);
 		ctx.ui.setStatus(
 			STATUS_KEY,
@@ -2827,6 +2949,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					})
 					.catch(() => {});
 				if (!stopped) scheduleSwitch("stop");
+				return true;
+			}
+			// /esc is the one command that must work in EVERY mode, always: it is the
+			// keyboard's Escape, reachable from the phone. Personal and mixed route it
+			// through the ConnectController (rich card); manager mode has no controller, and
+			// used to have no /esc at all — the owner could watch a manager turn run away and
+			// have no way to stop it without the terminal.
+			if (!connect && /^\/(esc|cancel)(@\w+)?$/i.test(text)) {
+				const outcome = await escapeSession();
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text:
+							outcome === "aborted"
+								? "⎋ Cancelled — stopped the current turn."
+								: outcome === "idle"
+									? "💤 Nothing to cancel — the agent is idle."
+									: "⚠️ It did not stop. The session is still busy with nothing running — restart Pi to recover.",
+					})
+					.catch(() => {});
 				return true;
 			}
 			// The command menu is one list for every mode, so it offers /compact in manager

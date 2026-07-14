@@ -504,7 +504,15 @@ export class ConnectController {
 		];
 	}
 
-	/** Release the next queued turn to the agent, but only while it is idle. */
+	/**
+	 * Release the next queued turn to the agent, but only while it is idle.
+	 *
+	 * The turn is dropped from the queue only once the agent has actually TAKEN it. A
+	 * hand-off can fail — the session may refuse to go idle, and then it is not a turn
+	 * that was delivered, it is a turn that was lost. It stays queued instead, and the
+	 * next pump tries again; that is the difference between a bot that catches up when
+	 * the session recovers and a bot that quietly ate your message.
+	 */
 	async dispatch(): Promise<void> {
 		if (!this.deps.isIdle()) return;
 		const next = this.queue.peek();
@@ -512,10 +520,16 @@ export class ConnectController {
 		// An album still collecting its photos is not ready: releasing it now would
 		// send the model the first picture and orphan the rest.
 		if (this.isOpenAlbum(next.id)) return;
-		const item = this.queue.dequeue();
-		if (!item) return;
-		this.pendingMirror = item.sourceMessageIds;
-		await this.deps.sendFollowUp(this.toContent(item));
+		this.pendingMirror = next.sourceMessageIds;
+		try {
+			await this.deps.sendFollowUp(this.toContent(next));
+		} catch {
+			// Not delivered. Take the mirror back too — the prompt is copied into the topic
+			// when the turn really starts, not when we hoped it would.
+			this.pendingMirror = null;
+			return;
+		}
+		this.queue.dequeue();
 	}
 
 	private isOpenAlbum(itemId: string): boolean {
