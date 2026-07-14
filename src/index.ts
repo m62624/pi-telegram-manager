@@ -46,12 +46,13 @@ import {
 	formatClock,
 	formatNowLine,
 } from "./core/datetime";
-import { expandHome, readInstructionFiles } from "./core/instructions";
+import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
+import { createSerialLane } from "./core/serial-lane";
 import { renderSettingsReport } from "./core/settings-report";
 import {
 	fullOutputPath,
@@ -64,13 +65,19 @@ import {
 	loadConnectInstructions,
 	loadManagerInstructions,
 	SYSTEM_INSTRUCTIONS_HEADER,
+	verifyBundledInstructions,
 } from "./instructions/builtin";
+import {
+	compactedCard,
+	compactingCard,
+	compactionFailedCard,
+} from "./modes/connect/compaction-cards";
 import {
 	ConnectController,
 	MIRROR_URL,
 	REPO_URL,
 } from "./modes/connect/controller";
-import { card, note } from "./modes/connect/format";
+import { bullet, card, note } from "./modes/connect/format";
 import {
 	extractText,
 	lastAssistantReply,
@@ -78,6 +85,12 @@ import {
 	type PromptContent,
 	parseSlashCommand,
 } from "./modes/connect/messages";
+import {
+	renderStatusCard,
+	renderStatusText,
+	type StatusInput,
+	type StatusMode,
+} from "./modes/connect/status-card";
 import {
 	lastInterlocutorName,
 	lastInterlocutorUserId,
@@ -383,6 +396,26 @@ const THINKING_REFRESH_MS = 3_000;
  * neither rate is anywhere near a limit — this is just not being wasteful).
  */
 const THINKING_KEEPALIVE_MS = 15_000;
+/**
+ * What the draft says while a finished reply waits for the tool output ahead of it to
+ * finish uploading — the one moment the agent is done but the chat is not.
+ */
+const SENDING_OUTPUT_HEADLINE = "📎 Sending the tool output…";
+/**
+ * How long the queue pump waits for the session before giving up on this attempt.
+ *
+ * Generous — a real turn can take minutes on a local model, and a message that waits
+ * is better than a message shoved into the session's own queue (from where the next
+ * abort dumps it into the terminal editor). What it must never be is unbounded: an
+ * unbounded wait on a session that never settles is how the bot went silent for good.
+ */
+const IDLE_WAIT_MS = 120_000;
+/** How long /esc gives the session to actually stop before calling it stuck. */
+const ESC_SETTLE_MS = 3_000;
+/** How long a session may refuse to go idle before the owner is told it is wedged. */
+const STUCK_WARN_AFTER_MS = 120_000;
+/** Retry the queue on this beat, so a message never waits on an event that never comes. */
+const QUEUE_PUMP_MS = 15_000;
 const MANAGER_TICK_MS = 5_000;
 const STATUS_KEY = "telegram";
 
@@ -417,8 +450,13 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (manager / personal / mixed)",
+	"/status — model, context, working directory, queue",
+	"/esc — cancel whatever the agent is doing right now",
 	"/stop — stop the bot entirely",
 	"/start — privacy & terms",
+	"/help — show this help",
+	"",
+	"/clear and /compact belong to personal and mixed mode: here I build the context fresh for each conversation, so there is no history to clear or compact.",
 	"",
 	"⚠️ Privacy & terms — read and follow these before using the bot:",
 	`• ${COMPLIANCE_LINKS.botTerms}`,
@@ -529,6 +567,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let connect: ConnectController | null = null;
 	let client: TelegramClient | null = null;
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
+	// Retries the connect queue on a beat — see where it is armed.
+	let queuePump: ReturnType<typeof setInterval> | null = null;
+	// When the running mode started, for the "up for" line of /status. 0 = nothing running.
+	let modeStartedAt = 0;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
 	let busy = false;
 	// Whether the agent run in flight belongs to the owner's own thread (personal
@@ -545,6 +587,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let toolOutputDir = paths.toolOutputDir;
 	// Stream the assistant reply as an animated draft while it generates.
 	let draftPreviewsEnabled = false;
+	// The animated trace — beta, and off unless the owner asked for it.
+	let thinkingEnabled = false;
 	// The turn's live trace — the steps taken so far and the one running — shown in
 	// the draft until the first token of the reply arrives.
 	const thinkingLog = new ThinkingLog();
@@ -556,6 +600,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let lastThinkingAt = 0;
 	let draftText = "";
 	let lastDraftAt = 0;
+	// Everything the bot puts in the chat during a turn goes through this lane, so it
+	// lands in the order the turn actually happened: card, its output, the next card,
+	// the answer. Pi emits events fire-and-forget, so without it a slow send is simply
+	// overtaken by the fast ones behind it — which is how a tool's full-output file
+	// ended up UNDER the final answer, quoting a card from further up the chat.
+	const chatLane = createSerialLane();
 	// Mode-1 system instructions (bundled connect.md + user override), injected at
 	// the head of the context while connect is active; null when inactive.
 	let connectSystemBlock: string | null = null;
@@ -728,7 +778,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (!mixedActive || polarity === "telegram") return;
 			setPolarity("telegram");
 			// Kick the manager immediately rather than waiting for the next tick.
-			void manager?.onTick().then(updateManagerBanner);
+			// A tick must never take the process with it: an escaping rejection here is an
+			// unhandled rejection, and Node ends the process for one.
+			void manager
+				?.onTick()
+				.then(updateManagerBanner)
+				.catch(() => {});
 		}, mixedReturnMs);
 	};
 
@@ -740,6 +795,36 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (mixedActive)
 			visibility.setActive("manager", managerHoldsSession(mixedActive, next));
 		updateMixedFooter();
+	};
+
+	/**
+	 * Wait for the session to go idle — but never forever.
+	 *
+	 * `waitForIdle()` resolves from ONE place in Pi: the `finally` of the run that is
+	 * currently active. A run that ends without settling (an abort the agent does not
+	 * come back from) leaves that promise unresolved for the rest of the process, and
+	 * whoever awaited it is simply gone. That is how a wedged session turned into a
+	 * silent bot: the queue pump was parked on this await, and the owner's messages sat
+	 * in our queue with nothing left alive to send them.
+	 *
+	 * Returns whether it actually went idle.
+	 */
+	const waitForIdle = async (
+		ctx: ExtensionCommandContext,
+		timeoutMs: number,
+	): Promise<boolean> => {
+		if (ctx.isIdle()) return true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = new Promise<false>((resolve) => {
+			timer = setTimeout(() => resolve(false), timeoutMs);
+		});
+		try {
+			return await Promise.race([ctx.waitForIdle().then(() => true), timedOut]);
+		} catch {
+			return ctx.isIdle();
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	};
 
 	/**
@@ -756,20 +841,134 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * Our own `busy` flag is not enough: it clears on `agent_end`, while the SESSION is
 	 * still finishing, so a message sent from that handler (the queue pump does exactly
 	 * that) still lands in the queue. `waitForIdle()` is the session's own answer, so
-	 * we ask it, not ourselves.
-	 *
-	 * The messages themselves are never at risk: they wait in OUR queues (the connect
-	 * MessageQueue, the manager's scheduler) until the agent can actually take one.
+	 * we ask it, not ourselves — but with a deadline, and we THROW when it passes. The
+	 * message stays in our queue (the caller only drops it once it is really sent) and
+	 * the pump tries again; a session that never comes back is reported, not waited on.
 	 */
 	const deliverPrompt = async (content: PromptContent): Promise<void> => {
-		if (activeCtx && !activeCtx.isIdle()) {
-			await activeCtx.waitForIdle().catch(() => {});
+		if (activeCtx && !(await waitForIdle(activeCtx, IDLE_WAIT_MS))) {
+			noteSessionStuck();
+			throw new Error("the Pi session did not go idle; message kept in queue");
 		}
+		sessionStuckSince = 0;
 		await pi.sendUserMessage(content, { deliverAs: "followUp" });
 	};
 
 	const sendFollowUp = async (content: PromptContent): Promise<void> => {
 		await deliverPrompt(content);
+	};
+
+	/**
+	 * A session that will not go idle is not a slow session — nothing is running, and
+	 * nothing ever will. Say so once, and say what actually recovers it, instead of
+	 * leaving the chat to wonder why the bot went quiet.
+	 */
+	let sessionStuckSince = 0;
+	let sessionStuckWarned = false;
+	const noteSessionStuck = (): void => {
+		const now = Date.now();
+		if (sessionStuckSince === 0) {
+			sessionStuckSince = now;
+			return;
+		}
+		if (sessionStuckWarned || now - sessionStuckSince < STUCK_WARN_AFTER_MS)
+			return;
+		sessionStuckWarned = true;
+		void connect
+			?.sendToChat(
+				card("⚠️", "The Pi session is not responding", [
+					"It has been busy with nothing running for several minutes, so I cannot hand it your messages.",
+					bullet(
+						"Kept",
+						"your messages are still queued here — nothing is lost",
+					),
+					note("Try /esc. If that does not free it, restart Pi."),
+				]),
+			)
+			.catch(() => {});
+	};
+
+	/**
+	 * The real Escape — the one the keyboard does.
+	 *
+	 * `ctx.abort()` IS the Escape key's own handler (it empties the queues and aborts
+	 * the agent). Our AbortRegistry only knows the turn we armed on `agent_start` and
+	 * disarmed on `agent_end` — so the moment our bookkeeping disagreed with the
+	 * session (a run that ended for us but never settled for Pi), /esc answered
+	 * "nothing to cancel" and did nothing at all, which is the one moment it was needed.
+	 *
+	 * So we ask the SESSION, not ourselves, and we report what actually happened —
+	 * including "it did not stop", which is a real outcome and used to be silence.
+	 */
+	/**
+	 * The `/status` card: what the session is doing RIGHT NOW.
+	 *
+	 * Every value is read from Pi at the moment it is asked for — the model, the context
+	 * usage, the working directory, the thinking level — because a status assembled from
+	 * what we remembered at mode start is a status about the past. Anything Pi does not
+	 * report is simply left out of the card; see `renderStatusCard`.
+	 */
+	const statusInput = (): StatusInput => {
+		const ctx = activeCtx;
+		const mode: StatusMode["mode"] = manager
+			? mixedActive
+				? "mixed"
+				: "manager"
+			: "personal";
+		const usage = ctx?.getContextUsage();
+		return {
+			runtime: { mode, polarity: mixedActive ? polarity : undefined },
+			model: ctx?.model
+				? {
+						name: ctx.model.name,
+						id: ctx.model.id,
+						provider: ctx.model.provider,
+					}
+				: undefined,
+			context: usage
+				? {
+						tokens: usage.tokens,
+						contextWindow: usage.contextWindow,
+						percent: usage.percent,
+					}
+				: undefined,
+			cwd: ctx?.cwd,
+			// These live on `pi`, not on the command context.
+			sessionName: pi.getSessionName(),
+			thinkingLevel: pi.getThinkingLevel(),
+			busy,
+			queued: connect?.pendingCount(),
+			manager: manager?.status(),
+			uptimeMs: modeStartedAt > 0 ? Date.now() - modeStartedAt : undefined,
+		};
+	};
+
+	const buildStatus = (): string => renderStatusCard(statusInput());
+
+	/** What the chat is told about an /esc — including the outcome that used to be silence. */
+	const escapeCard = (outcome: "aborted" | "idle" | "stuck"): string => {
+		if (outcome === "aborted") {
+			return card("⎋", "Cancelled", [note("Stopped the current turn.")]);
+		}
+		if (outcome === "idle") {
+			return card("💤", "Nothing to cancel", [note("The agent is idle.")]);
+		}
+		return card("⚠️", "It did not stop", [
+			"The session is still busy after the abort — which means nothing is actually running in it.",
+			note("Restart Pi to recover. Your messages stay queued here."),
+		]);
+	};
+
+	const escapeSession = async (): Promise<"aborted" | "idle" | "stuck"> => {
+		const ctx = activeCtx;
+		if (!ctx) return (await abort.abort()) ? "aborted" : "idle";
+		const wasBusy = !ctx.isIdle();
+		ctx.abort();
+		if (!wasBusy) return "idle";
+		// An abort is not instant: the run unwinds, the tool call rejects, the session
+		// settles. Give it that, then tell the truth about where we ended up.
+		const settled = await waitForIdle(ctx, ESC_SETTLE_MS);
+		return settled ? "aborted" : "stuck";
 	};
 
 	// The Telegram "typing…" indicator lasts ~5s, so we refresh it on a timer
@@ -790,13 +989,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * The placeholder rides the streaming draft, which exists only in the owner's own
-	 * chat: personal mode always, mixed mode only on a coding turn. `ownerRun` is
-	 * exactly that distinction — a MANAGER turn never gets one, and could not anyway
-	 * (a draft cannot be sent over a business connection).
+	 * Whether the animated trace may be shown at all.
+	 *
+	 * `thinkingPlaceholder` is its own switch, and it is OFF by default — the placeholder
+	 * is beta: it rides `<tg-thinking>`, the newest thing we send, and a client that
+	 * renders it badly is not something we can fix from here. Off, nothing about it runs:
+	 * no draft, no refresh timer, no trace kept.
+	 *
+	 * It still rides the streaming draft, which exists only in the owner's own chat:
+	 * personal mode always, mixed mode only on a coding turn. `ownerRun` is exactly that
+	 * distinction — a MANAGER turn never gets one, and could not anyway (a draft cannot be
+	 * sent over a business connection).
 	 */
 	const thinkingAllowed = (): boolean =>
-		connect !== null && draftPreviewsEnabled && ownerRun;
+		connect !== null && thinkingEnabled && draftPreviewsEnabled && ownerRun;
 
 	const stopThinking = (): void => {
 		thinkingUp = false;
@@ -840,6 +1046,54 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			if (!thinkingUp) return;
 			pushThinking();
 		}, THINKING_REFRESH_MS);
+	};
+
+	/**
+	 * Take the placeholder DOWN before a real message goes up.
+	 *
+	 * A draft holds the position it was created at, and every real message we send after
+	 * it — a tool card, a log file — lands BELOW it. So the placeholder was left sitting
+	 * above newer messages, still animating, reading exactly like a turn that hung: the
+	 * one thing it exists to disprove.
+	 *
+	 * The rule is that the placeholder is always the LAST thing in the chat. It is erased
+	 * before anything real is sent, and {@link raisePlaceholder} puts it back underneath
+	 * once that message has landed — a fresh draft, at the bottom, where "what is
+	 * happening right now" belongs.
+	 */
+	const dropPlaceholder = async (
+		controller: ConnectController,
+	): Promise<void> => {
+		thinkingUp = false;
+		if (thinkingTimer) {
+			clearInterval(thinkingTimer);
+			thinkingTimer = null;
+		}
+		lastThinkingHtml = "";
+		lastThinkingAt = 0;
+		// Erase whatever draft is up — the trace, or the streamed preview of the reply —
+		// and close its id, so the next draft opens fresh. A new id is what makes it
+		// appear at the BOTTOM of the chat rather than back where the old one stood.
+		// The turn's steps are NOT forgotten (that is `stopThinking`): the trace comes
+		// back saying the same thing, one message further down.
+		await controller.clearDraft().catch(() => {});
+	};
+
+	/** Put the trace back below the message that just landed, if the turn is still running. */
+	const raisePlaceholder = (): void => {
+		if (busy) showThinking();
+	};
+
+	/**
+	 * Hold the answer's place while the step before it finishes going out. The reply is
+	 * written and the model is done; what is left is the previous card's full-output
+	 * file, which is uploading and must land above the answer. The draft says so — it is
+	 * the one surface that can speak while a real message is queued behind an upload.
+	 */
+	const showSendingOutput = (): void => {
+		thinkingLog.clear();
+		thinkingLog.setHeadline(SENDING_OUTPUT_HEADLINE);
+		showThinking();
 	};
 
 	// The bot's own documentation, readable in every mode. The model picks a topic
@@ -914,6 +1168,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			clearInterval(heartbeat);
 			heartbeat = null;
 		}
+		if (queuePump) {
+			clearInterval(queuePump);
+			queuePump = null;
+		}
 		await client?.stop().catch(() => {});
 		client = null;
 		connect = null;
@@ -921,6 +1179,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		connectTimezone = undefined;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
+		thinkingEnabled = false;
 		toolOutputMaxBytes = 0;
 		activeSettings = null;
 		contextReset.forget();
@@ -971,6 +1230,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			connectTimezone = undefined;
 			toolActivityEnabled = false;
 			draftPreviewsEnabled = false;
+			thinkingEnabled = false;
 			toolOutputMaxBytes = 0;
 			contextReset.forget();
 			visibility.setActive("connect", false);
@@ -1129,17 +1389,29 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		} else {
 			connect?.endDraft();
 		}
-		// A card still open here belongs to a call that never returned — the turn was
-		// aborted under it. Nothing will ever complete it, so close it as cancelled
-		// instead of leaving it wearing the running state.
-		await connect?.cancelOpenToolCards();
-		// A manager run in mixed still pumps the connect queue (an owner message may
-		// be waiting behind the aborted moderation turn) but its text is NOT a reply
-		// to the owner — only an owner run delivers to the chat topic.
-		// The run's messages were mirrored one by one as they ended; the agent_end
-		// fallback only fires when none of them was (an aborted or otherwise odd run),
-		// so an answer can never be lost.
-		await connect?.onAgentEnd(event.messages, ownerRun && !mirroredThisRun);
+		const controller = connect;
+		if (controller) {
+			// A card still open here belongs to a call that never returned — the turn was
+			// aborted under it. Nothing will ever complete it, so close it as cancelled
+			// instead of leaving it wearing the running state. It edits the chat, so it
+			// waits its turn like every other write.
+			await chatLane
+				.run(() => controller.cancelOpenToolCards())
+				.catch(() => {});
+			// Then let the whole turn land before the run has its last word. Draining here
+			// rather than queueing behind it keeps the lane free: `onAgentEnd` also pumps
+			// the message queue, which waits for the SESSION to go idle — a wait that has
+			// no business holding up the chat.
+			await chatLane.drain();
+			// A manager run in mixed still pumps the connect queue (an owner message may be
+			// waiting behind the aborted moderation turn) but its text is NOT a reply to the
+			// owner — only an owner run delivers to the chat topic. The run's messages were
+			// mirrored one by one as they ended; this fallback only fires when none of them
+			// was (an aborted or otherwise odd run), so an answer can never be lost.
+			await controller
+				.onAgentEnd(event.messages, ownerRun && !mirroredThisRun)
+				.catch(() => {});
+		}
 		// In mixed mode's coding polarity the turn that just ended is the owner's:
 		// don't feed it to the manager, and arm the idle timer that will hand the
 		// shared brain back to Telegram once the owner stays quiet.
@@ -1182,21 +1454,34 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 			managerTurnTools.push({ name: event.toolName, args });
 		}
-		// The live trace rides the draft, not the cards, so it updates even when the
-		// tool CARDS are switched off — `showThinking` applies its own gate.
-		thinkingLog.start({
-			callId: event.toolCallId,
-			toolName: event.toolName,
-			hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
-			startedAt: Date.now(),
-		});
-		showThinking();
+		// The live trace rides the draft, not the cards, so it updates even when the tool
+		// CARDS are switched off. With the placeholder itself off, none of it runs — not
+		// even the bookkeeping: `thinkingEnabled` gates the whole feature, not just its
+		// sends.
+		if (thinkingEnabled) {
+			thinkingLog.start({
+				callId: event.toolCallId,
+				toolName: event.toolName,
+				hint: toolActivityHint({ toolName: event.toolName, args: event.args }),
+				startedAt: Date.now(),
+			});
+			showThinking();
+		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
-		await connect
-			.sendToolActivity(
-				{ toolName: event.toolName, args: event.args },
-				event.toolCallId,
-			)
+		const controller = connect;
+		// Queued here, synchronously, so the card takes the place in the chat that its
+		// event had — see `chatLane`.
+		await chatLane
+			.run(async () => {
+				// The card is a real message, so the placeholder comes down first and goes
+				// back up underneath it — never above it, looking stranded.
+				await dropPlaceholder(controller);
+				await controller.sendToolActivity(
+					{ toolName: event.toolName, args: event.args },
+					event.toolCallId,
+				);
+				raisePlaceholder();
+			})
 			.catch(() => {});
 	});
 
@@ -1211,10 +1496,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			showThinking();
 		}
 		if (!connect || !toolActivityEnabled || !ownerRun) return;
-		const cardId = await connect
-			.completeToolActivity(event.toolCallId, event.result, event.isError)
-			.catch(() => undefined);
-		await attachToolOutputFile(event.result, event.toolName, cardId);
+		const controller = connect;
+		// The card and the file it carries are ONE step of the chat: queued together, so
+		// nothing (least of all the final answer) can slip between a card and its log.
+		await chatLane
+			.run(async () => {
+				// Completing the card is an EDIT — it adds nothing to the chat, so the
+				// placeholder can stay where it is. A file, if one follows, is a real
+				// message; `attachToolOutputFile` takes the placeholder down for it, and
+				// only if it really sends something.
+				const cardId = await controller
+					.completeToolActivity(event.toolCallId, event.result, event.isError)
+					.catch(() => undefined);
+				await attachToolOutputFile(event.result, event.toolName, cardId);
+				raisePlaceholder();
+			})
+			.catch(() => {});
 	});
 
 	/**
@@ -1240,22 +1537,34 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			toolFileBytes: path ? await fs.size(path) : undefined,
 		});
 		if (plan.attach === false) return;
+		// A file IS a real message, so the placeholder comes down for it — but only now,
+		// once we know one is actually going out. Most calls attach nothing, and taking
+		// the trace down and putting it back for them would be a flicker that says
+		// nothing.
+		await dropPlaceholder(connect);
 		const caption = `📄 full output — ${toolName}`;
+		// One name for both routes. A tool writes its log where and how it likes
+		// (`/tmp/pi-bash-1.log`), but what arrives on the owner's PHONE is judged by its
+		// extension: a `.txt` opens and previews, a `.log` is an unknown blob you must go
+		// find an app for. So the file is delivered as the plain text it is.
+		const filename = toolOutputFileName(toolName, Date.now());
 		if (plan.attach === "file") {
-			await connect.attachToolOutput(plan.path, caption, cardMessageId);
+			await connect.attachToolOutput(
+				plan.path,
+				caption,
+				cardMessageId,
+				filename,
+			);
 			return;
 		}
 		// Nobody saved this but us: the tool returned everything and the CARD is what
 		// cut it. Write it out inside the extension dir (never the system temp dir, so
 		// the path is ours on every platform), send it, and delete it — this file has
 		// no life beyond the message it rode in on.
-		const scratch = join(
-			toolOutputDir,
-			toolOutputFileName(toolName, Date.now()),
-		);
+		const scratch = join(toolOutputDir, filename);
 		try {
 			await fs.writeText(scratch, plan.text);
-			await connect.attachToolOutput(scratch, caption, cardMessageId);
+			await connect.attachToolOutput(scratch, caption, cardMessageId, filename);
 		} catch {
 			// A scratch file we could not write or send is not worth a word to the user:
 			// the card still carries the truncated output.
@@ -1300,10 +1609,24 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (message.role !== "assistant") return;
 		const text = extractText(message.content as never);
 		if (!text?.trim()) return;
-		connect.endDraft();
+		const controller = connect;
+		const delivered = chatLane.run(async () => {
+			// Erase the draft — the trace, or the streamed preview of this very reply —
+			// before the real message lands, or it stays sitting ABOVE the answer it was
+			// previewing.
+			await dropPlaceholder(controller);
+			await controller.deliverAssistant(text);
+			// The model may still be working (an answer, then more tools). If it is, the
+			// trace comes back BELOW the message it just sent.
+			raisePlaceholder();
+		});
 		mirroredThisRun = true;
 		notePersonalActivity();
-		await connect.deliverAssistant(text).catch(() => {});
+		// The answer is ready, but the step before it is still being sent — a full-output
+		// log can take seconds to upload, and it goes FIRST on purpose. Say what the reply
+		// is waiting on, instead of leaving a finished draft sitting there looking stuck.
+		if (chatLane.pending() > 1) showSendingOutput();
+		await delivered.catch(() => {});
 	});
 
 	// Mirror prompts typed at the Pi terminal into Telegram for a unified history.
@@ -1324,22 +1647,62 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	// Let the chat know when context compaction runs, so a mid-turn pause is
-	// explained rather than looking like a hang. There is no dedicated
-	// "compaction failed" event; a genuine failure surfaces through the normal
-	// agent error path.
-	pi.on("session_before_compact", async () => {
-		await connect
-			?.sendToChat(
-				card("🗜", "Compacting context", [
-					note("Freeing up space — one moment…"),
-				]),
+	/**
+	 * Compact the context on the owner's ask (`/compact` in the chat).
+	 *
+	 * `ctx.compact()` returns immediately and reports back on a callback. Success is
+	 * already narrated by the two events below, so only the FAILURE needs a card of its
+	 * own: without one, a compaction that threw left "Compacting context…" standing as
+	 * the last word in the chat, with nothing ever following it.
+	 */
+	const compactContext = async (): Promise<void> => {
+		const ctx = activeCtx;
+		const controller = connect;
+		if (!ctx || !controller) return;
+		// Compacting rewrites the history the running turn is reading from. Wait for the
+		// turn to finish, exactly as /clear does.
+		if (busy) {
+			await controller
+				.sendToChat(
+					card("⏳", "Busy right now", [
+						note("Send /compact again once I finish."),
+					]),
+				)
+				.catch(() => {});
+			return;
+		}
+		ctx.compact({
+			onError: (error) => {
+				void chatLane
+					.run(() => controller.sendToChat(compactionFailedCard(error.message)))
+					.catch(() => {});
+			},
+		});
+	};
+
+	// Narrate compaction, whoever started it: the owner (/compact), the context
+	// threshold, or an overflow recovery. It rewrites what the model remembers and takes
+	// long enough that saying nothing reads as a hang.
+	pi.on("session_before_compact", async (event, ctx) => {
+		const controller = connect;
+		if (!controller) return;
+		await chatLane
+			.run(() =>
+				controller.sendToChat(
+					compactingCard(event.reason, ctx.getContextUsage()),
+				),
 			)
 			.catch(() => {});
 	});
-	pi.on("session_compact", async () => {
-		await connect
-			?.sendToChat(card("✅", "Context compacted", [note("Continuing.")]))
+	pi.on("session_compact", async (event) => {
+		const controller = connect;
+		if (!controller) return;
+		await chatLane
+			.run(() =>
+				controller.sendToChat(
+					compactedCard(event.compactionEntry.tokensBefore),
+				),
+			)
 			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
@@ -1856,6 +2219,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			url?: string;
 			caption?: string;
 			replyToMessageId?: number;
+			filename?: string;
 		}) => {
 			if (input.path && !(await fs.exists(input.path))) {
 				throw new Error(`file not found: ${input.path}`);
@@ -1901,14 +2265,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					]),
 				);
 			},
+			onCompact: compactContext,
+			onStatus: buildStatus,
 			onAbort: async () => {
-				// Interrupt the running turn via the handler armed on agent_start.
-				const stopped = await abort.abort();
-				await connect?.sendToChat(
-					stopped
-						? card("⎋", "Cancelled", [note("Stopped the current turn.")])
-						: card("💤", "Nothing to cancel", [note("The agent is idle.")]),
-				);
+				await connect?.sendToChat(escapeCard(await escapeSession()));
 			},
 			onContact: async (user) => {
 				await contactStore.upsertProfile(
@@ -1924,6 +2284,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		});
 		toolActivityEnabled = settings.assistant.toolActivity;
 		draftPreviewsEnabled = settings.assistant.draftPreviews;
+		thinkingEnabled = settings.assistant.thinkingPlaceholder;
 		toolOutputMaxBytes = settings.assistant.toolOutputMaxBytes;
 		toolOutputDir = resolveUserDir(
 			settings.assistant.toolOutputDir,
@@ -1951,8 +2312,29 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// Mode-1 launcher, extracted from the command handler so `switchMode` can start
 	// it from a Telegram button press too. Captures `activeCtx`/`ownerUserId` for the
 	// control panel.
+	/**
+	 * Refuse to start on a broken installation.
+	 *
+	 * The bundled Markdown IS the bot's rulebook. Missing, the manager would once have
+	 * started with an empty one — no disclosure duty, no stance — and gone on answering
+	 * real people. Checked here, first, while there is still nothing to unwind: no
+	 * singleton claimed, no client opened.
+	 */
+	const installationIsComplete = async (
+		ctx: ExtensionCommandContext,
+	): Promise<boolean> => {
+		try {
+			await verifyBundledInstructions(fs);
+			return true;
+		} catch (error) {
+			ctx.ui.notify(String((error as Error).message ?? error), "error");
+			return false;
+		}
+	};
+
 	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
 		activeCtx = ctx;
+		if (!(await installationIsComplete(ctx))) return;
 		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
@@ -2003,11 +2385,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		heartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
+		// The queue used to be pumped only by the events that normally follow a message:
+		// the turn ending, or the next message arriving. When a hand-off fails — a session
+		// that will not go idle — neither of those ever comes, and the message waits
+		// forever for its own delivery. So the pump also has a beat of its own.
+		queuePump = setInterval(() => {
+			void connect?.dispatch().catch(() => {});
+		}, QUEUE_PUMP_MS);
 		armWatchdog(settings);
 		ctx.ui.setStatus(
 			STATUS_KEY,
 			fitLine(`Telegram: connected (chat ${allowedUserId})`, terminalWidth()),
 		);
+		modeStartedAt = Date.now();
 		ctx.ui.notify("Telegram connect: active.");
 		// The pin IS the connection notice, in every mode — a separate "Connected"
 		// card would say the same thing twice, and only personal mode ever sent one.
@@ -2035,6 +2425,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
+		if (!(await installationIsComplete(ctx))) return;
 		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
@@ -2280,7 +2671,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				// Through `deliverPrompt`, so a turn injected while the session is still
 				// settling cannot land in the SDK queue — from which the next abort would
 				// dump it into the terminal editor instead of answering anyone.
-				await deliverPrompt(content);
+				//
+				// `deliverPrompt` THROWS when the session will not go idle, and this call
+				// sits under the manager's 5-second tick (`void onTick().then(…)`) — an
+				// escaping rejection there is an unhandled rejection, which ends the Pi
+				// process. It is not the tick's job to die for a session that is wedged:
+				// the chat stays unserved, so the very next tick tries again, and the owner
+				// is told once (see `noteSessionStuck`).
+				await deliverPrompt(content).catch(() => {});
 			},
 			// Business connections reject the rich-message API, so mode-2 replies go out
 			// as classic HTML (parse_mode) with the labeler rendered as a blockquote.
@@ -2404,12 +2802,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		).catch(() => {});
 		updateManagerBanner();
 		managerTick = setInterval(() => {
-			void manager?.onTick().then(updateManagerBanner);
+			// A tick must never take the process with it: an escaping rejection here is an
+			// unhandled rejection, and Node ends the process for one.
+			void manager
+				?.onTick()
+				.then(updateManagerBanner)
+				.catch(() => {});
 		}, MANAGER_TICK_MS);
 		managerHeartbeat = setInterval(() => {
 			void lifecycle.heartbeat();
 		}, HEARTBEAT_INTERVAL_MS);
 		armWatchdog(settings);
+		modeStartedAt = Date.now();
 		if (mixed) {
 			// Mixed shows the footer indicator in the TUI AND a pinned indicator in the
 			// bot DM (so the bot chat reflects it too); arm the idle timer so an idle
@@ -2726,6 +3130,57 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					})
 					.catch(() => {});
 				if (!stopped) scheduleSwitch("stop");
+				return true;
+			}
+			// /esc is the one command that must work in EVERY mode, always: it is the
+			// keyboard's Escape, reachable from the phone. Personal and mixed route it
+			// through the ConnectController (rich card); manager mode has no controller, and
+			// used to have no /esc at all — the owner could watch a manager turn run away and
+			// have no way to stop it without the terminal.
+			if (!connect && /^\/(esc|cancel)(@\w+)?$/i.test(text)) {
+				const outcome = await escapeSession();
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text:
+							outcome === "aborted"
+								? "⎋ Cancelled — stopped the current turn."
+								: outcome === "idle"
+									? "💤 Nothing to cancel — the agent is idle."
+									: "⚠️ It did not stop. The session is still busy with nothing running — restart Pi to recover.",
+					})
+					.catch(() => {});
+				return true;
+			}
+			// /status works in every mode. Manager mode has no ConnectController to render
+			// the rich card, so the same report goes out as plain text.
+			if (!connect && /^\/status(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: renderStatusText(statusInput()),
+						link_preview_options: { is_disabled: true },
+					})
+					.catch(() => {});
+				return true;
+			}
+			// The command menu is one list for every mode, so it offers /compact and /clear
+			// in manager mode too — where neither means anything: the manager REBUILDS the
+			// model's context from the chat store on every turn (see pi.on("context")), so
+			// there is no accumulated session history to compact or to clear. Answer them,
+			// rather than let a menu entry go silently nowhere — a button that does nothing
+			// is worse than one that is not there. (In mixed, `connect` is live and handles
+			// both for real.)
+			if (!connect && /^\/(compact|clear|new|reset)(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: "🗜 /compact and /clear apply to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is no history to compact or clear.",
+					})
+					.catch(() => {});
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own

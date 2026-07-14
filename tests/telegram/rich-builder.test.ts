@@ -7,12 +7,14 @@ import {
 	escapeHtml,
 	heading,
 	inlineCode,
+	italic,
 	link,
 	list,
 	mathBlock,
 	preformatted,
 	RichHtml,
 	RichHtmlDocument,
+	richHtmlToText,
 	spoiler,
 	subscript,
 	superscript,
@@ -175,6 +177,139 @@ describe("thinking", () => {
 		expect(thinking(inlineCode("npm test")).html).toBe(
 			"<tg-thinking><code>npm test</code></tg-thinking>",
 		);
+	});
+});
+
+describe("richHtmlToText", () => {
+	/**
+	 * What the OLD implementation returned, input by input.
+	 *
+	 * The rewrite existed to drop a flagged shape (CodeQL
+	 * js/incomplete-multi-character-sanitization: strip the tags, then decode the
+	 * entities, and the decode hands back what the strip removed) — NOT to change what
+	 * anyone reads. So the guarantee that has to be pinned is "same output as before",
+	 * and it is pinned the only way that cannot rot: as the outputs themselves.
+	 *
+	 * They were captured by running the pre-change function (`git show 302778e^ --
+	 * src/telegram/outbound.ts`) over these exact inputs. The chain itself is
+	 * deliberately NOT reproduced here — a test that re-implements it would carry the
+	 * very pattern the change removed, and one that called the new function instead
+	 * would be comparing it with itself and proving nothing at all.
+	 */
+	const BEFORE_THE_REWRITE: readonly (readonly [string, string])[] = [
+		// Our own builders' markup — everything the bot can actually send.
+		["<b>a</b> &amp; <i>b</i>", "a & b"],
+		['<pre><code class="language-ts">x &lt; 1</code></pre>', "x < 1"],
+		[
+			'<details><summary>diff (2 lines)</summary><pre><code class="language-diff">- a\n+ b</code></pre></details>',
+			"diff (2 lines)- a\n+ b",
+		],
+		[
+			'<ul><li><input type="checkbox" checked>done</li><li>todo</li></ul>',
+			"donetodo",
+		],
+		[
+			"<table><caption>Cap</caption><tr><th>H</th></tr><tr><td>v</td></tr></table>",
+			"CapHv",
+		],
+		['<a href="https://x/?a=&quot;1&quot;&amp;b=2">t</a>', "t"],
+		["<tg-thinking><code>npm test</code></tg-thinking>", "npm test"],
+		["<tg-math-block>a &lt; b</tg-math-block>", "a < b"],
+		["<blockquote>hi<cite>me</cite></blockquote>", "hime"],
+		["<h2>R</h2>\n<p>Body &amp; tail</p>", "R\nBody & tail"],
+		// Malformed and adversarial html.
+		// A tag split by another tag: neither implementation reassembles it.
+		["<scrip<script>t>alert(1)</script>", "t>alert(1)"],
+		// An attribute carrying a ">" — the tag ends at the FIRST ">", for both.
+		['<a href="a>b">t</a>', 'b">t'],
+		// A "<" opened and never closed.
+		["<b>unterminated", "unterminated"],
+		// Bare comparison operators (only reachable from hand-written html): the old
+		// chain ate everything between them, and so, faithfully, does the new one.
+		["2 < 3 and 4 > 3", "2  3"],
+		["a < b", "a < b"],
+		["text with > alone", "text with > alone"],
+		// Double-escaped: one level comes off, and only one.
+		["&amp;lt;", "&lt;"],
+		// An entity we do not know stays exactly as it is.
+		["a &unknown; b", "a &unknown; b"],
+		["&; &", "&; &"],
+		["", ""],
+		["<b></b>", ""],
+		// Escaped markup decodes back into text. That is CORRECT and it is what the old
+		// chain did: the result is the plain TEXT of the message, sent with no
+		// parse_mode, so these are characters the author typed, not markup anyone
+		// parses. What the single pass guarantees is that this "<" is only ever WRITTEN
+		// to the output — never scanned again — so it cannot re-open a tag the way a
+		// second replace pass could.
+		[
+			"<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>",
+			"<script>alert(1)</script>",
+		],
+	];
+
+	it("returns exactly what the old implementation returned", () => {
+		for (const [html, before] of BEFORE_THE_REWRITE) {
+			expect(richHtmlToText(html)).toBe(before);
+		}
+	});
+
+	it("covers the markup our own builders emit", () => {
+		// The corpus above is hand-written, so it can drift from the builders. This ties
+		// it back to them: every builder's real output must still read as its text.
+		expect(richHtmlToText(bold("a").html)).toBe("a");
+		expect(
+			richHtmlToText(
+				RichHtml.join([bold("a"), RichHtml.text(" & "), italic("b")]).html,
+			),
+		).toBe("a & b");
+		expect(richHtmlToText(preformatted("x < 1", "ts").html)).toBe("x < 1");
+		expect(
+			richHtmlToText(collapsibleCode("- a\n+ b", { language: "diff" }).html),
+		).toBe("diff (2 lines)- a\n+ b");
+		expect(
+			richHtmlToText(list([{ text: "done", checked: true }, "todo"]).html),
+		).toBe("donetodo");
+		expect(
+			richHtmlToText(
+				table([[{ text: "H", header: true }], [{ text: "v" }]], {
+					caption: "Cap",
+				}).html,
+			),
+		).toBe("CapHv");
+		expect(richHtmlToText(link("t", 'https://x/?a="1"&b=2').html)).toBe("t");
+		expect(richHtmlToText(thinking(inlineCode("npm test")).html)).toBe(
+			"npm test",
+		);
+		expect(richHtmlToText(mathBlock("a < b").html)).toBe("a < b");
+		expect(richHtmlToText(blockquote(["hi"], "me").html)).toBe("hime");
+		expect(
+			richHtmlToText(
+				new RichHtmlDocument().heading("R").paragraph("Body & tail").toHtml(),
+			),
+		).toBe("R\nBody & tail");
+	});
+
+	it("drops tags and decodes the entities we emit", () => {
+		expect(richHtmlToText("<b>a</b> &amp; <i>b</i>")).toBe("a & b");
+		expect(richHtmlToText("<pre><code>x &lt; 1</code></pre>")).toBe("x < 1");
+		expect(richHtmlToText('<a href="https://x/?a=&quot;1&quot;">t</a>')).toBe(
+			"t",
+		);
+	});
+
+	it("also decodes &quot;, which the old chain left raw", () => {
+		// The one deliberate difference (the old chain knew only &lt; &gt; &amp;, so it
+		// let "&quot;" through as those six literal characters). `&quot;` is only ever
+		// emitted INSIDE an attribute (escapeAttr), and an attribute leaves with its
+		// tag — so this is unreachable for markup we build, and can only help with
+		// markup we do not.
+		expect(richHtmlToText("she said &quot;hi&quot;")).toBe('she said "hi"');
+	});
+
+	it("round-trips whatever escapeHtml escaped", () => {
+		const source = 'a & b < c > d "e"';
+		expect(richHtmlToText(escapeHtml(source))).toBe(source);
 	});
 });
 

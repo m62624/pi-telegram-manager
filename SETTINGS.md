@@ -4,6 +4,80 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 
 **Override semantics.** For plain values (numbers, booleans, strings) a setting **replaces** the default. Two list settings are special: instruction-file lists are **appended** to the built-in instructions (they add, never replace), and `manager.mentionWords` / `manager.allowedTools` follow the per-row notes below.
 
+## The whole file, with every default
+
+Written out in full so the nesting is never a guess: this is what the extension runs with when your `settings.json` says nothing. **Copy only the lines you want to change** — every key is optional, and an empty `{}` is a valid file. The three keys with no default (`botToken`, `allowedUserId`, `timezone`) are shown with example values; the rest are the real defaults. A test keeps this block in step with the code, so it cannot quietly go stale.
+
+<!-- settings-example:start -->
+```json
+{
+  "botToken": "env:TELEGRAM_BOT_TOKEN",
+  "allowedUserId": 123456789,
+  "timezone": "Asia/Almaty",
+  "instructionFiles": [],
+  "assistant": {
+    "rendering": "rich",
+    "draftPreviews": true,
+    "thinkingPlaceholder": false,
+    "toolActivity": true,
+    "toolOutputMaxBytes": 26214400,
+    "toolOutputDir": "~/telegram-logs"
+  },
+  "connect": {
+    "instructionFiles": []
+  },
+  "manager": {
+    "ownerName": "Ada",
+    "continueWindowMs": 120000,
+    "ownerReplyWindowMs": 300000,
+    "catchUpWindowMs": 36000000,
+    "allowedTools": [],
+    "media": {
+      "images": true,
+      "documents": false
+    },
+    "rememberMessages": 20,
+    "maxCharsPerMessage": 4000,
+    "maxContextChars": 40000,
+    "factsLimit": 20,
+    "factConsolidationQuietMs": 1800000,
+    "verifyLimit": 8,
+    "liveFreshnessMs": 600000,
+    "reopenAfterMs": 86400000,
+    "reviseThreshold": 2,
+    "log": true,
+    "strictReplyGuard": true,
+    "labeler": "LLM agent 🤖:",
+    "labelerRule": "────────────",
+    "mentionWords": ["llm", "manager"],
+    "instructionFiles": []
+  },
+  "mixed": {
+    "returnToTelegramMs": 480000
+  },
+  "topics": {
+    "enabled": true,
+    "personalName": "personal",
+    "managerName": "manager"
+  },
+  "forwards": {
+    "maxChars": 2000,
+    "maxMessages": 5,
+    "groupWindowMs": 3000
+  },
+  "files": {
+    "maxBytes": 52428800,
+    "maxImagesPerTurn": 10
+  },
+  "connectionCheck": {
+    "enabled": true,
+    "intervalMs": 600000,
+    "maxRetries": 3
+  }
+}
+```
+<!-- settings-example:end -->
+
 ## Top level
 
 | Key | Default | Override | What it does |
@@ -18,7 +92,8 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
 | `assistant.rendering` | `"rich"` | replaces | `"rich"` (native Bot API rich Markdown) or `"html"`. |
-| `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates, and — before the first word of it exists — show what the agent is doing right now (`Thinking…`, then the tool it is running). The draft is ephemeral: it animates in place and leaves nothing in the chat history. Mixed mode shows it on coding turns only; a manager turn never does (a draft cannot be sent over a business connection). |
+| `assistant.draftPreviews` | `true` | replaces | Stream the reply as an animated draft while it generates. The draft is ephemeral: it animates in place and leaves nothing in the chat history. Mixed mode shows it on coding turns only; a manager turn never does (a draft cannot be sent over a business connection). |
+| `assistant.thinkingPlaceholder` | `false` | replaces | **Beta.** The animated trace shown before the first word of the reply exists: `Thinking…`, then the call the turn is waiting on, with its own clock (`▸ bash — npm test (4s)`). It rides `<tg-thinking>` — the newest element Telegram renders, and some clients handle it badly, which is why it is off by default and split from `draftPreviews`. Turning it off disables the whole feature, not just its sends. It needs `draftPreviews` on (it lives in the draft). |
 | `assistant.toolActivity` | `true` | replaces | Mirror each agent tool call to the chat as a collapsible block — turns the bot DM into a live log of the model's work in Personal mode. The card completes itself when the call returns: ✅ or ❌ (⏹️ if `/esc` caught it mid-flight), with the output folded in. |
 | `assistant.toolOutputMaxBytes` | `26214400` (25 MiB) | replaces | Size cap **in bytes** for attaching the full output of a tool call. `0` never attaches. See below. |
 | `assistant.toolOutputDir` | *(extension dir)* | replaces | Where those files are written before being sent. POSIX and Windows paths both accepted. |

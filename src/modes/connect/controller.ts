@@ -86,11 +86,25 @@ export interface ConnectControllerDeps {
 		caption?: string;
 		/** Thread the upload under an existing message (the tool card it completes). */
 		replyToMessageId?: number;
+		/** Deliver it under this name instead of the one on disk. */
+		filename?: string;
 	}) => Promise<void>;
 	/** Handle a `/clear` (or `/new`, `/reset`) request to wipe the agent's history. */
 	onClear?: () => Promise<void>;
 	/** Handle a `/esc` (or `/cancel`) request to interrupt the running turn. */
 	onAbort?: () => Promise<void>;
+	/**
+	 * Handle a `/compact` request: summarise the history the model carries, so a long
+	 * session keeps going instead of hitting the context window. The outcome is
+	 * announced by the compaction cards, not by this call.
+	 */
+	onCompact?: () => Promise<void>;
+	/**
+	 * Build the `/status` card — what the session is doing right now (model, context,
+	 * directory, queue). Synchronous on purpose: it reports state, it does not go and
+	 * fetch any.
+	 */
+	onStatus?: () => string;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
@@ -133,6 +147,8 @@ export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 // agent. Everything else (including /start) falls through as an ordinary prompt.
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
+const COMPACT_COMMANDS = new Set(["compact"]);
+const STATUS_COMMANDS = new Set(["status"]);
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
 
@@ -147,11 +163,17 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/stop", "stop the bot entirely"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
+	bullet("/compact", "summarise the history to free up context"),
+	bullet("/status", "model, context, working directory, queue"),
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
+	// In code, deliberately: with entity detection on, a bare `/telegram-personal` would
+	// render as a button — and tapping it would send the text to the BOT, which does not
+	// know that command and would hand it to the model as a prompt. A command that is not
+	// yours to press should not look pressable.
 	note(
-		"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
+		"Terminal commands (`/telegram-personal`, `-manager`, `-mixed`) run in Pi, not here.",
 	),
 	`⚠️ Terms you must follow: ${link("bot developers", COMPLIANCE_LINKS.botTerms)} · ${link("privacy", COMPLIANCE_LINKS.privacy)} · ${link("secretary/business", COMPLIANCE_LINKS.business)}`,
 	`This bot runs ${link("pi-telegram-manager", REPO_URL)} · ${link("mirror", MIRROR_URL)}`,
@@ -409,6 +431,14 @@ export class ConnectController {
 			await this.deps.onAbort();
 			return true;
 		}
+		if (COMPACT_COMMANDS.has(command.name) && this.deps.onCompact) {
+			await this.deps.onCompact();
+			return true;
+		}
+		if (STATUS_COMMANDS.has(command.name) && this.deps.onStatus) {
+			await this.sendToChat(this.deps.onStatus());
+			return true;
+		}
 		if (HELP_COMMANDS.has(command.name)) {
 			await this.sendToChat(HELP_TEXT);
 			return true;
@@ -492,7 +522,15 @@ export class ConnectController {
 		];
 	}
 
-	/** Release the next queued turn to the agent, but only while it is idle. */
+	/**
+	 * Release the next queued turn to the agent, but only while it is idle.
+	 *
+	 * The turn is dropped from the queue only once the agent has actually TAKEN it. A
+	 * hand-off can fail — the session may refuse to go idle, and then it is not a turn
+	 * that was delivered, it is a turn that was lost. It stays queued instead, and the
+	 * next pump tries again; that is the difference between a bot that catches up when
+	 * the session recovers and a bot that quietly ate your message.
+	 */
 	async dispatch(): Promise<void> {
 		if (!this.deps.isIdle()) return;
 		const next = this.queue.peek();
@@ -500,10 +538,16 @@ export class ConnectController {
 		// An album still collecting its photos is not ready: releasing it now would
 		// send the model the first picture and orphan the rest.
 		if (this.isOpenAlbum(next.id)) return;
-		const item = this.queue.dequeue();
-		if (!item) return;
-		this.pendingMirror = item.sourceMessageIds;
-		await this.deps.sendFollowUp(this.toContent(item));
+		this.pendingMirror = next.sourceMessageIds;
+		try {
+			await this.deps.sendFollowUp(this.toContent(next));
+		} catch {
+			// Not delivered. Take the mirror back too — the prompt is copied into the topic
+			// when the turn really starts, not when we hoped it would.
+			this.pendingMirror = null;
+			return;
+		}
+		this.queue.dequeue();
 	}
 
 	private isOpenAlbum(itemId: string): boolean {
@@ -556,9 +600,19 @@ export class ConnectController {
 		await this.deps.outbound.chatAction(this.target, "typing").catch(() => {});
 	}
 
-	/** Send arbitrary markdown to the bound chat (used by the outbound tools). */
+	/**
+	 * Send one of the BRIDGE's own messages to the bound chat — help, status, a card.
+	 *
+	 * These go out with entity detection on, so a `/command` in them is tappable rather
+	 * than being text you have to retype. That is the whole difference between the help
+	 * card and the pinned mode message, which was tappable all along simply because it
+	 * is sent as plain text. Model prose is not sent through here (see
+	 * {@link deliverAssistant}) and keeps its own rendering.
+	 */
 	async sendToChat(markdown: string): Promise<void> {
-		await this.deps.outbound.sendMarkdown(this.target, markdown);
+		await this.deps.outbound.sendMarkdown(this.target, markdown, {
+			detectEntities: true,
+		});
 	}
 
 	/**
@@ -704,10 +758,11 @@ export class ConnectController {
 		path: string,
 		caption: string,
 		replyToMessageId?: number,
+		filename?: string,
 	): Promise<void> {
 		if (!this.deps.uploadFile) return;
 		await this.deps
-			.uploadFile({ path, caption, replyToMessageId })
+			.uploadFile({ path, caption, replyToMessageId, filename })
 			.catch(() => {});
 	}
 

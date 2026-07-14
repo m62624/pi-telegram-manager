@@ -58,12 +58,12 @@ Binds your **current Pi terminal session** to your **private chat with the bot**
 - Send text, files and images; the bot saves non-image files to disk and hands the model real paths ([`files.downloadDir`](SETTINGS.md#files) — the directory Pi runs in unless you say otherwise), so it can open them with its normal tools. **Replying** to a file works too, including one the bot sent you: the model gets that file, not just your words about it.
 - You see the model **work**, not just its conclusion: each message it writes is delivered as it finishes, and each tool call is mirrored as a collapsible block ([`assistant.toolActivity`](SETTINGS.md#assistant-personal-mode)) that **completes itself** when the call returns — ✅ or ❌, with the output folded in (⏹️ if `/esc` caught it mid-flight).
 - When a card has to cut a long output, the **full output is attached as a file** — whether the tool truncated it (and saved its own log) or the card did. Capped by bytes, and the cap is yours ([`assistant.toolOutputMaxBytes`](SETTINGS.md#the-full-output-of-a-tool-call), 25 MiB by default, `0` to never attach; [`assistant.toolOutputDir`](SETTINGS.md#the-full-output-of-a-tool-call) says where they are written). Cap it low on metered data.
-- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)). The wait before the first word is not blank either: an animated placeholder shows the call the turn is waiting on right now (`Thinking…`, then `▸ bash — npm test (4s)`, with its own clock) and dissolves into the reply as it starts streaming.
+- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)). The wait before the first word can be filled too: an animated placeholder shows the call the turn is waiting on (`Thinking…`, then `▸ bash — npm test (4s)`, with its own clock) and dissolves into the reply as it starts streaming — [`assistant.thinkingPlaceholder`](SETTINGS.md#assistant-personal-mode), **beta and off by default**, because it rides the newest thing Telegram renders and some clients handle it badly.
 - Messages you send while it is busy are **queued**, not dropped; editing a queued message rewrites it in place.
 - **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)) — a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
 - The bot talks only to **you** (`allowedUserId`) and touches no other chats.
 
-Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc` (cancel the running turn), `/help`.
+Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/compact` (summarise the history to free up context), `/esc` (cancel the running turn), `/help`.
 
 ### 🕵️ Secretary manager — answer other people on your behalf
 
@@ -275,7 +275,11 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/stop` (stop the bot — owner), `/help`; in Personal mode also `/clear`, `/esc`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`.
+
+`/status` answers the questions you cannot check from a phone: which model is answering and through which provider, how full the context is (`~77k of 131.1k tokens (59% full)` — the number that tells you a compaction is coming), the directory the agent is working in, whether it is mid-turn, what is still queued, and — in mixed — who currently holds the session. Every command above is refused to anyone but the owner, and none of them appear in the menu strangers see.
+
+`/compact` summarises the history the model carries, so a long session keeps going instead of running into the context window. The chat says what it is doing and how it went — how full the context was, what the history weighed, and a red card if the compaction failed (Pi has no event for that, so without it a failure would simply go quiet). In manager mode there is nothing to compact: the context is built fresh for each conversation.
 
 ---
 
@@ -284,6 +288,25 @@ Then open Pi and start a mode.
 Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json`. Every key is optional and layered over the defaults; unknown keys warn, wrong-typed values fail loudly. The timings default for a **local model** answering over minutes, not milliseconds.
 
 **Every key, with its default: [SETTINGS.md](SETTINGS.md).**
+
+---
+
+## Known issue: Telegram on Android hangs the first time a chat is opened
+
+Reported on Android: opening the bot chat for the first time freezes the app, and it may be killed before it recovers. **After the first message it renders, it behaves normally** and stays that way. Desktop is unaffected.
+
+**The cause is not established.** This bot sends things very few bots do — Bot API 10.1 rich messages, streaming drafts, an animated `<tg-thinking>` block, forum topics — and any of them could be what a given client chokes on. Rather than guess and rip out a feature that works, each suspect has its own switch, so you can find out on your own installation:
+
+| Try | What it turns off |
+| --- | --- |
+| `"assistant": { "thinkingPlaceholder": false }` | The animated `Thinking… / ▸ bash — npm test (4s)` trace. **Already the default** — it is beta for exactly this reason. |
+| `"assistant": { "draftPreviews": false }` | Streaming drafts entirely — no live preview of the reply as it is written. |
+| `"topics": { "enabled": false }` | Forum topics in the bot DM; everything goes to one flat chat instead. |
+| `"assistant": { "toolActivity": false }` | The tool cards, and with them the large highlighted code blocks in them. |
+
+Settings are read when a mode starts, so restart the mode after changing one (`/switch`, or the terminal command). Change **one at a time** — otherwise you learn nothing.
+
+**If you find the one that fixes it, please [open an issue](https://github.com/m62624/pi-telegram-manager/issues) and say which.** That is the difference between us guessing and us knowing, and it is the only way this gets fixed properly rather than by deleting a feature that was never at fault.
 
 ---
 

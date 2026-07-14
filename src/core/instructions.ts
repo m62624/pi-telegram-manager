@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
 import type { BridgeMode } from "../constants";
 import type { TelegramSettings } from "../settings/schema";
 import type { TelegramFs } from "../storage/fs";

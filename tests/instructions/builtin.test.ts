@@ -77,13 +77,25 @@ describe("loadManagerInstructions", () => {
 		expect(result.base).toContain("wake-word");
 	});
 
-	it("survives missing bundled files without throwing", async () => {
-		const result = await loadManagerInstructions({
-			fs: stubFs({}),
-			subMode: "observer",
-		});
-		expect(result.base).toBe("");
-		expect(result.firstMessage).toBe("");
+	it("REFUSES to run without its bundled rules", async () => {
+		// It used to return "" and let the mode start — a manager with an empty rulebook,
+		// no disclosure obligation and no stance, answering real people on the owner's
+		// behalf. A missing file can only mean a broken install, and a broken install must
+		// stop the mode, not quietly disarm it.
+		await expect(
+			loadManagerInstructions({ fs: stubFs({}), subMode: "observer" }),
+		).rejects.toThrow(
+			/missing a bundled instruction file \(manager-common\.md\)/,
+		);
+	});
+
+	it("says the install is damaged when a bundled file is empty", async () => {
+		await expect(
+			loadManagerInstructions({
+				fs: stubFs({ "manager-common.md": "   " }),
+				subMode: "observer",
+			}),
+		).rejects.toThrow(/is empty/);
 	});
 });
 

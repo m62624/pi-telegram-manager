@@ -279,4 +279,28 @@ describe("assistant.toolOutputMaxBytes", () => {
 		expect(s.assistant.toolActivity).toBe(true);
 		expect(s.assistant.rendering).toBe("rich");
 	});
+
+	it("keeps the thinking placeholder OFF unless it is asked for", () => {
+		// Beta: it rides `<tg-thinking>`, the newest element Telegram renders, and a
+		// client that chokes on it is not something this package can fix. Nobody opts
+		// into that by simply installing.
+		expect(normalizeSettings({}).assistant.thinkingPlaceholder).toBe(false);
+		expect(
+			normalizeSettings({ assistant: { draftPreviews: true } }).assistant
+				.thinkingPlaceholder,
+		).toBe(false);
+	});
+
+	it("turns the thinking placeholder on when the owner asks, and only then", () => {
+		expect(
+			normalizeSettings({ assistant: { thinkingPlaceholder: true } }).assistant
+				.thinkingPlaceholder,
+		).toBe(true);
+		// It is its own switch: the reply preview is untouched either way.
+		const s = normalizeSettings({
+			assistant: { thinkingPlaceholder: true, draftPreviews: false },
+		});
+		expect(s.assistant.thinkingPlaceholder).toBe(true);
+		expect(s.assistant.draftPreviews).toBe(false);
+	});
 });

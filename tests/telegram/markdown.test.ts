@@ -25,6 +25,22 @@ describe("normalizeRichMarkdown", () => {
 		expect(normalizeRichMarkdown(input)).toBe(input);
 	});
 
+	it("corrects a fence language Telegram cannot highlight", () => {
+		// The model writes what it is used to; Telegram knows `rust`, never `rs`.
+		expect(normalizeRichMarkdown("```rs\nfn main() {}\n```")).toBe(
+			"```rust\nfn main() {}\n```",
+		);
+		// A tag it does know survives untouched, code and all.
+		const good = "```python\nx = 1\n```";
+		expect(normalizeRichMarkdown(good)).toBe(good);
+	});
+
+	it("does not rewrite math inside a fence it just retagged", () => {
+		// The retag must not disturb the segmentation the math rewriter relies on.
+		const input = "```rs\n\\[ not math \\]\n```";
+		expect(normalizeRichMarkdown(input)).toBe("```rust\n\\[ not math \\]\n```");
+	});
+
 	it("leaves LaTeX delimiters inside inline code untouched", () => {
 		const input = "text `\\( keep \\)` more";
 		expect(normalizeRichMarkdown(input)).toBe(input);

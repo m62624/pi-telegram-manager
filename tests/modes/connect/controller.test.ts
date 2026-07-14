@@ -375,6 +375,117 @@ describe("ConnectController", () => {
 		expect(sendFollowUp).not.toHaveBeenCalled();
 	});
 
+	it("keeps a turn queued when the agent refuses to take it", async () => {
+		// The live wedge: the Pi session stopped going idle, so the hand-off threw. The
+		// turn was already dequeued by then — the owner's message was simply gone, and
+		// the bot went quiet with no trace of it anywhere.
+		const sendFollowUp = vi.fn(async () => {
+			throw new Error("the Pi session did not go idle");
+		});
+		const { controller } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("do not lose me"));
+
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+		expect(controller.pendingCount()).toBe(1);
+	});
+
+	it("delivers the kept turn on the next pump, once the session recovers", async () => {
+		let broken = true;
+		const sendFollowUp = vi.fn(async () => {
+			if (broken) throw new Error("the Pi session did not go idle");
+		});
+		const { controller } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("hello"));
+		expect(controller.pendingCount()).toBe(1);
+
+		broken = false;
+		await controller.dispatch(); // the queue pump's beat
+		expect(sendFollowUp).toHaveBeenCalledTimes(2);
+		expect(sendFollowUp.mock.calls[1][0]).toContain("hello");
+		expect(controller.pendingCount()).toBe(0);
+	});
+
+	it("keeps the queue in order when a hand-off fails", async () => {
+		let broken = true;
+		const sendFollowUp = vi.fn(async () => {
+			if (broken) throw new Error("the Pi session did not go idle");
+		});
+		const { controller, setIdle } = setup({ sendFollowUp });
+
+		await controller.onEvent(messageEvent("first", 1));
+		setIdle(false);
+		await controller.onEvent(messageEvent("second", 2));
+		setIdle(true);
+		broken = false;
+
+		await controller.dispatch();
+		// The message that failed is still the FIRST one out — a retry must not reorder
+		// the conversation.
+		expect(sendFollowUp.mock.calls.at(-1)?.[0]).toContain("first");
+		expect(controller.pendingCount()).toBe(1);
+	});
+
+	it("makes a /command in the bridge's own messages tappable", async () => {
+		// Telegram only turns "/switch" into a button when it is allowed to detect
+		// entities. Every message we sent carried skip_entity_detection, so the help card
+		// listed commands you had to retype by hand — while the pinned mode message,
+		// which goes out as plain text, was tappable all along.
+		const { controller, api } = setup();
+		await controller.onEvent(messageEvent("/help"));
+		const help = api.sent.at(-1)?.rich_message;
+		expect(help?.markdown).toContain("/switch");
+		expect(help?.skip_entity_detection).toBeUndefined();
+	});
+
+	it("still renders the model's own prose as it always did", async () => {
+		// The model's text is not ours to reinterpret: a stray "@name" or "/thing" in an
+		// answer is prose, not a command.
+		const { controller, api } = setup();
+		await controller.deliverAssistant("run /clear to start over");
+		expect(api.sent.at(-1)?.rich_message).toEqual({
+			markdown: "run /clear to start over",
+			skip_entity_detection: true,
+		});
+	});
+
+	it("answers /status with the report, without prompting the agent", async () => {
+		const onStatus = vi.fn(() => "📊 **Status**\n\n- Mode — Personal");
+		const { controller, api, sendFollowUp } = setup({ onStatus });
+		expect(await controller.onEvent(messageEvent("/status"))).toBe(true);
+		expect(onStatus).toHaveBeenCalledTimes(1);
+		expect(sendFollowUp).not.toHaveBeenCalled();
+		expect(api.sent.at(-1)?.rich_message.markdown).toContain("Status");
+	});
+
+	it("never gives the status to anyone but the owner", async () => {
+		// The report names the model, the working directory and the queue. A stranger
+		// asking for it is not asking a question — they are asking for the machine.
+		const onStatus = vi.fn(() => "📊 Status");
+		const { controller } = setup({ onStatus });
+		expect(await controller.onEvent(messageEvent("/status", 1, 999))).toBe(
+			false,
+		);
+		expect(onStatus).not.toHaveBeenCalled();
+	});
+
+	it("intercepts /compact as a control command instead of a prompt", async () => {
+		const onCompact = vi.fn(async () => {});
+		const { controller, sendFollowUp } = setup({ onCompact });
+		expect(await controller.onEvent(messageEvent("/compact"))).toBe(true);
+		expect(onCompact).toHaveBeenCalledTimes(1);
+		// "/compact" reaching the model as a prompt is the failure this guards: it would
+		// answer ABOUT compaction instead of the context being compacted.
+		expect(sendFollowUp).not.toHaveBeenCalled();
+	});
+
+	it("treats /compact as an ordinary prompt when no handler is wired", async () => {
+		const { controller, sendFollowUp } = setup();
+		expect(await controller.onEvent(messageEvent("/compact"))).toBe(true);
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+	});
+
 	it("answers /help with the command list, without prompting the agent", async () => {
 		const { controller, api, sendFollowUp } = setup();
 		const handled = await controller.onEvent(messageEvent("/help"));

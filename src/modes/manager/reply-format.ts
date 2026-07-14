@@ -17,6 +17,7 @@ import {
 	splitHtmlForTelegram,
 	telegramFormat,
 } from "telegram-markdown-formatter";
+import { normalizeCodeFences } from "../../telegram/code-language";
 import { escapeHtml } from "../../telegram/rich-builder";
 import { BOT_MARKER } from "./identity";
 
@@ -41,7 +42,10 @@ export function formatManagerReplyHtmlChunks(
 				ruleLine ? `\n${escapeHtml(ruleLine)}` : ""
 			}</blockquote>`
 		: "";
-	const html = telegramFormat(text.trim());
+	// Fix the language tag BEFORE the Markdown becomes HTML: the formatter copies the
+	// fence's word into `class="language-…"` verbatim, and Telegram highlights nothing
+	// it does not recognise — so a model writing ```rs got no colour at all.
+	const html = telegramFormat(normalizeCodeFences(text.trim()));
 	const pieces = splitHtmlForTelegram(html);
 	const chunks = pieces.length > 0 ? pieces : [html];
 	return chunks.map((piece, index) => {

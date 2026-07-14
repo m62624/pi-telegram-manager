@@ -4,6 +4,7 @@ import {
 	ABOUT_TOPICS,
 	type AboutToolDeps,
 	BUDGET_SPENT,
+	COMMANDS_REFUSAL,
 	createAboutTools,
 	SETTINGS_REFUSAL,
 } from "../../src/core/about";
@@ -20,6 +21,10 @@ async function setup(overrides: Partial<AboutToolDeps> = {}) {
 	await fs.writeText(`${DOCS}/modes.md`, "# The three modes");
 	await fs.writeText(`${DOCS}/settings.md`, "# How this bot is configured");
 	await fs.writeText(`${DOCS}/privacy.md`, "# What the bot sees");
+	await fs.writeText(
+		`${DOCS}/commands.md`,
+		"# The commands the owner can use in the chat\n/compact",
+	);
 	await fs.writeText("/etc/secrets", "TOKEN=123");
 
 	const deps: AboutToolDeps = {
@@ -103,6 +108,26 @@ describe("about tool", () => {
 		for (const topic of ["project", "modes", "privacy", "settings"]) {
 			expect(isError(await call({ topic }))).toBe(false);
 		}
+	});
+
+	it("tells the owner how to drive the bot", async () => {
+		const { call } = await setup({ isOwnerTurn: () => true });
+		const result = await call({ topic: "commands" });
+		expect(isError(result)).toBe(false);
+		expect(textOf(result)).toContain("/compact");
+	});
+
+	it("refuses the commands to a stranger, and does not leak one in the refusal", async () => {
+		// Every one of these is refused to them anyway, so reciting them teaches nothing
+		// and only invites someone to try /stop and wonder why they were ignored.
+		const { call } = await setup({ isOwnerTurn: () => false });
+		const result = await call({ topic: "commands" });
+		expect(isError(result)).toBe(true);
+		expect(textOf(result)).toBe(COMMANDS_REFUSAL);
+		expect(textOf(result)).not.toContain("/compact");
+		expect(textOf(result)).not.toContain("/stop\n");
+		// It still points at what a stranger MAY be told.
+		expect(textOf(result)).toContain("'project'");
 	});
 
 	it("says so plainly when a page is missing from the installation", async () => {

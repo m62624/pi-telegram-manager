@@ -30,8 +30,10 @@ say "done", "changed", or "I've turned that off".
 ## Personal mode
 
 - `assistant.rendering` — `"rich"` (Telegram's native rich Markdown) or `"html"`.
-- `assistant.draftPreviews` — stream the reply as it is written, and show what the
-  agent is doing while it works.
+- `assistant.draftPreviews` — stream the reply as it is written, as an ephemeral draft.
+- `assistant.thinkingPlaceholder` — the animated "Thinking… / ▸ bash — npm test (4s)"
+  trace shown while the agent works. **Beta, off by default**: it uses the newest thing
+  Telegram renders, and some clients handle it badly. Off, none of it runs.
 - `assistant.toolActivity` — post each tool call as a card, completed with ✅ or ❌
   and its output when it returns.
 - `assistant.toolOutputMaxBytes` — byte cap for attaching the full output of a tool

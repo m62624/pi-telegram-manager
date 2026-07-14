@@ -12,6 +12,7 @@
  * pattern without changing callers.
  */
 import type { InputRichMessage } from "@grammyjs/types";
+import { languageForPath } from "./code-language";
 import {
 	bold,
 	buildRichHtmlMessage,
@@ -79,6 +80,30 @@ const STATUS_MARK: Record<ToolStatus, string> = {
 
 /** Tools whose primary string argument is shell source, shown as a `bash` block. */
 const SHELL_TOOLS = new Set(["bash", "shell", "sh", "run"]);
+
+/**
+ * Tools whose OUTPUT is the file itself. Only these get the file's language applied to
+ * the result: `write` answers "wrote 42 lines", and highlighting that as Rust would be
+ * a lie told in colour.
+ */
+const READ_TOOLS = new Set(["read", "view", "cat", "open"]);
+
+/** Argument names that carry the path of the file a tool is working on. */
+const PATH_KEYS = ["file_path", "path", "filename", "file"] as const;
+/** Argument names that carry the code going INTO that file. */
+const NEW_CODE_KEYS = ["content", "new_string", "new_str"] as const;
+/** Argument names that carry the code being replaced. */
+const OLD_CODE_KEYS = ["old_string", "old_str"] as const;
+
+function stringArg(args: unknown, keys: readonly string[]): string | undefined {
+	if (!args || typeof args !== "object") return undefined;
+	const record = args as Record<string, unknown>;
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "string" && value.length > 0) return value;
+	}
+	return undefined;
+}
 
 /**
  * The SDK hands a tool result as `{ content: [{ type: "text", text }, …], details,
@@ -175,15 +200,33 @@ export function defaultDescribeArgs(
 	const record = args as Record<string, unknown>;
 	const pick = (key: string): string | undefined =>
 		typeof record[key] === "string" ? (record[key] as string) : undefined;
+	// A PATH is shortened; nothing else is. We know what a path means, so we know which
+	// end of it carries the information — but a shell command, a regex or a URL is not
+	// ours to cut, and guessing where to cut it would just be a lie in the summary line.
+	const path = pick("file_path") ?? pick("path");
+	if (path !== undefined) return shortenPath(path);
 	return (
 		pick("command") ??
-		pick("file_path") ??
-		pick("path") ??
 		pick("pattern") ??
 		pick("query") ??
 		pick("url") ??
 		undefined
 	);
+}
+
+/**
+ * `…/src/index.ts` — the end of a path, which is the part that says which file this is.
+ *
+ * The summary line has one line to tell you what the call did, and a full path spends it
+ * on the bit that is identical in every card (`/home/you/Projects/thing/…`) — so the
+ * name of the file, the only thing that differs, is what gets truncated away. The whole
+ * path is still inside the card, where there is room for it.
+ */
+export function shortenPath(path: string): string {
+	const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
+	const segments = path.split(/[\\/]/).filter((segment) => segment.length > 0);
+	if (segments.length <= 2) return path;
+	return `…${separator}${segments.slice(-2).join(separator)}`;
 }
 
 /** The single string argument of a one-key object (e.g. `{ command }`), else undefined. */
@@ -216,8 +259,47 @@ function renderToolBody(
 		const language = SHELL_TOOLS.has(toolName) ? "bash" : undefined;
 		return preformatted(formatToolArgs(single.value, maxChars), language);
 	}
+	const code = renderFileEdit(args, maxChars);
+	if (code) return code;
 	const json = formatToolArgs(args, maxChars);
 	return json ? preformatted(json, "json") : RichHtml.text("(no parameters)");
+}
+
+/**
+ * A call that writes code to a file — `write`, `edit` — rendered as the code itself,
+ * highlighted in the file's own language.
+ *
+ * As pretty JSON (the fallback) this was the worst thing on the card: the whole file
+ * on one line, every newline spelled `\n`, quotes escaped, unreadable and unhighlighted.
+ * The path already tells us the language (see `languageForPath`), so an edit can look
+ * like the code it is. An `edit` shows both sides, labelled, because a replacement you
+ * cannot see the "before" of is not a diff — it is an assertion.
+ */
+function renderFileEdit(args: unknown, maxChars: number): RichHtml | null {
+	const path = stringArg(args, PATH_KEYS);
+	const after = stringArg(args, NEW_CODE_KEYS);
+	if (!path || after === undefined) return null;
+	const language = languageForPath(path);
+	const before = stringArg(args, OLD_CODE_KEYS);
+	// Two blocks share the budget, so a huge edit cannot blow the message limit.
+	const budget = before === undefined ? maxChars : Math.floor(maxChars / 2);
+	const blocks: RichHtml[] = [];
+	if (before !== undefined) {
+		blocks.push(
+			bold("Before"),
+			preformatted(truncate(before, budget), language),
+		);
+		blocks.push(bold("After"));
+	}
+	blocks.push(preformatted(truncate(after, budget), language));
+	return RichHtml.join(blocks);
+}
+
+/** Head-truncate a code payload — an edit reads from the top, unlike a log. */
+function truncate(text: string, maxChars: number): string {
+	return text.length > maxChars
+		? `${text.slice(0, maxChars)}\n… (truncated)`
+		: text;
 }
 
 /** Build the collapsible Rich HTML for a tool call: summary line + folded params. */
@@ -272,9 +354,19 @@ function renderToolResult(
 		typeof activity.result === "object" &&
 		activity.result !== null &&
 		!Array.isArray((activity.result as { content?: unknown }).content);
+	// A file that was READ comes back as itself, so it is shown as itself — highlighted
+	// in its own language, which the path already told us. An error is not the file (it
+	// is a message about it) and stays plain.
+	const fileLanguage =
+		activity.status !== "error" && READ_TOOLS.has(activity.toolName)
+			? languageForPath(stringArg(activity.args, PATH_KEYS))
+			: undefined;
 	const blocks: RichHtml[] = [
 		bold(activity.status === "error" ? "Error" : "Result"),
-		preformatted(truncateTail(text, maxChars), structured ? "json" : undefined),
+		preformatted(
+			truncateTail(text, maxChars),
+			fileLanguage ?? (structured ? "json" : undefined),
+		),
 	];
 	// The agent's own full-output file, when the tool saved one — a truncated log is
 	// only frustrating if it does not say where the rest is. The end event carries no

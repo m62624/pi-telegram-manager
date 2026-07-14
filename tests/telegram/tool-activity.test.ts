@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	defaultDescribeArgs,
 	formatToolArgs,
+	shortenPath,
 	toolActivityHtml,
 	toolActivityLabel,
 	toolActivityMessage,
@@ -37,6 +38,72 @@ describe("formatToolArgs", () => {
 	});
 });
 
+describe("shortenPath", () => {
+	it("keeps the end of a POSIX path — the part that says which file it is", () => {
+		expect(
+			shortenPath(
+				"/home/m62624/Projects/main/pi-telegram-manager/src/index.ts",
+			),
+		).toBe("…/src/index.ts");
+		expect(shortenPath("./src/telegram/tool-activity.ts")).toBe(
+			"…/telegram/tool-activity.ts",
+		);
+		expect(shortenPath("~/Projects/app/src/main.rs")).toBe("…/src/main.rs");
+	});
+
+	it("keeps a Windows path a Windows path", () => {
+		// The separator it comes back with is the one it went in with — a path shown with
+		// the wrong slashes reads as a path from another machine.
+		expect(shortenPath("C:\\Users\\m\\proj\\src\\main.rs")).toBe(
+			"…\\src\\main.rs",
+		);
+		expect(shortenPath("D:\\a\\b\\c")).toBe("…\\b\\c");
+		// UNC.
+		expect(shortenPath("\\\\server\\share\\dir\\file.txt")).toBe(
+			"…\\dir\\file.txt",
+		);
+	});
+
+	it("does not invent a separator the path never used", () => {
+		// A Windows path written with forward slashes (Node accepts them) stays that way.
+		expect(shortenPath("C:/Users/m/proj/src/main.rs")).toBe("…/src/main.rs");
+		// Mixed separators: the "/" it already contains is the one it keeps.
+		expect(shortenPath("C:\\Users\\m/proj/src/main.rs")).toBe("…/src/main.rs");
+	});
+
+	it("leaves a path that is already short exactly as it is", () => {
+		expect(shortenPath("src/index.ts")).toBe("src/index.ts");
+		expect(shortenPath("index.ts")).toBe("index.ts");
+		expect(shortenPath("/etc/hosts")).toBe("/etc/hosts");
+		expect(shortenPath("C:\\file.txt")).toBe("C:\\file.txt");
+		expect(shortenPath("")).toBe("");
+	});
+
+	it("survives the shapes a path takes in the wild", () => {
+		// A trailing separator: the last real segment is still the last real segment.
+		expect(shortenPath("/home/m/Projects/app/src/")).toBe("…/app/src");
+		// Repeated separators.
+		expect(shortenPath("/home//m///Projects/app/src/index.ts")).toBe(
+			"…/src/index.ts",
+		);
+		// A directory, not a file.
+		expect(shortenPath("/home/m/Projects/app/src")).toBe("…/app/src");
+		// Spaces and dots survive untouched — they are part of the name.
+		expect(shortenPath("/home/m/My Projects/app v2/main .ts")).toBe(
+			"…/app v2/main .ts",
+		);
+		// Non-ASCII names are names.
+		expect(shortenPath("/home/m/Проекты/приложение/индекс.ts")).toBe(
+			"…/приложение/индекс.ts",
+		);
+	});
+
+	it("is idempotent — shortening a shortened path changes nothing", () => {
+		const once = shortenPath("/home/m/Projects/app/src/index.ts");
+		expect(shortenPath(once)).toBe(once);
+	});
+});
+
 describe("defaultDescribeArgs", () => {
 	it("picks the salient arg for well-known tools", () => {
 		expect(
@@ -48,6 +115,40 @@ describe("defaultDescribeArgs", () => {
 		expect(
 			defaultDescribeArgs({ toolName: "grep", args: { pattern: "TODO" } }),
 		).toBe("TODO");
+	});
+
+	it("shortens a path, and shortens NOTHING else", () => {
+		// We know what a path means, so we know which end of it carries the file. A shell
+		// command, a regex or a URL is not ours to cut — guessing where would be a lie.
+		expect(
+			defaultDescribeArgs({
+				toolName: "read",
+				args: { file_path: "/home/m/Projects/app/src/index.ts" },
+			}),
+		).toBe("…/src/index.ts");
+		expect(
+			defaultDescribeArgs({
+				toolName: "bash",
+				args: { command: "cat /home/m/Projects/app/src/index.ts" },
+			}),
+		).toBe("cat /home/m/Projects/app/src/index.ts");
+		expect(
+			defaultDescribeArgs({
+				toolName: "fetch",
+				args: { url: "https://example.com/a/b/c/d" },
+			}),
+		).toBe("https://example.com/a/b/c/d");
+	});
+
+	it("still names the whole path inside the card", () => {
+		// The summary is shortened; the parameters are not. The full path stays one tap
+		// away, which is the point of folding it in the first place.
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "/home/m/Projects/app/src/index.ts" },
+		}).html;
+		expect(html).toContain("…/src/index.ts"); // the summary
+		expect(html).toContain("<pre>/home/m/Projects/app/src/index.ts</pre>"); // the body
 	});
 
 	it("returns undefined when nothing obvious fits", () => {
@@ -267,6 +368,128 @@ describe("tool card status and result", () => {
 		}).html;
 		expect(html).toContain("✅");
 		expect(html).not.toContain("<b>Result</b>");
+	});
+});
+
+describe("code highlighting on a tool card", () => {
+	it("highlights what a READ returned, in the language of the file it read", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "src/main.rs" },
+			status: "ok",
+			result: 'fn main() { println!("hi"); }',
+		}).html;
+		expect(html).toContain('<pre><code class="language-rust">');
+		expect(html).toContain("fn main()");
+	});
+
+	it("writes the file's code as code, not as a JSON dump of the arguments", () => {
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "src/index.ts", content: "const a = 1;\nexport {};" },
+		}).html;
+		expect(html).toContain('<pre><code class="language-typescript">');
+		expect(html).toContain("const a = 1;\nexport {};");
+		// The old rendering: the whole file on one line, every newline spelled "\n".
+		expect(html).not.toContain("language-json");
+		expect(html).not.toContain("\\n");
+		expect(html).not.toContain('"content"');
+	});
+
+	it("shows both sides of an edit, each in the file's language", () => {
+		const html = toolActivityHtml({
+			toolName: "edit",
+			args: {
+				file_path: "app/main.py",
+				old_string: "x = 1",
+				new_string: "x = 2",
+			},
+		}).html;
+		expect(html).toContain("<b>Before</b>");
+		expect(html).toContain("<b>After</b>");
+		expect(html.match(/language-python/g)).toHaveLength(2);
+		expect(html).toContain("x = 1");
+		expect(html).toContain("x = 2");
+	});
+
+	it("keeps a huge edit inside the message limit", () => {
+		const html = toolActivityHtml(
+			{
+				toolName: "write",
+				args: { file_path: "big.ts", content: "x".repeat(9000) },
+			},
+			{ maxArgChars: 100 },
+		).html;
+		expect(html).toContain("… (truncated)");
+		expect(html.length).toBeLessThan(1000);
+	});
+
+	// --- and now everything that must NOT be highlighted -------------------------
+
+	it("does not colour a WRITE's answer as the file — it is a message about it", () => {
+		// "wrote 42 lines" is not Rust, and painting it as Rust is a lie told in colour.
+		const html = toolActivityHtml({
+			toolName: "write",
+			args: { file_path: "src/main.rs", content: "fn main() {}" },
+			status: "ok",
+			result: "Wrote 1 line to src/main.rs",
+		}).html;
+		const result = html.slice(html.indexOf("<b>Result</b>"));
+		expect(result).toContain("<pre>Wrote 1 line");
+		expect(result).not.toContain("language-rust");
+	});
+
+	it("does not colour an ERROR as the file", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "src/main.rs" },
+			status: "error",
+			result: "ENOENT: no such file",
+		}).html;
+		expect(html).toContain("<b>Error</b>");
+		expect(html).not.toContain("language-rust");
+	});
+
+	it("leaves a file it cannot name untagged, rather than guessing", () => {
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "notes.txt" },
+			status: "ok",
+			result: "just words",
+		}).html;
+		expect(html).toContain("<pre>just words</pre>");
+		expect(html).not.toContain("language-");
+	});
+
+	it("does not treat a bash command as a file just because it mentions one", () => {
+		const html = toolActivityHtml({
+			toolName: "bash",
+			args: { command: "cat src/main.rs" },
+			status: "ok",
+			result: "fn main() {}",
+		}).html;
+		// The command is bash; its OUTPUT is a log, not a Rust file.
+		expect(html).toContain('<pre><code class="language-bash">');
+		expect(html).not.toContain("language-rust");
+	});
+
+	it("does not turn a path-only tool into a code block", () => {
+		// `read` before it returns: a path argument alone is not code to highlight.
+		const html = toolActivityHtml({
+			toolName: "read",
+			args: { file_path: "/a/b.ts" },
+		}).html;
+		expect(html).toContain("<pre>/a/b.ts</pre>");
+		expect(html).not.toContain("language-typescript");
+	});
+
+	it("still JSON-prints a multi-arg tool that carries no file content", () => {
+		const html = toolActivityHtml({
+			toolName: "grep",
+			args: { pattern: "TODO", path: "src/main.rs" },
+		}).html;
+		expect(html).toContain('<pre><code class="language-json">');
+		expect(html).not.toContain("language-rust");
 	});
 });
 

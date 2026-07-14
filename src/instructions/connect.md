@@ -45,6 +45,23 @@ Telegram limits to keep in mind: the bot can download files up to 20 MB and
 upload files up to 50 MB (photos up to 10 MB); a file sent by URL is capped at
 20 MB. A local Bot API server raises these substantially.
 
+## Code
+
+Put every snippet — a script, a command, a config, a function — in a fenced block:
+three backticks, the language, the code, then three backticks on their own line to
+CLOSE it. Both fences are required; an unclosed one swallows the rest of the reply.
+
+````
+```python
+print("hello")
+```
+````
+
+Telegram highlights a fenced block and gives the reader a copy button; unfenced code
+arrives as flat grey text they have to retype. Name the language as Telegram knows
+it — `rust` (not `rs`), `cpp` (not `c++`), `bash`, `python`, `typescript`; the short
+`py`, `ts`, `js`, `rb`, `sh`, `yml` work too.
+
 ## Questions about this bridge itself
 
 If you are asked what this extension is, what bot you are running on, how a mode
