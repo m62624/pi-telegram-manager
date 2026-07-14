@@ -132,12 +132,29 @@ export class OutboundSender {
 		this.onRichFallback = options.onRichFallback;
 	}
 
-	/** Render `markdown` and send it (possibly as several messages). Returns the sent message ids. */
+	/**
+	 * Render `markdown` and send it (possibly as several messages). Returns the sent
+	 * message ids.
+	 *
+	 * `detectEntities` lets Telegram find the things it knows how to make tappable —
+	 * above all a `/command`. It is OFF by default because the model's prose is not ours
+	 * to reinterpret; it is ON for the bridge's OWN messages (help, status, cards), where
+	 * `/switch` written as text should be a button you press, exactly as it is in the
+	 * pinned mode message — which is only tappable because it goes out as plain text
+	 * with no such flag.
+	 */
 	async sendMarkdown(
 		target: OutboundTarget,
 		markdown: string,
+		options: { detectEntities?: boolean } = {},
 	): Promise<number[]> {
-		return this.sendMessages(target, this.renderer(markdown));
+		const messages = this.renderer(markdown);
+		return this.sendMessages(
+			target,
+			options.detectEntities
+				? messages.map(({ skip_entity_detection, ...rest }) => rest)
+				: messages,
+		);
 	}
 
 	/** Send already-built rich messages (e.g. from `RichHtmlDocument`). Returns the sent message ids. */

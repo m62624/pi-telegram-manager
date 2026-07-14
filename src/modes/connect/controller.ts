@@ -168,8 +168,12 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
+	// In code, deliberately: with entity detection on, a bare `/telegram-personal` would
+	// render as a button — and tapping it would send the text to the BOT, which does not
+	// know that command and would hand it to the model as a prompt. A command that is not
+	// yours to press should not look pressable.
 	note(
-		"Terminal commands (/telegram-personal, -manager, -mixed) run in Pi, not here.",
+		"Terminal commands (`/telegram-personal`, `-manager`, `-mixed`) run in Pi, not here.",
 	),
 	`⚠️ Terms you must follow: ${link("bot developers", COMPLIANCE_LINKS.botTerms)} · ${link("privacy", COMPLIANCE_LINKS.privacy)} · ${link("secretary/business", COMPLIANCE_LINKS.business)}`,
 	`This bot runs ${link("pi-telegram-manager", REPO_URL)} · ${link("mirror", MIRROR_URL)}`,
@@ -596,9 +600,19 @@ export class ConnectController {
 		await this.deps.outbound.chatAction(this.target, "typing").catch(() => {});
 	}
 
-	/** Send arbitrary markdown to the bound chat (used by the outbound tools). */
+	/**
+	 * Send one of the BRIDGE's own messages to the bound chat — help, status, a card.
+	 *
+	 * These go out with entity detection on, so a `/command` in them is tappable rather
+	 * than being text you have to retype. That is the whole difference between the help
+	 * card and the pinned mode message, which was tappable all along simply because it
+	 * is sent as plain text. Model prose is not sent through here (see
+	 * {@link deliverAssistant}) and keeps its own rendering.
+	 */
 	async sendToChat(markdown: string): Promise<void> {
-		await this.deps.outbound.sendMarkdown(this.target, markdown);
+		await this.deps.outbound.sendMarkdown(this.target, markdown, {
+			detectEntities: true,
+		});
 	}
 
 	/**

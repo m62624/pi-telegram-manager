@@ -427,6 +427,29 @@ describe("ConnectController", () => {
 		expect(controller.pendingCount()).toBe(1);
 	});
 
+	it("makes a /command in the bridge's own messages tappable", async () => {
+		// Telegram only turns "/switch" into a button when it is allowed to detect
+		// entities. Every message we sent carried skip_entity_detection, so the help card
+		// listed commands you had to retype by hand — while the pinned mode message,
+		// which goes out as plain text, was tappable all along.
+		const { controller, api } = setup();
+		await controller.onEvent(messageEvent("/help"));
+		const help = api.sent.at(-1)?.rich_message;
+		expect(help?.markdown).toContain("/switch");
+		expect(help?.skip_entity_detection).toBeUndefined();
+	});
+
+	it("still renders the model's own prose as it always did", async () => {
+		// The model's text is not ours to reinterpret: a stray "@name" or "/thing" in an
+		// answer is prose, not a command.
+		const { controller, api } = setup();
+		await controller.deliverAssistant("run /clear to start over");
+		expect(api.sent.at(-1)?.rich_message).toEqual({
+			markdown: "run /clear to start over",
+			skip_entity_detection: true,
+		});
+	});
+
 	it("answers /status with the report, without prompting the agent", async () => {
 		const onStatus = vi.fn(() => "📊 **Status**\n\n- Mode — Personal");
 		const { controller, api, sendFollowUp } = setup({ onStatus });
