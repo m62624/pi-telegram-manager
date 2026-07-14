@@ -230,6 +230,58 @@ describe("contact-store", () => {
 		const store = createContactStore(fs, paths);
 		await expect(store.clearAllFacts()).resolves.toBeUndefined();
 	});
+
+	it("stores a fact once, however many times it is learned", async () => {
+		// A memory pass re-runs over a chat whenever it gets new messages, and it
+		// re-confirms what it confirmed before: the same sentence, verified against the
+		// same quote, genuinely true again. Appended blindly, "true again" became "stored
+		// again" — in the owner's live store, one contact's memory was five facts, three
+		// of which were the same line.
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile(), 1000);
+		await store.appendFacts("42", [
+			{ text: "Prefers voice notes", timestamp: 1 },
+		]);
+		await store.appendFacts("42", [
+			{ text: "prefers voice notes.", timestamp: 2 }, // same sentence, different dress
+			{ text: "Works nights", timestamp: 2 },
+		]);
+		await store.addFact("42", {
+			text: "  Prefers   voice notes  ",
+			timestamp: 3,
+		});
+		const facts = await store.getFacts("42");
+		expect(facts.map((f) => f.text)).toEqual([
+			"Prefers voice notes",
+			"Works nights",
+		]);
+	});
+
+	it("does not let a repeat evict a real fact through the cap", async () => {
+		// `factsLimit` keeps the NEWEST facts. A repeat that is stored is a repeat that
+		// pushes something true off the end.
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile(), 1000);
+		await store.appendFacts(
+			"42",
+			[
+				{ text: "Works nights", timestamp: 1 },
+				{ text: "Prefers voice notes", timestamp: 1 },
+			],
+			2,
+		);
+		await store.appendFacts(
+			"42",
+			[{ text: "Prefers voice notes", timestamp: 2 }],
+			2,
+		);
+		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
+			"Works nights",
+			"Prefers voice notes",
+		]);
+	});
 });
 
 describe("ownWords", () => {
