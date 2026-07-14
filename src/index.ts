@@ -1031,6 +1031,42 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
+	 * Take the placeholder DOWN before a real message goes up.
+	 *
+	 * A draft holds the position it was created at, and every real message we send after
+	 * it — a tool card, a log file — lands BELOW it. So the placeholder was left sitting
+	 * above newer messages, still animating, reading exactly like a turn that hung: the
+	 * one thing it exists to disprove.
+	 *
+	 * The rule is that the placeholder is always the LAST thing in the chat. It is erased
+	 * before anything real is sent, and {@link raisePlaceholder} puts it back underneath
+	 * once that message has landed — a fresh draft, at the bottom, where "what is
+	 * happening right now" belongs.
+	 */
+	const dropPlaceholder = async (
+		controller: ConnectController,
+	): Promise<void> => {
+		thinkingUp = false;
+		if (thinkingTimer) {
+			clearInterval(thinkingTimer);
+			thinkingTimer = null;
+		}
+		lastThinkingHtml = "";
+		lastThinkingAt = 0;
+		// Erase whatever draft is up — the trace, or the streamed preview of the reply —
+		// and close its id, so the next draft opens fresh. A new id is what makes it
+		// appear at the BOTTOM of the chat rather than back where the old one stood.
+		// The turn's steps are NOT forgotten (that is `stopThinking`): the trace comes
+		// back saying the same thing, one message further down.
+		await controller.clearDraft().catch(() => {});
+	};
+
+	/** Put the trace back below the message that just landed, if the turn is still running. */
+	const raisePlaceholder = (): void => {
+		if (busy) showThinking();
+	};
+
+	/**
 	 * Hold the answer's place while the step before it finishes going out. The reply is
 	 * written and the model is done; what is left is the previous card's full-output
 	 * file, which is uploading and must land above the answer. The draft says so — it is
@@ -1412,12 +1448,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// Queued here, synchronously, so the card takes the place in the chat that its
 		// event had — see `chatLane`.
 		await chatLane
-			.run(() =>
-				controller.sendToolActivity(
+			.run(async () => {
+				// The card is a real message, so the placeholder comes down first and goes
+				// back up underneath it — never above it, looking stranded.
+				await dropPlaceholder(controller);
+				await controller.sendToolActivity(
 					{ toolName: event.toolName, args: event.args },
 					event.toolCallId,
-				),
-			)
+				);
+				raisePlaceholder();
+			})
 			.catch(() => {});
 	});
 
@@ -1437,10 +1477,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// nothing (least of all the final answer) can slip between a card and its log.
 		await chatLane
 			.run(async () => {
+				// Completing the card is an EDIT — it adds nothing to the chat, so the
+				// placeholder can stay where it is. A file, if one follows, is a real
+				// message; `attachToolOutputFile` takes the placeholder down for it, and
+				// only if it really sends something.
 				const cardId = await controller
 					.completeToolActivity(event.toolCallId, event.result, event.isError)
 					.catch(() => undefined);
 				await attachToolOutputFile(event.result, event.toolName, cardId);
+				raisePlaceholder();
 			})
 			.catch(() => {});
 	});
@@ -1468,6 +1513,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			toolFileBytes: path ? await fs.size(path) : undefined,
 		});
 		if (plan.attach === false) return;
+		// A file IS a real message, so the placeholder comes down for it — but only now,
+		// once we know one is actually going out. Most calls attach nothing, and taking
+		// the trace down and putting it back for them would be a flicker that says
+		// nothing.
+		await dropPlaceholder(connect);
 		const caption = `📄 full output — ${toolName}`;
 		// One name for both routes. A tool writes its log where and how it likes
 		// (`/tmp/pi-bash-1.log`), but what arrives on the owner's PHONE is judged by its
@@ -1536,7 +1586,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const text = extractText(message.content as never);
 		if (!text?.trim()) return;
 		const controller = connect;
-		const delivered = chatLane.run(() => controller.deliverAssistant(text));
+		const delivered = chatLane.run(async () => {
+			// Erase the draft — the trace, or the streamed preview of this very reply —
+			// before the real message lands, or it stays sitting ABOVE the answer it was
+			// previewing.
+			await dropPlaceholder(controller);
+			await controller.deliverAssistant(text);
+			// The model may still be working (an answer, then more tools). If it is, the
+			// trace comes back BELOW the message it just sent.
+			raisePlaceholder();
+		});
 		mirroredThisRun = true;
 		notePersonalActivity();
 		// The answer is ready, but the step before it is still being sent — a full-output
@@ -1544,8 +1603,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// is waiting on, instead of leaving a finished draft sitting there looking stuck.
 		if (chatLane.pending() > 1) showSendingOutput();
 		await delivered.catch(() => {});
-		stopThinking();
-		controller.endDraft();
 	});
 
 	// Mirror prompts typed at the Pi terminal into Telegram for a unified history.
