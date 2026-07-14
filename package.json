@@ -1,6 +1,6 @@
 {
 	"name": "pi-telegram-manager",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Telegram bridge for Pi local coding agents: terminal-continuation and business manager modes",
 	"homepage": "https://github.com/m62624/pi-telegram-manager#readme",
 	"repository": {
