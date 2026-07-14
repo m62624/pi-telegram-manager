@@ -28,6 +28,62 @@ function escapeAttr(value: string): string {
 	return escapeHtml(value).replace(/"/g, "&quot;");
 }
 
+/** The entities we emit ({@link escapeHtml}, {@link escapeAttr}), and their characters. */
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
+	amp: "&",
+	lt: "<",
+	gt: ">",
+	quot: '"',
+};
+
+/**
+ * The plain text of a Rich HTML fragment: tags dropped, entities decoded — in ONE
+ * left-to-right pass. Used for the classic fallback send, which carries no
+ * `parse_mode`, so the result is read as characters and never parsed as markup.
+ *
+ * It replaces a chain of `.replace()` calls that did the same thing in two passes —
+ * strip the tags, then decode the entities. That shape is a known trap (CodeQL's
+ * `js/incomplete-multi-character-sanitization`): the second pass hands back characters
+ * the first pass was there to remove, so anything downstream that trusted the output as
+ * "markup-free" would be wrong. Nothing here does trust it that way, but the property is
+ * worth having by construction rather than by luck: scanning once, a decoded `<` is
+ * written to the output and never looked at again, so it cannot re-open a tag.
+ *
+ * Rules, all of which match the old chain: a `<` with no closing `>` is the character
+ * itself, not a tag; a tag ends at the first `>`, even one inside an attribute; and an
+ * entity we do not know survives verbatim.
+ */
+export function richHtmlToText(html: string): string {
+	let text = "";
+	let i = 0;
+	while (i < html.length) {
+		const char = html[i];
+		if (char === "<") {
+			const close = html.indexOf(">", i + 1);
+			if (close === -1) {
+				text += char;
+				i += 1;
+				continue;
+			}
+			i = close + 1;
+			continue;
+		}
+		if (char === "&") {
+			const semicolon = html.indexOf(";", i + 1);
+			const name = semicolon === -1 ? "" : html.slice(i + 1, semicolon);
+			const decoded = NAMED_ENTITIES[name];
+			if (decoded !== undefined) {
+				text += decoded;
+				i = semicolon + 1;
+				continue;
+			}
+		}
+		text += char;
+		i += 1;
+	}
+	return text;
+}
+
 /**
  * A piece of already-built, escape-safe Rich HTML. Construct it from trusted
  * text with {@link RichHtml.text} (escaped) or {@link RichHtml.raw} (verbatim).

@@ -7,12 +7,14 @@ import {
 	escapeHtml,
 	heading,
 	inlineCode,
+	italic,
 	link,
 	list,
 	mathBlock,
 	preformatted,
 	RichHtml,
 	RichHtmlDocument,
+	richHtmlToText,
 	spoiler,
 	subscript,
 	superscript,
@@ -175,6 +177,96 @@ describe("thinking", () => {
 		expect(thinking(inlineCode("npm test")).html).toBe(
 			"<tg-thinking><code>npm test</code></tg-thinking>",
 		);
+	});
+});
+
+describe("richHtmlToText", () => {
+	/**
+	 * The chain this function replaced. It is kept here as the ORACLE: the rewrite was
+	 * made to drop a flagged pattern (CodeQL js/incomplete-multi-character-sanitization
+	 * — a strip pass followed by a decode pass that can hand back what the strip took
+	 * out), not to change what anyone reads. So the new scanner is checked against the
+	 * old chain on everything the bot can actually send.
+	 */
+	const legacy = (html: string): string =>
+		html
+			.replace(/<[^>]+>/g, "")
+			.replace(/&lt;/g, "<")
+			.replace(/&gt;/g, ">")
+			.replace(/&amp;/g, "&");
+
+	it("matches the old chain on our own markup, tags and all", () => {
+		const ours = [
+			bold("a").html,
+			RichHtml.join([bold("a"), RichHtml.text(" & "), italic("b")]).html,
+			preformatted("x < 1", "ts").html,
+			collapsibleCode("- a\n+ b", { language: "diff" }).html,
+			list([{ text: "done", checked: true }, "todo"]).html,
+			table([[{ text: "H", header: true }], [{ text: "v" }]], {
+				caption: "Cap",
+			}).html,
+			link("t", 'https://x/?a="1"&b=2').html,
+			thinking(inlineCode("npm test")).html,
+			mathBlock("a < b").html,
+			blockquote(["hi"], "me").html,
+			new RichHtmlDocument().heading("R").paragraph("Body & tail").toHtml(),
+		];
+		for (const html of ours) expect(richHtmlToText(html)).toBe(legacy(html));
+	});
+
+	it("matches the old chain on malformed and adversarial html", () => {
+		const nasty = [
+			// A tag split by another tag: neither implementation reassembles it.
+			"<scrip<script>t>alert(1)</script>",
+			// An attribute carrying a ">" — the tag ends at the FIRST ">", for both.
+			'<a href="a>b">t</a>',
+			// A "<" opened and never closed.
+			"<b>unterminated",
+			// Bare comparison operators in text (only reachable from hand-written html).
+			"2 < 3 and 4 > 3",
+			"a < b",
+			"text with > alone",
+			// Double-escaped: one level comes off, and only one.
+			"&amp;lt;",
+			// An entity we do not know stays exactly as it is.
+			"a &unknown; b",
+			"&; &",
+			"",
+			"<b></b>",
+		];
+		for (const html of nasty) expect(richHtmlToText(html)).toBe(legacy(html));
+	});
+
+	it("decodes escaped markup back into text — as the old chain did", () => {
+		// Both produce "<script>…" here, and that is CORRECT: the result is the plain
+		// TEXT of the message, sent with no parse_mode, so these are characters the
+		// author typed, not markup anyone parses. What the single pass guarantees is
+		// that this "<" is only ever written to the output — never scanned again, so it
+		// can never re-open a tag the way a second replace pass could.
+		const html = "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>";
+		expect(richHtmlToText(html)).toBe("<script>alert(1)</script>");
+		expect(richHtmlToText(html)).toBe(legacy(html));
+	});
+
+	it("drops tags and decodes the entities we emit", () => {
+		expect(richHtmlToText("<b>a</b> &amp; <i>b</i>")).toBe("a & b");
+		expect(richHtmlToText("<pre><code>x &lt; 1</code></pre>")).toBe("x < 1");
+		expect(richHtmlToText('<a href="https://x/?a=&quot;1&quot;">t</a>')).toBe(
+			"t",
+		);
+	});
+
+	it("also decodes &quot;, which the old chain left raw", () => {
+		// The one deliberate difference. `&quot;` is only ever emitted INSIDE an
+		// attribute (escapeAttr), and an attribute leaves with its tag — so this is
+		// unreachable for markup we build, and can only help with markup we do not.
+		expect(richHtmlToText("she said &quot;hi&quot;")).toBe('she said "hi"');
+		expect(legacy("she said &quot;hi&quot;")).toBe("she said &quot;hi&quot;");
+	});
+
+	it("round-trips whatever escapeHtml escaped", () => {
+		const source = 'a & b < c > d "e"';
+		expect(richHtmlToText(escapeHtml(source))).toBe(source);
 	});
 });
 

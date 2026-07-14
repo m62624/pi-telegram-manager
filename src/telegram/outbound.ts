@@ -16,7 +16,7 @@
  */
 import type { InputRichMessage } from "@grammyjs/types";
 import { toRichMarkdownMessages } from "./markdown";
-import { type RichContent, RichHtml } from "./rich-builder";
+import { type RichContent, RichHtml, richHtmlToText } from "./rich-builder";
 
 /** Chat actions we broadcast while preparing a reply. */
 export type ChatAction =
@@ -85,14 +85,7 @@ export interface OutboundApi {
 /** Best-effort plain text of a rich message, for the classic fallback send. */
 function richFallbackText(message: InputRichMessage): string {
 	if (message.markdown?.trim()) return message.markdown;
-	if (message.html?.trim()) {
-		return message.html
-			.replace(/<[^>]+>/g, "")
-			.replace(/&lt;/g, "<")
-			.replace(/&gt;/g, ">")
-			.replace(/&amp;/g, "&")
-			.trim();
-	}
+	if (message.html?.trim()) return richHtmlToText(message.html).trim();
 	return "";
 }
 
