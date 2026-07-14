@@ -162,8 +162,31 @@ const ABORT_COMMANDS = new Set(["esc", "cancel"]);
 const COMPACT_COMMANDS = new Set(["compact"]);
 const STATUS_COMMANDS = new Set(["status"]);
 const CONTEXT_COMMANDS = new Set(["context"]);
+
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
+/**
+ * The commands the bridge answers entirely from its own state: they never reach the
+ * model, never touch the session, and never change what any mode is doing.
+ *
+ * Mixed mode is why this needs a name. Anything the owner writes in the bot DM takes
+ * the brain back for coding — which ABORTS a manager turn in flight. That is right for
+ * a message (the owner outranks a stranger who is waiting) and wrong for a question
+ * ABOUT the bot: ask how full the context is, and a stranger's half-written reply dies
+ * for it. `/esc`, `/clear` and `/compact` are not here on purpose — each one is the
+ * owner reaching into the session, and taking it is the point.
+ */
+const READ_ONLY_COMMANDS = new Set([
+	...HELP_COMMANDS,
+	...STATUS_COMMANDS,
+	...CONTEXT_COMMANDS,
+]);
+
+/** See {@link READ_ONLY_COMMANDS}. */
+export function isReadOnlyBridgeCommand(text: string | undefined): boolean {
+	const command = parseSlashCommand(text ?? "");
+	return command !== null && READ_ONLY_COMMANDS.has(command.name);
+}
 
 /** The extension's repository and its Tangled mirror, shown in the help footer. */
 export const REPO_URL = "https://github.com/m62624/pi-telegram-manager";

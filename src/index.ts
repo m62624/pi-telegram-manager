@@ -82,6 +82,7 @@ import {
 } from "./modes/connect/context-card";
 import {
 	ConnectController,
+	isReadOnlyBridgeCommand,
 	MIRROR_URL,
 	REPO_URL,
 } from "./modes/connect/controller";
@@ -1211,6 +1212,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		client = null;
 		connect = null;
 		connectSystemBlock = null;
+		// The next mode builds its own context; reporting the last one built by the mode
+		// that just ended would be a true number about a thread that is gone.
+		lastContext = null;
 		toolActivityEnabled = false;
 		draftPreviewsEnabled = false;
 		thinkingEnabled = false;
@@ -1247,6 +1251,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		managerMatcher = null;
 		managerUi?.setWidget(MANAGER_BANNER_KEY, undefined);
 		managerUi = null;
+		// See `stopConnect`: the context that was measured belonged to the mode that is
+		// ending, and /context must not report it as if it were still the one in use.
+		lastContext = null;
 		// Tear down mixed-mode state (a no-op for the standalone manager). Deactivate
 		// the lifecycle record for whichever mode was actually running.
 		const wasMixed = mixedActive;
@@ -1289,7 +1296,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			event.chatId === ownerUserId
 		) {
 			await acceptAsPersonal(event);
-			await takeSessionForCoding();
+			// A question ABOUT the bot is not the owner taking over. `/status`, `/context`
+			// and `/help` are answered from our own state — the model never sees them — so
+			// taking the session for one would abort a manager turn in flight: a stranger's
+			// half-written reply dying because the owner asked how full the context was.
+			// Everything else, `/esc` and `/clear` and `/compact` included, IS the owner
+			// reaching into the session, and takes it.
+			if (!isReadOnlyBridgeCommand(event.message.text)) {
+				await takeSessionForCoding();
+			}
 			await connect.onEvent(event);
 			return;
 		}

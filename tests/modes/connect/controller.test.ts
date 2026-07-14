@@ -4,6 +4,7 @@ import { AbortRegistry } from "../../../src/core/abort";
 import {
 	ConnectController,
 	type ConnectControllerDeps,
+	isReadOnlyBridgeCommand,
 } from "../../../src/modes/connect/controller";
 import { OutboundSender } from "../../../src/telegram/outbound";
 import { RichHtml, thinking } from "../../../src/telegram/rich-builder";
@@ -965,5 +966,30 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		await controller.deliverAssistant("answer");
 
 		expect(onTurnVisible).toHaveBeenCalledExactlyOnceWith([11]);
+	});
+});
+
+describe("isReadOnlyBridgeCommand", () => {
+	it("names the commands that are answered without waking the model", () => {
+		// Mixed mode: any message the owner writes in the bot DM takes the brain back for
+		// coding, which ABORTS a manager turn in flight. Right for a message, wrong for a
+		// question about the bot — a stranger's half-written reply must not die because
+		// the owner asked how full the context was.
+		expect(isReadOnlyBridgeCommand("/status")).toBe(true);
+		expect(isReadOnlyBridgeCommand("/context")).toBe(true);
+		expect(isReadOnlyBridgeCommand("/help@some_bot")).toBe(true);
+	});
+
+	it("does not name the ones that reach into the session — taking it is the point", () => {
+		expect(isReadOnlyBridgeCommand("/esc")).toBe(false);
+		expect(isReadOnlyBridgeCommand("/clear")).toBe(false);
+		expect(isReadOnlyBridgeCommand("/compact")).toBe(false);
+	});
+
+	it("treats ordinary prose as a message, not a command", () => {
+		expect(isReadOnlyBridgeCommand("what is the status of the build?")).toBe(
+			false,
+		);
+		expect(isReadOnlyBridgeCommand(undefined)).toBe(false);
 	});
 });
