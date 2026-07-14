@@ -1410,6 +1410,11 @@ export class ManagerController {
 	 * stalls. A chat kept active for its continuation window (nothing unanswered
 	 * but a window still pending) is left alone; the unserved guard then stops the
 	 * agent re-triggering on it.
+	 *
+	 * `isIdle()` is a real answer, not a formality, and it is false on every path that
+	 * reaches here from {@link onAgentEnd} — a run cannot take a prompt while it is
+	 * still ending. Declining costs nothing: the chat stays unserved, the draft stays
+	 * held, and the host asks again the moment the session settles.
 	 */
 	private async triggerTurn(): Promise<boolean> {
 		if (!this.deps.isIdle() || this.consolidating) return false;

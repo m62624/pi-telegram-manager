@@ -11,10 +11,11 @@
  * mode 2 (business manager) through `ManagerController`. The two are mutually
  * exclusive (the lifecycle singleton enforces it).
  *
- * `isIdle` is tracked with a local `busy` flag flipped by agent_start/agent_end,
+ * `isIdle` is tracked with a local `busy` flag flipped by agent_start/agent_settled,
  * because Telegram updates arrive from the polling loop outside any Pi event
  * context; `sendUserMessage` is used from the top-level `pi` for the same
- * reason.
+ * reason. Settled, NOT ended: see the `agent_settled` handler for why the
+ * difference is two minutes.
  */
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -638,6 +639,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// When the running mode started, for the "up for" line of /status. 0 = nothing running.
 	let modeStartedAt = 0;
 	let typingTimer: ReturnType<typeof setInterval> | null = null;
+	/**
+	 * Is the session running a turn? Everything that hands it a new prompt reads this
+	 * as "may I prompt?", so it must never say yes while a run is still on the stack.
+	 * Raised at agent_start, lowered at agent_settled — not at agent_end, which fires
+	 * from INSIDE the run (see the handler).
+	 */
 	let busy = false;
 	// Whether the agent run in flight belongs to the owner's own thread (personal
 	// mode always; mixed only in the coding polarity). Set at agent_start — see there.
@@ -1617,7 +1624,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (abortRun) ctx.abort();
 	});
 	pi.on("agent_end", async (event) => {
-		busy = false;
+		// Note what `busy` is NOT doing here: it stays raised. This handler runs INSIDE
+		// the run that is ending, and nothing below may hand the session a new prompt —
+		// see `agent_settled`, which is where that now happens.
+		//
 		// Disarm the interrupt for the finished turn (both modes); the next turn
 		// re-arms it in agent_start.
 		abort.clear();
@@ -1684,6 +1694,48 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			}
 		}
 	});
+	/**
+	 * The run is over — and not one line before this.
+	 *
+	 * `agent_end` is awaited from INSIDE the run: pi-agent-core awaits each listener in
+	 * turn, and the session awaits the extension emit from there. So while an
+	 * `agent_end` handler runs, the session is still streaming — `isIdle()` is false,
+	 * and `waitForIdle()` cannot resolve, because the only code that resolves it (the
+	 * run's own settle) is queued behind the handler doing the waiting.
+	 *
+	 * Anything that handed the session a new prompt from `agent_end` therefore waited
+	 * for itself. Not for the model, not for the backend: for its own return. It waited
+	 * the whole of {@link IDLE_WAIT_MS}, gave up, and let a timer retry — so the next
+	 * turn of a conversation started two minutes late, in both modes (the manager
+	 * chaining its next chat or its held draft; the connect queue pumping the owner's
+	 * next message), with the terminal showing "Working…" and nothing running at all.
+	 *
+	 * `agent_settled` is the session's own word for "no retry, no compaction, no queued
+	 * continuation will run" — and it clears the run flag BEFORE emitting. So this is
+	 * where `busy` is lowered, and where the waiting prompts are handed over.
+	 */
+	pi.on("agent_settled", async () => {
+		busy = false;
+		// One macrotask later, so the finished run has fully unwound its own `finally`
+		// before the next prompt starts the next run from underneath it.
+		setTimeout(() => void pumpAfterRun(), 0);
+	});
+
+	/**
+	 * Give the now-idle session whatever was waiting for it: the owner's next queued
+	 * message, then the manager's next chat (or a memory pass, in the gap).
+	 *
+	 * Both are safe to lose here — the queue keeps the message, the chat stays
+	 * unserved — so a failure costs one tick, never an answer. And it must not throw:
+	 * this runs detached from any await, where an escaping rejection ends the process.
+	 */
+	const pumpAfterRun = async (): Promise<void> => {
+		await connect?.dispatch().catch(() => {});
+		if (!manager) return;
+		await manager.onTick().catch(() => {});
+		updateManagerBanner();
+	};
+
 	pi.on("tool_execution_start", async (event) => {
 		// Record every manager tool call for the debug feed, before the connect guard
 		// (mode 2 has no ConnectController but still needs the feed). In mixed mode's

@@ -485,6 +485,62 @@ describe("ManagerController", () => {
 		expect(ctx?.at(-1)?.content).toContain("wake-word");
 	});
 
+	// Manager mode's half of the two-minute stall. A run cannot take a prompt while it
+	// is still ending, and `agent_end` is awaited from inside it — so `isIdle()` is
+	// false on every path that reaches `triggerTurn` from there. It used to be true (the
+	// host lowered its busy flag one event too early), the prompt was forced on a session
+	// that could not take it, and the hand-off sat waiting on a promise that only its own
+	// return could resolve: two minutes of "Working…", once per chained turn.
+	it("hands nothing to a run that is still ending: the held draft waits for the settle pump", async () => {
+		const { controller, sendReply, triggerAgent, clock, setIdle } =
+			await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you there?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+
+		// The turn runs, and ends in prose with no tool call. The draft is held — and
+		// that is all: no second prompt is pushed at a session that is still on the stack.
+		setIdle(false);
+		await controller.onAgentEnd("Yes, I am here.");
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(controller.isReviseTurn()).toBe(true);
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+
+		// The run settles; the host asks again. The revise turn goes out now, at once.
+		setIdle(true);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(2);
+		expect(triggerAgent.mock.calls[1][0]).toContain("manager_resolve_draft");
+	});
+
+	// Same in mixed mode, where `isIdle` also carries the polarity: the owner's coding
+	// run settling must not wake the moderator on the shared brain. The pump asks after
+	// EVERY run — including the owner's — so this is the guard that keeps it out.
+	it("mixed/coding: the settle pump hands nothing over while the owner holds the brain", async () => {
+		const { controller, triggerAgent, clock, setIdle } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hello", 5, 1),
+		});
+		clock.advance(300_001);
+		// Coding polarity: the manager reports busy however idle the session itself is.
+		setIdle(false);
+		await controller.onTick();
+		expect(triggerAgent).not.toHaveBeenCalled();
+		// The return timer flips the brain back to Telegram, and the chat is served.
+		setIdle(true);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+	});
+
 	it("mixed/coding priority: a wake-word is held while the brain is busy, served once idle", async () => {
 		// In mixed mode's coding polarity the manager's isIdle is false, so a
 		// wake-word may make the chat ready but must NOT preempt the owner's coding —
