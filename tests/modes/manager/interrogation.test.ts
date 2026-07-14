@@ -4,6 +4,8 @@ import {
 	advance,
 	createInterrogationTools,
 	currentProbe,
+	droppedFacts,
+	FORGET_LIMIT,
 	finalFacts,
 	type InterrogationState,
 	initInterrogation,
@@ -233,5 +235,148 @@ describe("sink independence", () => {
 		expect(decision.current()).toEqual({ kind: "none" });
 		expect(facts.current()).toEqual([]);
 		expect(probes.current()).not.toBeNull();
+	});
+});
+
+/**
+ * The review step: memory that only ever grows eventually lies.
+ *
+ * A fact was true when it was learned and can stop being true afterwards — the job
+ * changed, the trip is over, the thing they were waiting for arrived. Before this step
+ * nothing could remove a fact but a schema migration wiping every contact at once, so a
+ * bot would resurface a corrected fact forever, with total confidence.
+ *
+ * Forgetting is gated by the SAME rule as remembering: the interlocutor's own words in
+ * THIS conversation must say so, and code — not the model — checks the quote against
+ * their lines.
+ */
+describe("interrogation review (unlearning)", () => {
+	const KNOWN = [
+		{ text: "Works at a bank", kind: "identity" as const },
+		{ text: "Prefers voice notes", kind: "preference" as const },
+	];
+	/** Their own lines: one of them overturns the first fact, nothing overturns the second. */
+	const LINES_NOW = ["I left the bank last month", "anyway, how are you"];
+
+	function reviewOnly(
+		answer: ProbeResult | null,
+		known = KNOWN,
+		lines = LINES_NOW,
+	): InterrogationState {
+		let state = initInterrogation("Alice", known);
+		// identify → review
+		state = advance(
+			state,
+			{ tool: "identify", sameAsOwner: false, interlocutorName: "Alice" },
+			lines,
+			8,
+		);
+		expect(currentProbe(state).tool).toBe("manager_forget");
+		return advance(state, answer, lines, 8);
+	}
+
+	it("asks about what is remembered, by number, only when there is something to ask about", () => {
+		const withMemory = advance(
+			initInterrogation("Alice", KNOWN),
+			{ tool: "identify", sameAsOwner: false },
+			LINES_NOW,
+			8,
+		);
+		const probe = currentProbe(withMemory);
+		expect(probe.tool).toBe("manager_forget");
+		expect(probe.directive).toContain("1. Works at a bank");
+		expect(probe.directive).toContain("2. Prefers voice notes");
+
+		// A contact with no memory has nothing to review: do not spend an inference asking
+		// which of their zero facts has gone stale.
+		const blank = advance(
+			initInterrogation("Alice"),
+			{ tool: "identify", sameAsOwner: false },
+			LINES_NOW,
+			8,
+		);
+		expect(currentProbe(blank).tool).toBe("manager_candidates");
+	});
+
+	it("drops a fact their own words overturn", () => {
+		const state = reviewOnly({
+			tool: "forget",
+			items: [{ number: 1, evidenceQuote: "I left the bank last month" }],
+		});
+		expect(state.dropped.map((f) => f.text)).toEqual(["Works at a bank"]);
+		expect(droppedFacts(state).map((f) => f.text)).toEqual(["Works at a bank"]);
+		// And the pass carries on to what is NEW, as it always did.
+		expect(state.phase).toBe("candidates");
+	});
+
+	it("keeps a fact the model wants gone but cannot quote", () => {
+		// The whole safety of this step. A model that decides on its own that it "probably
+		// does not need this any more" is a model that quietly erases what it was told — so
+		// it must produce the sentence that overturns the fact, from their own lines, or the
+		// fact stays. Unquoted, invented, or lifted from somebody else's words: no.
+		expect(
+			reviewOnly({ tool: "forget", items: [{ number: 1 }] }).dropped,
+		).toEqual([]);
+		expect(
+			reviewOnly({
+				tool: "forget",
+				items: [{ number: 1, evidenceQuote: "they quit, I heard" }],
+			}).dropped,
+		).toEqual([]);
+		// Quoted, but it overturns nothing that is not asked about: an out-of-range number
+		// points at no fact at all.
+		expect(
+			reviewOnly({
+				tool: "forget",
+				items: [{ number: 9, evidenceQuote: "I left the bank last month" }],
+			}).dropped,
+		).toEqual([]);
+	});
+
+	it("caps how much one pass may forget", () => {
+		// Even behind the evidence check, a single confused pass must not be able to empty a
+		// contact's memory. What genuinely goes stale goes stale a fact or two at a time.
+		const many = Array.from({ length: 6 }, (_, i) => ({
+			text: `fact ${i + 1}`,
+		}));
+		const lines = ["none of that is true any more"];
+		const state = reviewOnly(
+			{
+				tool: "forget",
+				items: many.map((_, i) => ({
+					number: i + 1,
+					evidenceQuote: "none of that is true any more",
+				})),
+			},
+			many,
+			lines,
+		);
+		expect(state.dropped).toHaveLength(FORGET_LIMIT);
+	});
+
+	it("treats a fumbled review as 'nothing to unlearn', never as a reason to end the pass", () => {
+		// Review is the one OPTIONAL step. Losing a whole interrogation because the model
+		// muddled an optional question would cost more than the question is worth.
+		const noAnswer = reviewOnly(null);
+		expect(noAnswer.dropped).toEqual([]);
+		expect(noAnswer.phase).toBe("candidates");
+
+		const wrongTool = reviewOnly({ tool: "candidates", items: [] });
+		expect(wrongTool.dropped).toEqual([]);
+		expect(wrongTool.phase).toBe("candidates");
+	});
+
+	it("forgets nothing when the pass decided it does not know who this is", () => {
+		// A self-chat aborts the pass. A pass that cannot say who it is looking at has no
+		// business editing their memory — in either direction.
+		const aborted = advance(
+			initInterrogation("Alice", KNOWN),
+			{ tool: "identify", sameAsOwner: true },
+			LINES_NOW,
+			8,
+		);
+		expect(isDone(aborted)).toBe(true);
+		expect(droppedFacts(aborted)).toEqual([]);
+		expect(finalFacts(aborted)).toEqual([]);
 	});
 });

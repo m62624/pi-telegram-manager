@@ -79,6 +79,11 @@ export interface ContactStore {
 		facts: ContactFact[],
 		limit?: number,
 	): Promise<void>;
+	/**
+	 * Drop facts by their text (matched as {@link factKey}, so spacing and a trailing
+	 * full stop do not save a fact from being forgotten). Returns how many went.
+	 */
+	removeFacts(userId: string, texts: readonly string[]): Promise<number>;
 	/** A contact's important facts, oldest-first (empty when none/unseen). */
 	getFacts(userId: string): Promise<ContactFact[]>;
 	/**
@@ -135,6 +140,51 @@ export function dedupeFacts(facts: readonly ContactFact[]): ContactFact[] {
 	return newFacts([], facts);
 }
 
+/**
+ * What a fact is worth keeping when the memory is full — lowest goes first.
+ *
+ * `context` is documented as "an ongoing situation: background that may go stale", and
+ * that is exactly what it is: the most disposable thing in the file. `identity` is who
+ * the person IS, and `agreement` is what was promised to them; losing either to make
+ * room for "is travelling this week" is how a bot forgets a commitment and remembers a
+ * mood.
+ */
+const KEEP_RANK: Record<FactKind, number> = {
+	context: 0,
+	preference: 1,
+	agreement: 2,
+	identity: 3,
+};
+
+/**
+ * Trim a fact list to `limit`, dropping the least valuable first — and only then the
+ * oldest.
+ *
+ * It used to be `slice(-limit)`: keep the newest, whatever they are. So a contact's name
+ * and city, learned the day they first wrote, were evicted by a week of "is at the
+ * office today" — and the memory that remained was the one worth the least. Age is the
+ * tie-breaker now, not the rule.
+ */
+export function capFacts(
+	facts: readonly ContactFact[],
+	limit: number,
+): ContactFact[] {
+	if (limit <= 0) return [];
+	if (facts.length <= limit) return [...facts];
+	const ranked = facts.map((fact, index) => ({ fact, index }));
+	ranked.sort((a, b) => {
+		const rank =
+			KEEP_RANK[a.fact.kind ?? "context"] - KEEP_RANK[b.fact.kind ?? "context"];
+		// Least valuable first; among equals, the oldest first — those are the ones to go.
+		return rank !== 0 ? rank : a.index - b.index;
+	});
+	const doomed = new Set(
+		ranked.slice(0, facts.length - limit).map((e) => e.index),
+	);
+	// Survivors keep their original order: the file stays a chronology.
+	return facts.filter((_, index) => !doomed.has(index));
+}
+
 export function createContactStore(
 	fs: TelegramFs,
 	paths: TelegramPaths,
@@ -188,11 +238,29 @@ export function createContactStore(
 				const fresh = newFacts(existing.facts, facts);
 				if (fresh.length === 0) return;
 				existing.facts.push(...fresh);
-				if (limit !== undefined && existing.facts.length > limit) {
-					existing.facts = existing.facts.slice(-limit);
+				if (limit !== undefined) {
+					existing.facts = capFacts(existing.facts, limit);
 				}
 				existing.updatedAt = fresh[fresh.length - 1].timestamp;
 				await writeJson(fs, path, existing);
+			});
+		},
+
+		async removeFacts(userId, texts) {
+			if (texts.length === 0) return 0;
+			const path = paths.contactFile(userId);
+			return withFileWriteLock(path, async () => {
+				const existing = await read(userId);
+				if (!existing) return 0;
+				const doomed = new Set(texts.map(factKey).filter(Boolean));
+				const kept = existing.facts.filter(
+					(fact) => !doomed.has(factKey(fact.text)),
+				);
+				const gone = existing.facts.length - kept.length;
+				if (gone === 0) return 0;
+				existing.facts = kept;
+				await writeJson(fs, path, existing);
+				return gone;
 			});
 		},
 

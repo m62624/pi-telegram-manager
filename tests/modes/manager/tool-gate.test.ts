@@ -11,6 +11,7 @@ const base = {
 			"manager_skip",
 			"manager_resolve_draft",
 			"manager_identify",
+			"manager_forget",
 			"manager_candidates",
 			"manager_verify",
 			"about",
@@ -30,6 +31,7 @@ describe("managerToolGate", () => {
 		// never talking to. There is nobody to answer on this turn.
 		const gate = managerToolGate(base, consolidation);
 		expect(gate.matches("manager_identify")).toBe(true);
+		expect(gate.matches("manager_forget")).toBe(true);
 		expect(gate.matches("manager_candidates")).toBe(true);
 		expect(gate.matches("manager_verify")).toBe(true);
 
@@ -63,6 +65,37 @@ describe("managerToolGate", () => {
 		expect(gate.matches("manager_identify")).toBe(false);
 		expect(gate.matches("manager_candidates")).toBe(false);
 		expect(gate.matches("manager_verify")).toBe(false);
+		// And above all this one: a stranger writing into the chat must never be holding a
+		// conversation with a bot that can be talked into FORGETTING things about them.
+		// Unlearning belongs to the background memory pass, where nobody is being answered.
+		expect(gate.matches("manager_forget")).toBe(false);
+	});
+
+	it("offers the same tools at every step of a memory pass", () => {
+		// The tool schemas are rendered into the HEAD of the prompt (see
+		// `pi/tool-visibility.ts`), so the tool list is not a menu — it is the first bytes
+		// the backend reads, and the prefix it caches. A set that changed between the steps
+		// of one pass would make the model re-read the whole interrogation from byte zero,
+		// once per step. The gate is a function of the TURN KIND, not of the step, and this
+		// is what makes that hold: adding the review step added a tool to the pass, and the
+		// pass still offers one unchanging set from its first question to its last.
+		const gate = managerToolGate(base, consolidation);
+		const offered = [
+			"manager_identify",
+			"manager_forget",
+			"manager_candidates",
+			"manager_verify",
+			"manager_reply",
+			"manager_resolve_draft",
+			"about",
+			"bash",
+		].filter((name) => gate.matches(name));
+		expect(offered).toEqual([
+			"manager_identify",
+			"manager_forget",
+			"manager_candidates",
+			"manager_verify",
+		]);
 	});
 
 	it("never lets anything through that the owner's sandbox refuses", () => {

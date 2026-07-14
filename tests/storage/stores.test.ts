@@ -282,6 +282,58 @@ describe("contact-store", () => {
 			"Prefers voice notes",
 		]);
 	});
+
+	it("evicts the least valuable fact when full, not simply the oldest", async () => {
+		// It used to be `slice(-limit)`: keep the newest, whatever they are. So a contact's
+		// name and city — learned the day they first wrote — were evicted by a week of "is
+		// at the office today", and the memory that survived was the one worth the least.
+		// `context` is documented as background that may go stale; `identity` is who the
+		// person IS and `agreement` is what was promised them. Age is the tie-break now.
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile(), 1000);
+		await store.appendFacts(
+			"42",
+			[
+				{ text: "Lives two hours ahead", timestamp: 1, kind: "identity" },
+				{ text: "Is travelling this week", timestamp: 2, kind: "context" },
+				{ text: "Was promised a refund", timestamp: 3, kind: "agreement" },
+			],
+			3,
+		);
+		await store.appendFacts(
+			"42",
+			[{ text: "Prefers short replies", timestamp: 4, kind: "preference" }],
+			3,
+		);
+		// The disposable one went; who they are and what they were promised stayed — and
+		// the survivors are still in the order they were learned.
+		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
+			"Lives two hours ahead",
+			"Was promised a refund",
+			"Prefers short replies",
+		]);
+	});
+
+	it("forgets a fact by what it says, however it is dressed", async () => {
+		// The unlearning path (`manager_forget`): the pass names a fact by its text, and a
+		// trailing full stop or a stray double space must not save it from being dropped —
+		// the same normalisation that stops the same sentence being stored twice.
+		const fs = new FakeFs();
+		const store = createContactStore(fs, paths);
+		await store.upsertProfile(profile(), 1000);
+		await store.appendFacts("42", [
+			{ text: "Works at a bank", timestamp: 1, kind: "identity" },
+			{ text: "Prefers voice notes", timestamp: 2, kind: "preference" },
+		]);
+		expect(await store.removeFacts("42", ["  works at a BANK. "])).toBe(1);
+		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
+			"Prefers voice notes",
+		]);
+		// Removing what is not there removes nothing, and says so.
+		expect(await store.removeFacts("42", ["never knew this"])).toBe(0);
+		expect(await store.removeFacts("unknown-contact", ["anything"])).toBe(0);
+	});
 });
 
 describe("ownWords", () => {
