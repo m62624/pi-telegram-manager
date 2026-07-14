@@ -4,6 +4,80 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 
 **Override semantics.** For plain values (numbers, booleans, strings) a setting **replaces** the default. Two list settings are special: instruction-file lists are **appended** to the built-in instructions (they add, never replace), and `manager.mentionWords` / `manager.allowedTools` follow the per-row notes below.
 
+## The whole file, with every default
+
+Written out in full so the nesting is never a guess: this is what the extension runs with when your `settings.json` says nothing. **Copy only the lines you want to change** — every key is optional, and an empty `{}` is a valid file. The three keys with no default (`botToken`, `allowedUserId`, `timezone`) are shown with example values; the rest are the real defaults. A test keeps this block in step with the code, so it cannot quietly go stale.
+
+<!-- settings-example:start -->
+```json
+{
+  "botToken": "env:TELEGRAM_BOT_TOKEN",
+  "allowedUserId": 123456789,
+  "timezone": "Asia/Almaty",
+  "instructionFiles": [],
+  "assistant": {
+    "rendering": "rich",
+    "draftPreviews": true,
+    "thinkingPlaceholder": false,
+    "toolActivity": true,
+    "toolOutputMaxBytes": 26214400,
+    "toolOutputDir": "~/telegram-logs"
+  },
+  "connect": {
+    "instructionFiles": []
+  },
+  "manager": {
+    "ownerName": "Ada",
+    "continueWindowMs": 120000,
+    "ownerReplyWindowMs": 300000,
+    "catchUpWindowMs": 36000000,
+    "allowedTools": [],
+    "media": {
+      "images": true,
+      "documents": false
+    },
+    "rememberMessages": 20,
+    "maxCharsPerMessage": 4000,
+    "maxContextChars": 40000,
+    "factsLimit": 20,
+    "factConsolidationQuietMs": 1800000,
+    "verifyLimit": 8,
+    "liveFreshnessMs": 600000,
+    "reopenAfterMs": 86400000,
+    "reviseThreshold": 2,
+    "log": true,
+    "strictReplyGuard": true,
+    "labeler": "LLM agent 🤖:",
+    "labelerRule": "────────────",
+    "mentionWords": ["llm", "manager"],
+    "instructionFiles": []
+  },
+  "mixed": {
+    "returnToTelegramMs": 480000
+  },
+  "topics": {
+    "enabled": true,
+    "personalName": "personal",
+    "managerName": "manager"
+  },
+  "forwards": {
+    "maxChars": 2000,
+    "maxMessages": 5,
+    "groupWindowMs": 3000
+  },
+  "files": {
+    "maxBytes": 52428800,
+    "maxImagesPerTurn": 10
+  },
+  "connectionCheck": {
+    "enabled": true,
+    "intervalMs": 600000,
+    "maxRetries": 3
+  }
+}
+```
+<!-- settings-example:end -->
+
 ## Top level
 
 | Key | Default | Override | What it does |
