@@ -121,6 +121,26 @@ export const MANAGER_TURN_DONE =
 	"single word to end the turn.]";
 
 /**
+ * The same job for a consolidation pass — and it needs its own words, because the one
+ * above is written for a turn that ends in a DECISION, and a memory pass does not have
+ * one.
+ *
+ * Reused verbatim, it told a model in the middle of a background memory review that it
+ * "had already decided this turn". Reading that, with the reply tools still in its list
+ * (a separate bug, now fixed in `tool-gate.ts`) and a transcript ending in somebody's
+ * question, the model concluded it was answering that person — "I already replied", it
+ * wrote, and then produced a word of prose for a chat it was never talking to. In other
+ * passes it went looking for the interrogation step that the standing prompt above still
+ * demanded, found none, and called step one again until the run was aborted.
+ *
+ * A directive that ends a turn has to say what KIND of turn it is ending.
+ */
+export const CONSOLIDATION_DONE =
+	"[The memory pass for this contact is finished: every step has been answered and " +
+	"there is nothing left to do. You are not replying to anyone — no tool, no message. " +
+	"Reply with a single word to end the turn.]";
+
+/**
  * Trailing directive when a drafted reply is held back because new messages
  * arrived mid-turn: the model reconsiders it against the newer messages and
  * either resends it, revises it, or drops it.
@@ -185,9 +205,12 @@ export const MENTION_HINT =
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
-	"long-term memory about this specific person. Do NOT reply to anyone — nothing " +
-	"you write reaches Telegram. Work strictly about the interlocutor, never the " +
-	"owner or the bot. Answer only the numbered interrogation step shown below.";
+	"long-term memory about this specific person. Nobody is waiting for you and " +
+	"nothing you write reaches Telegram: the reply tools do not exist on this turn, " +
+	"and a question left standing in the transcript below is one you have already " +
+	"answered, or one that is not yours to answer now. Work strictly about the " +
+	"interlocutor, never the owner or the bot. Answer only the numbered interrogation " +
+	"step shown below, calling the one tool it names.";
 
 /** Bare prompt that kicks off each interrogation probe (real directive is in context). */
 const CONSOLIDATION_PROMPT =
@@ -1282,7 +1305,7 @@ export class ManagerController {
 		// it is the last thing that may sit on top of the conversation.
 		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}`;
 		const directive = this.turnDecided()
-			? MANAGER_TURN_DONE
+			? CONSOLIDATION_DONE
 			: currentProbe(current.loop).directive;
 		return [
 			{ role: "user", content: system },
@@ -1531,6 +1554,8 @@ export class ManagerController {
 		};
 		this.facts.reset();
 		this.probes.reset();
+		this.decision.reset();
+		this.resolve.reset();
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
 	}
 
@@ -1635,6 +1660,12 @@ export class ManagerController {
 	}): Promise<void> {
 		this.consolidating = null;
 		this.facts.reset();
+		// A memory pass makes no chat decision, so it must leave none behind. It should
+		// not be able to record one at all now (`tool-gate.ts` takes the reply tools away
+		// on this turn) — but a sink that outlives the turn that filled it is a landmine,
+		// and the next turn to read it would be somebody else's.
+		this.decision.reset();
+		this.resolve.reset();
 		for (const fact of finalFacts(current.loop)) {
 			this.facts.record([
 				{ text: fact.text, subject: "interlocutor", kind: fact.kind },

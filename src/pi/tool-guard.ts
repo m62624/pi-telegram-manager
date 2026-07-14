@@ -49,6 +49,17 @@ export const RESOLVE_DRAFT_END_TURN_HINT =
 	"disabled this turn. End your turn by calling manager_resolve_draft with " +
 	"action 'send', 'refine' (with the corrected text), or 'drop'.";
 
+/**
+ * Steer for a consolidation pass: there is nobody to answer on this turn, so the reply
+ * tools do not exist. Without a hint of its own, a blocked `manager_silent` here was
+ * answered with the default "decide the turn with manager_reply or manager_silent" —
+ * which is the one thing that cannot be done, and the model would keep trying.
+ */
+export const CONSOLIDATION_END_TURN_HINT =
+	"This is a background memory pass, not a conversation: nothing you write reaches " +
+	"anyone, and manager_reply / manager_silent do not exist on this turn. Answer the " +
+	"interrogation step shown in the directive, by calling the one tool it names.";
+
 /** The steer text returned to the model when it calls a blocked tool. */
 export function blockedToolReason(
 	toolName: string,

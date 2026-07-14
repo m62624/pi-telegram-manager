@@ -1133,9 +1133,12 @@ describe("ManagerController", () => {
 		});
 		expect(controller.stepConsolidation()).toBe("continue");
 		expect(controller.turnDecided()).toBe(true);
+		// A memory pass ends in ITS own terms. Told "you have already decided this turn"
+		// — the reply turn's words — a model mid-memory-review concluded it had answered
+		// somebody, and wrote a word of prose for a chat it was never in.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("already decided");
+		).toContain("memory pass for this contact is finished");
 
 		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
 		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
@@ -1853,5 +1856,67 @@ describe("ManagerController — the owner steps into a live chat", () => {
 		controller.resolveSink().record({ action: "drop" });
 		await controller.onAgentEnd();
 		expect(sendReply).not.toHaveBeenCalled();
+	});
+});
+
+describe("a memory pass is not a conversation", () => {
+	/** Run a chat up to the point where its idle consolidation pass starts. */
+	async function untilConsolidating() {
+		const env = await setup();
+		const { controller, clock } = env;
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you around?"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller.decisionSink().record({ kind: "reply", text: "Yes." });
+		await controller.onAgentEnd();
+		// Past the continuation window and the quiet period → the memory pass begins.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(controller.isConsolidating()).toBe(true);
+		return env;
+	}
+
+	it("ends the pass with words about a memory pass, not about a decision", async () => {
+		// The bug: the pass was ended with the reply-turn directive ("you have already
+		// decided this turn"). A model reading that, mid-memory-review, decided it had
+		// answered somebody — and wrote a word of prose for a chat it was never in.
+		const { controller } = await untilConsolidating();
+		controller
+			.probeSink()
+			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
+		await controller.onAgentEnd();
+		controller.probeSink().record({ tool: "candidates", items: [] });
+		expect(controller.turnDecided()).toBe(false);
+		controller.stepConsolidation();
+
+		// Nothing to verify → the pass is finished, and the directive says so in its own
+		// terms: a memory pass, nobody to answer, no tool to call.
+		const directive =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(directive).toContain("memory pass");
+		expect(directive).toContain("not replying to anyone");
+		expect(directive).not.toContain("already decided this turn");
+	});
+
+	it("leaves no decision behind for the next person's turn", async () => {
+		// Belt and braces for the same bug: the reply tools are gone from a memory pass
+		// now, but a decision sink that outlives the turn that filled it is a landmine —
+		// and the next turn to read it belongs to somebody else.
+		const { controller } = await untilConsolidating();
+		controller.decisionSink().record({ kind: "silent" });
+		controller
+			.probeSink()
+			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
+		await controller.onAgentEnd();
+		controller.probeSink().record({ tool: "candidates", items: [] });
+		await controller.onAgentEnd();
+
+		expect(controller.isConsolidating()).toBe(false);
+		expect(controller.decisionSink().current().kind).toBe("none");
 	});
 });

@@ -149,11 +149,13 @@ import {
 	mixedContextSource,
 } from "./modes/manager/polarity";
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
+import { managerToolGate } from "./modes/manager/tool-gate";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { compact } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
+	CONSOLIDATION_END_TURN_HINT,
 	RESOLVE_DRAFT_END_TURN_HINT,
 	registerToolGuard,
 } from "./pi/tool-guard";
@@ -519,11 +521,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// mixed mode's coding polarity, where the owner is coding and needs full tools.
 		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
-		// On a revise turn the decision tools are blocked, so the steer must point at
-		// the one tool that can end it — otherwise a blocked manager_reply answers
-		// "call manager_reply", and the model spins until the turn is wasted.
+		// A blocked tool must be answered with the tool that CAN end this turn — otherwise
+		// a blocked manager_reply is answered with "call manager_reply", and the model
+		// spins until the turn is wasted. Each turn kind has its own way out.
 		endTurnHint: () =>
-			manager?.isReviseTurn() ? RESOLVE_DRAFT_END_TURN_HINT : undefined,
+			manager?.isConsolidating()
+				? CONSOLIDATION_END_TURN_HINT
+				: manager?.isReviseTurn()
+					? RESOLVE_DRAFT_END_TURN_HINT
+					: undefined,
 	});
 
 	/**
@@ -2666,19 +2672,18 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			settings.manager.allowedTools,
 			(warning) => ctx.ui.notify(warning, "warning"),
 		);
-		// manager_resolve_draft belongs to the manager group (so it is hidden whenever
-		// the manager is inactive) but is visible ONLY on a revise turn. On a revise
-		// turn it is the SOLE active tool — reply/silent/remember are hidden — so the
-		// model must resolve the held draft (send/refine/drop) and cannot spin calling
-		// a tool the gate ignores. On any other turn it is hidden and the normal
-		// sandbox applies. The matcher gates both the visibility gate and the runtime
-		// guard on the live revise state, recomputed before each request.
-		managerMatcher = {
-			matches: (name) =>
-				(manager?.isReviseTurn() ?? false)
-					? name === MANAGER_RESOLVE_TOOL_NAME
-					: name !== MANAGER_RESOLVE_TOOL_NAME && baseMatcher.matches(name),
-		};
+		// One turn kind, one tool set — `modes/manager/tool-gate.ts` owns the rule and the
+		// reason it exists. The matcher drives BOTH the visibility gate (what the model
+		// sees) and the runtime guard (what it may call), and both are recomputed before
+		// every request, so a turn never carries the tools of the one before it.
+		managerMatcher = managerToolGate(baseMatcher, {
+			get consolidating() {
+				return manager?.isConsolidating() ?? false;
+			},
+			get revising() {
+				return manager?.isReviseTurn() ?? false;
+			},
+		});
 
 		// NOTE: we deliberately do NOT ctx.switchSession() here. switchSession is
 		// terminal — it staleness-poisons the captured `ctx` and the module-level
