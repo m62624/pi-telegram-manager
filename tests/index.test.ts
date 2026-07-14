@@ -54,8 +54,13 @@ describe("piTelegramManagerExtension (composition root)", () => {
 		]);
 		for (const event of [
 			"session_start",
-			"before_provider_request",
+			// The tool list is applied HERE, not at before_provider_request: a run
+			// snapshots its tools before the first request, so a refresh at request time
+			// lands one call too late and the model opens the turn with the previous
+			// turn's tools. See `pi/tool-visibility.ts`.
+			"before_agent_start",
 			"agent_start",
+			"turn_end",
 			"agent_end",
 			"session_shutdown",
 		]) {

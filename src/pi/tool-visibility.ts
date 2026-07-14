@@ -144,9 +144,40 @@ export function createToolVisibility(
 }
 
 /**
- * Keep tool visibility correct across a session's life. Refreshes on
- * `session_start` (a fresh/resumed session defaults to inactive → tools hidden)
- * and before every provider request (so the model never sees a stale set).
+ * Keep tool visibility correct across a session's life.
+ *
+ * WHEN it refreshes is the whole point, and getting it wrong is invisible in review,
+ * so the timing is written down here.
+ *
+ * A run does not read the tool list per request. `Agent.runPromptMessages` takes ONE
+ * snapshot (`createContextSnapshot()` — `tools: this._state.tools.slice()`) before the
+ * loop starts, and every LLM call in that run uses it. Between turns, and only there,
+ * `AgentSession._installAgentNextTurnRefresh` re-reads `agent.state.tools` into the
+ * context. So `setActiveTools` — which writes `agent.state.tools` — lands on the next
+ * TURN, never on the request in flight. Pi's own doc-comment says exactly that:
+ * "Changes take effect on the next agent turn."
+ *
+ * This used to refresh on `before_provider_request`, which is `onPayload`: it runs when
+ * the payload for the current request is already built. Every refresh therefore arrived
+ * one LLM call too late, and the first call of every run went out with the tool list of
+ * the run before it. That is not academic — it is the bug the owner caught: a memory pass
+ * opened with the reply tools still listed, the model looked for the interrogation tool
+ * the directive named, could not find it, and reasoned aloud that the tool "does not
+ * exist"; it then called a blocked tool, was steered, and only on the SECOND call — the
+ * first one to see a fresh list — did the pass actually start. The same lag hit the
+ * revise turn (whose directive had to plead "it IS available, whatever you assume about
+ * your tool list") and the first reply turn after a memory pass.
+ *
+ * Two hooks, both landing before a snapshot is taken:
+ *  - `session_start` — a fresh/resumed session defaults to inactive → tools hidden;
+ *  - `before_agent_start` — emitted inside `prompt()` BEFORE `agent.prompt()`, so the
+ *    run's snapshot picks it up. This is the one that fixes the first call of a run.
+ *
+ * The other end — a tool set that must change BETWEEN turns of one run (the memory pass
+ * walks its whole interrogation in a single run) — is not hooked here: it belongs to
+ * whoever advances that state, and `index.ts` calls {@link ToolVisibility.refresh} at the
+ * end of its own `turn_end` handler, after the step it just took. Registering a second
+ * `turn_end` handler here would race that one on registration order.
  */
 export function registerToolVisibility(
 	pi: ExtensionAPI,
@@ -155,7 +186,8 @@ export function registerToolVisibility(
 	pi.on("session_start", async () => {
 		visibility.refresh();
 	});
-	pi.on("before_provider_request", async () => {
+	pi.on("before_agent_start", async () => {
 		visibility.refresh();
+		return undefined;
 	});
 }

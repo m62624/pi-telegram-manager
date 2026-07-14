@@ -16,7 +16,9 @@
  * So the tool set is a function of the turn, with one rule and no overlap:
  *
  *  - **consolidation** — the three interrogation probes, and nothing else. No reply, no
- *    silence, no memory tool, no computer. There is nobody to talk to on this turn.
+ *    silence, no memory tool, no computer. There is nobody to talk to on this turn. Once
+ *    the pass has answered its last step: no tools at all, so the only way left to end the
+ *    run is the word the context asks for.
  *  - **revise** — `manager_resolve_draft` alone: a reply of the model's own is held, and
  *    resolving it is the only way the turn can end.
  *  - **ordinary** — the owner's sandbox allowlist, minus the tools that belong to the two
@@ -35,10 +37,21 @@ export interface ToolNameMatcher {
 	matches(name: string): boolean;
 }
 
-/** What the manager is doing right now. Both false = an ordinary reply turn. */
+/** What the manager is doing right now. All false = an ordinary reply turn. */
 export interface ManagerTurnKind {
 	/** A background memory pass is running (`isConsolidating`). */
 	consolidating: boolean;
+	/**
+	 * The memory pass has answered every step and is only waiting for the run to end
+	 * (`isConsolidationDone`). There is no probe left to call, so there is no tool left
+	 * to offer: the context says so in words, and the tool list must say the same thing.
+	 *
+	 * It did not, and the model did what a model does when a finished instruction is
+	 * contradicted by a live tool: it called the tool. Step one, again — on a pass whose
+	 * every step was answered — and the runtime aborted the run to stop it. "Operation
+	 * aborted" in the owner's feed, once per memory pass.
+	 */
+	consolidationDone?: boolean;
 	/** A drafted reply is held and must be resolved (`isReviseTurn`). */
 	revising: boolean;
 }
@@ -64,7 +77,10 @@ export function managerToolGate(
 ): ToolNameMatcher {
 	return {
 		matches: (name: string): boolean => {
-			if (turn.consolidating) return isProbeTool(name);
+			if (turn.consolidating) {
+				if (turn.consolidationDone) return false;
+				return isProbeTool(name);
+			}
 			if (turn.revising) return name === MANAGER_RESOLVE_TOOL_NAME;
 			return (
 				name !== MANAGER_RESOLVE_TOOL_NAME &&

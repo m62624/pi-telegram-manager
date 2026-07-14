@@ -618,6 +618,16 @@ export class ManagerController {
 	}
 
 	/**
+	 * Whether the running memory pass has answered every step and is only waiting for
+	 * the run to end. Public so the tool gate can take the probes away: a finished pass
+	 * has no step left to answer, and a model that can still see step one's tool will
+	 * call step one again (it did — every pass, until the runtime aborted the run).
+	 */
+	isConsolidationDone(): boolean {
+		return this.consolidating !== null && isDone(this.consolidating.loop);
+	}
+
+	/**
 	 * Step the consolidation interrogation at a `turn_end`, WITHIN one agent run.
 	 * Reads the probe the model just called, advances the state machine, and tells
 	 * the caller whether to abort the run:
