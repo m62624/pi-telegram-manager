@@ -1095,7 +1095,7 @@ describe("ManagerController", () => {
 		// Probe 1 — identify.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 1 of 3");
+		).toContain("Step 1 of 4");
 		controller.probeSink().record({
 			tool: "identify",
 			sameAsOwner: false,
@@ -1106,7 +1106,7 @@ describe("ManagerController", () => {
 		// Probe 2 — candidates. Owner-tagged / non-durable ones are dropped by code.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 2 of 3");
+		).toContain("Step 3 of 4");
 		controller.probeSink().record({
 			tool: "candidates",
 			items: [
@@ -1124,7 +1124,7 @@ describe("ManagerController", () => {
 		// Probe 3 — per-fact verify (only the one surviving candidate).
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 3 of 3");
+		).toContain("Step 4 of 4");
 		controller.probeSink().record({
 			tool: "verify",
 			keep: true,
@@ -1156,7 +1156,7 @@ describe("ManagerController", () => {
 		// identify → step (no abort, no re-trigger): next context shows step 2.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 1 of 3");
+		).toContain("Step 1 of 4");
 		controller.probeSink().record({
 			tool: "identify",
 			sameAsOwner: false,
@@ -1167,7 +1167,7 @@ describe("ManagerController", () => {
 		// candidates → step.
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 2 of 3");
+		).toContain("Step 3 of 4");
 		controller.probeSink().record({
 			tool: "candidates",
 			items: [
@@ -1183,7 +1183,7 @@ describe("ManagerController", () => {
 		// prefix the backend caches).
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 3 of 3");
+		).toContain("Step 4 of 4");
 		controller.probeSink().record({
 			tool: "verify",
 			keep: true,
@@ -1259,7 +1259,7 @@ describe("ManagerController", () => {
 		expect(controller.isConsolidating()).toBe(true);
 		expect(
 			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 2 of 3");
+		).toContain("Step 3 of 4");
 	});
 
 	it("writes a fact the moment it is verified, not when the pass finishes", async () => {
@@ -1515,6 +1515,60 @@ describe("consolidation pause/resume under live work", () => {
 		// No interrogation turn was started, and the self-chat was dropped from the queue.
 		expect(triggerAgent).not.toHaveBeenCalled();
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
+	});
+
+	it("unlearns a remembered fact the person themselves overturned", async () => {
+		// Memory that only ever grows eventually lies. A fact was true when it was learned
+		// and can stop being true — and until now nothing could remove one but a schema
+		// migration wiping every contact at once. So the bot would go on telling people,
+		// with total confidence, something they had corrected to its face weeks earlier.
+		const { controller, deps, clock } = await setup();
+		await deps.contactStore.upsertProfile(
+			{ userId: "5", displayName: "Alice" },
+			0,
+		);
+		await deps.contactStore.addFact("5", {
+			text: "Works at a bank",
+			timestamp: 0,
+			kind: "identity",
+		});
+
+		// They say the thing that overturns it, and the conversation ends.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("i left the bank last month, freelancing now"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		controller
+			.decisionSink()
+			.record({ kind: "silent", reason: "nothing asked" });
+		await controller.onAgentEnd();
+
+		// The idle memory pass reviews what it holds against what was said.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		controller.probeSink().record({
+			tool: "identify",
+			sameAsOwner: false,
+			interlocutorName: "Alice",
+		});
+		await controller.stepConsolidation();
+
+		// Step 2 asks about the fact it already holds, by number.
+		const review = (await controller.buildContextForActive())?.at(-1)?.content;
+		expect(review).toContain("1. Works at a bank");
+		controller.probeSink().record({
+			tool: "forget",
+			items: [{ number: 1, evidenceQuote: "i left the bank last month" }],
+		});
+		await controller.stepConsolidation();
+
+		// It is gone from the store the moment the step is taken — not held in memory until
+		// the pass finishes, where a pre-empt or a restart would lose it.
+		expect(await deps.contactStore.getFacts("5")).toEqual([]);
 	});
 
 	it("writes down a decision to stay silent, which the transcript cannot hold", async () => {

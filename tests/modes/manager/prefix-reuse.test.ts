@@ -366,3 +366,102 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
 		expect(after.reread).toBeLessThan(4_000);
 	});
 });
+
+/**
+ * What a memory pass costs to READ, step by step.
+ *
+ * A pass is the one place the tool list changes shape mid-conversation, and the tool
+ * schemas are rendered into the HEAD of the prompt — the very prefix a backend caches.
+ * So the question the owner actually asked is the right one: when the tools move, what
+ * does the model have to read again?
+ *
+ * Two answers, and they are different:
+ *
+ *  - BETWEEN turn kinds (a reply turn, then a memory pass) the tool set genuinely
+ *    changes — reply tools out, probes in — and the head changes with it. That is a full
+ *    re-read, and it is the price of the sandbox: a pass that could see `manager_reply`
+ *    talks to people it is only supposed to be remembering. Paid once, when the pass
+ *    starts.
+ *  - WITHIN the pass — and this is what must hold — the set does not move. The gate is a
+ *    function of the turn KIND, not of the step (`tool-gate.ts`), so all four probes are
+ *    offered from the first question to the last. The only thing that changes between
+ *    steps is the directive, and the directive is the LAST thing in the prompt.
+ */
+describe("what a memory pass re-reads", () => {
+	it("re-reads only its own question, step to step", async () => {
+		const env = await setup();
+		let messageId = 1;
+		// A conversation happens, and the bot learns something about them.
+		await arrive(
+			env,
+			42,
+			5,
+			messageId++,
+			"I moved to the night shift last month",
+		);
+		env.controller.factSink().record([
+			{
+				text: "Works night shifts",
+				subject: "interlocutor",
+				kind: "profile",
+			},
+		]);
+		env.controller.decisionSink().record({ kind: "reply", text: "noted" });
+		await env.controller.onAgentEnd();
+
+		// It goes quiet, and an idle tick starts the memory pass.
+		env.clock.advance(1_800_001);
+		await env.controller.onTick();
+
+		const cache = new PrefixCache();
+		const reread: number[] = [];
+		const step = async (answer: () => void): Promise<void> => {
+			reread.push(
+				cache.serve(
+					serializePrompt(await env.controller.buildContextForActive()),
+				).reread,
+			);
+			answer();
+			await env.controller.stepConsolidation();
+		};
+
+		await step(() =>
+			env.controller.probeSink().record({
+				tool: "identify",
+				sameAsOwner: false,
+				interlocutorName: "Someone",
+			}),
+		);
+		// Step 2 — the review: it is asked about the fact it already holds.
+		await step(() =>
+			env.controller.probeSink().record({ tool: "forget", items: [] }),
+		);
+		await step(() =>
+			env.controller.probeSink().record({
+				tool: "candidates",
+				items: [
+					{ text: "Works nights", subject: "interlocutor", durable: true },
+				],
+			}),
+		);
+		await step(() =>
+			env.controller
+				.probeSink()
+				.record({ tool: "verify", keep: true, evidenceQuote: "night shift" }),
+		);
+
+		const opening = reread[0];
+		const steps = reread.slice(1);
+		console.log(
+			`\n  memory pass: opens by reading ${opening} chars, then ${steps.join(", ")} per step\n`,
+		);
+		// The opening read is the whole pass — and the whole pass is small: a consolidation
+		// carries its OWN system block (it is remembering, not answering, so the ~21 KB
+		// rulebook of a reply turn is not in it at all) plus the transcript. Every step after
+		// that re-reads its question and nothing else: not the instructions, not the
+		// conversation above it, four steps running. That is what a tool set that does not
+		// move mid-pass buys.
+		for (const cost of steps) expect(cost).toBeLessThan(1_500);
+		expect(Math.max(...steps)).toBeLessThan(opening);
+	});
+});

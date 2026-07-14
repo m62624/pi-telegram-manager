@@ -48,6 +48,10 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"manager_remember",
 			"manager_skip",
 			"manager_identify",
+			// Step 2: the memory pass may UNLEARN, and the tool that does it is a probe like
+			// any other — same turn kind, same gate, so the head of the prompt does not move
+			// mid-pass.
+			"manager_forget",
 			"manager_candidates",
 			"manager_verify",
 			"manager_resolve_draft",

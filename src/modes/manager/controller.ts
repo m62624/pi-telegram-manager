@@ -48,6 +48,7 @@ import type { ConsolidationQueue } from "../../storage/consolidation-queue";
 import {
 	type ContactFact,
 	type ContactStore,
+	capFacts,
 	dedupeFacts,
 	type FactKind,
 } from "../../storage/contact-store";
@@ -74,10 +75,12 @@ import { isBotMessage, stripBotMarker } from "./identity";
 import {
 	advance as advanceInterrogation,
 	currentProbe,
+	droppedFacts,
 	finalFacts,
 	type InterrogationState,
 	initInterrogation,
 	isDone,
+	type KnownFact,
 	ProbeState,
 } from "./interrogation";
 import { matchesMention } from "./mention";
@@ -691,6 +694,7 @@ export class ManagerController {
 			this.consolidating = { ...current, loop };
 			this.probes.reset();
 			await this.persistConfirmed(current.loop, loop, current);
+			await this.persistDropped(current.loop, loop, current);
 			// The last question has been answered. There is nothing left to ask and
 			// nothing left to say: stop, rather than pay for a call whose only job is to
 			// end the turn.
@@ -732,6 +736,48 @@ export class ManagerController {
 		}
 		const contactName = this.chats.get(current.chatId)?.contactName;
 		await this.persistRecordedFacts(current.userId, contactName);
+	}
+
+	/**
+	 * What is remembered about a contact right now, exactly as the model is shown it —
+	 * deduped, and capped the way the store caps itself.
+	 *
+	 * The review step is asked about THIS list by number, so it has to be the same list,
+	 * built the same way. A fact the model cannot see is a fact it cannot be asked about.
+	 */
+	private async rememberedFacts(
+		userId: string | undefined,
+	): Promise<KnownFact[]> {
+		if (!userId) return [];
+		const stored = await this.deps.contactStore.getFacts(userId);
+		return capFacts(dedupeFacts(stored), this.deps.factsLimit).map((fact) => ({
+			text: fact.text,
+			kind: fact.kind,
+		}));
+	}
+
+	/**
+	 * Unlearn what this step just overturned — now, not at the end of the pass, and for
+	 * the same reason {@link persistConfirmed} writes a fact the moment it is confirmed:
+	 * a pass can be pre-empted, aborted or restarted at any step, and a decision held in
+	 * memory until the end is a decision that gets lost.
+	 *
+	 * A fact only reaches `dropped` after the model named it AND code found, in the
+	 * interlocutor's own lines, the sentence that overturns it. So this deletes nothing
+	 * the person did not themselves say was no longer true.
+	 */
+	private async persistDropped(
+		before: InterrogationState,
+		after: InterrogationState,
+		current: { userId?: string },
+	): Promise<void> {
+		const fresh = after.dropped.slice(before.dropped.length);
+		if (fresh.length === 0 || !current.userId) return;
+		if (await this.isOwnerUserId(current.userId)) return;
+		await this.deps.contactStore.removeFacts(
+			current.userId,
+			fresh.map((fact) => fact.text),
+		);
 	}
 
 	/** Persist a connected/updated business account. */
@@ -1381,15 +1427,19 @@ export class ManagerController {
 			records,
 			boundary: boundaryDirective(meta?.contactName ?? current.chatId),
 		});
-		const known = await this.knownFactsBlock(meta);
+		const probe = currentProbe(current.loop);
+		// The review step hands the model its own memory, numbered, because it answers by
+		// number. Showing the grouped block underneath it as well would put the same facts
+		// in front of the model twice, in two different shapes, on the one step where it
+		// has to point at exactly one of them.
+		const known =
+			probe.tool === "manager_forget" ? "" : await this.knownFactsBlock(meta);
 		// Constant above the transcript, everything that varies below it — the same rule as
 		// `buildContextForActive`, and for the same measured reason. The facts block is the
 		// most volatile thing in a consolidation (it is what the pass EXISTS to change), so
 		// it is the last thing that may sit on top of the conversation.
 		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}`;
-		const directive = this.turnDecided()
-			? CONSOLIDATION_DONE
-			: currentProbe(current.loop).directive;
+		const directive = this.turnDecided() ? CONSOLIDATION_DONE : probe.directive;
 		return [
 			{ role: "user", content: system },
 			...isolated,
@@ -1531,7 +1581,10 @@ export class ManagerController {
 		// contact whose memory is one sentence three times, and whose fourth fact fell
 		// off the end. Telling the model something twice does not make it truer.
 		const facts = dedupeFacts(stored);
-		const recent = facts.slice(-this.deps.factsLimit);
+		// Capped the same way the store caps itself: least valuable first, age only as the
+		// tie-break. Slicing the newest off the end would show the model a different memory
+		// from the one it has — and drop the contact's name to make room for their mood.
+		const recent = capFacts(facts, this.deps.factsLimit);
 		const byKind = new Map<FactKind, string[]>();
 		for (const fact of recent) {
 			const kind = fact.kind ?? "context";
@@ -1660,7 +1713,12 @@ export class ManagerController {
 		this.consolidating = {
 			chatId: entry.chatId,
 			userId: entry.userId,
-			loop: initInterrogation(contactName),
+			// What is already remembered goes INTO the interrogation, not just alongside it:
+			// the review step is asked about this exact list, and its numbers index into it.
+			loop: initInterrogation(
+				contactName,
+				await this.rememberedFacts(entry.userId),
+			),
 			...(await this.loadConsolidationWindow(entry.chatId)),
 		};
 		this.facts.reset();
@@ -1800,10 +1858,11 @@ export class ManagerController {
 	 * any reply that queued while it ran.
 	 *
 	 * Most of these facts are already on disk — {@link persistConfirmed} wrote each one
-	 * the moment it passed verification. This stays as the backstop for the path that
-	 * does not go through a probe (a run that ended early, whose last step is settled
-	 * here by {@link finishConsolidationRun}), and re-writing a fact that is already
-	 * stored costs nothing: the store keeps one copy.
+	 * the moment it passed verification, and {@link persistDropped} removed each one the
+	 * moment it was overturned. This stays as the backstop for the path that does not go
+	 * through a probe (a run that ended early, whose last step is settled here by
+	 * {@link finishConsolidationRun}); redoing either is free — the store keeps one copy
+	 * of a fact, and removing one that is already gone removes nothing.
 	 */
 	private async finalizeConsolidation(current: {
 		chatId: string;
@@ -1825,6 +1884,16 @@ export class ManagerController {
 			]);
 		}
 		const contactName = this.chats.get(current.chatId)?.contactName;
+		// Unlearn BEFORE writing: a pass that overturns a fact and states its replacement
+		// in the same breath must not have the replacement dropped as a duplicate of the
+		// thing it replaces.
+		const dropped = droppedFacts(current.loop);
+		if (dropped.length > 0 && current.userId) {
+			await this.deps.contactStore.removeFacts(
+				current.userId,
+				dropped.map((fact) => fact.text),
+			);
+		}
 		await this.persistRecordedFacts(current.userId, contactName);
 		await this.deps.consolidationQueue.remove(current.chatId);
 		// Say so on disk, or the next launch will ask the same questions of the same
