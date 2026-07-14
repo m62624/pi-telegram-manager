@@ -46,7 +46,7 @@ import {
 	formatClock,
 	formatNowLine,
 } from "./core/datetime";
-import { expandHome, readInstructionFiles } from "./core/instructions";
+import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import {
 	classifyInputSource,
