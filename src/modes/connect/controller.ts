@@ -618,14 +618,20 @@ export class ConnectController {
 	}
 
 	/**
-	 * Close out the finished run and pump the next queued turn.
+	 * Close out the finished run and ask for the next queued turn.
 	 *
 	 * `fallbackReply` delivers the run's last assistant text, and is a SAFETY NET
 	 * only: `index.ts` passes false once anything was already mirrored message by
 	 * message (see {@link deliverAssistant}), and for a run that is not the owner's
 	 * (mixed: a manager moderation turn shares this session, and its text belongs to
-	 * the interlocutor). The queue is pumped either way — an owner message may be
-	 * waiting behind the turn that just ended.
+	 * the interlocutor).
+	 *
+	 * ASK, not take: {@link dispatch} hands nothing over unless `isIdle()` says the
+	 * session can accept it, and when Pi calls this it cannot — `agent_end` is awaited
+	 * from inside the run that is ending. So the queue really drains a moment later,
+	 * from `agent_settled` (see `index.ts`), which is the first instant a prompt can be
+	 * taken. Asking here anyway costs one comparison and keeps this method honest for
+	 * every other caller.
 	 */
 	async onAgentEnd(
 		messages: readonly unknown[],
