@@ -63,7 +63,7 @@ Binds your **current Pi terminal session** to your **private chat with the bot**
 - **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)) — a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
 - The bot talks only to **you** (`allowedUserId`) and touches no other chats.
 
-Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/esc` (cancel the running turn), `/help`.
+Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/compact` (summarise the history to free up context), `/esc` (cancel the running turn), `/help`.
 
 ### 🕵️ Secretary manager — answer other people on your behalf
 
@@ -275,7 +275,9 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/stop` (stop the bot — owner), `/help`; in Personal mode also `/clear`, `/esc`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/esc`.
+
+`/compact` summarises the history the model carries, so a long session keeps going instead of running into the context window. The chat says what it is doing and how it went — how full the context was, what the history weighed, and a red card if the compaction failed (Pi has no event for that, so without it a failure would simply go quiet). In manager mode there is nothing to compact: the context is built fresh for each conversation.
 
 ---
 

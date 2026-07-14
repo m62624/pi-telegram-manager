@@ -67,6 +67,10 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		{ command: "esc", description: "Cancel the current turn" },
 		{ command: "clear", description: "Clear the conversation history" },
 		{
+			command: "compact",
+			description: "Summarise the history to free up context",
+		},
+		{
 			command: "switch",
 			description: "Switch bot mode (manager / personal / mixed)",
 		},

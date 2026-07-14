@@ -375,6 +375,22 @@ describe("ConnectController", () => {
 		expect(sendFollowUp).not.toHaveBeenCalled();
 	});
 
+	it("intercepts /compact as a control command instead of a prompt", async () => {
+		const onCompact = vi.fn(async () => {});
+		const { controller, sendFollowUp } = setup({ onCompact });
+		expect(await controller.onEvent(messageEvent("/compact"))).toBe(true);
+		expect(onCompact).toHaveBeenCalledTimes(1);
+		// "/compact" reaching the model as a prompt is the failure this guards: it would
+		// answer ABOUT compaction instead of the context being compacted.
+		expect(sendFollowUp).not.toHaveBeenCalled();
+	});
+
+	it("treats /compact as an ordinary prompt when no handler is wired", async () => {
+		const { controller, sendFollowUp } = setup();
+		expect(await controller.onEvent(messageEvent("/compact"))).toBe(true);
+		expect(sendFollowUp).toHaveBeenCalledTimes(1);
+	});
+
 	it("answers /help with the command list, without prompting the agent", async () => {
 		const { controller, api, sendFollowUp } = setup();
 		const handled = await controller.onEvent(messageEvent("/help"));

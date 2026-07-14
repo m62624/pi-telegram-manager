@@ -91,6 +91,12 @@ export interface ConnectControllerDeps {
 	onClear?: () => Promise<void>;
 	/** Handle a `/esc` (or `/cancel`) request to interrupt the running turn. */
 	onAbort?: () => Promise<void>;
+	/**
+	 * Handle a `/compact` request: summarise the history the model carries, so a long
+	 * session keeps going instead of hitting the context window. The outcome is
+	 * announced by the compaction cards, not by this call.
+	 */
+	onCompact?: () => Promise<void>;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
@@ -133,6 +139,7 @@ export const DEFAULT_ALBUM_WINDOW_MS = 1500;
 // agent. Everything else (including /start) falls through as an ordinary prompt.
 const CLEAR_COMMANDS = new Set(["clear", "new", "reset"]);
 const ABORT_COMMANDS = new Set(["esc", "cancel"]);
+const COMPACT_COMMANDS = new Set(["compact"]);
 const HELP_COMMANDS = new Set(["help"]);
 const START_COMMANDS = new Set(["start"]);
 
@@ -147,6 +154,7 @@ const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/stop", "stop the bot entirely"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
+	bullet("/compact", "summarise the history to free up context"),
 	bullet("/start", "privacy & terms — read before using"),
 	bullet("/help", "show this help"),
 	"",
@@ -407,6 +415,10 @@ export class ConnectController {
 		}
 		if (ABORT_COMMANDS.has(command.name) && this.deps.onAbort) {
 			await this.deps.onAbort();
+			return true;
+		}
+		if (COMPACT_COMMANDS.has(command.name) && this.deps.onCompact) {
+			await this.deps.onCompact();
 			return true;
 		}
 		if (HELP_COMMANDS.has(command.name)) {

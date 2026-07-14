@@ -67,6 +67,11 @@ import {
 	SYSTEM_INSTRUCTIONS_HEADER,
 } from "./instructions/builtin";
 import {
+	compactedCard,
+	compactingCard,
+	compactionFailedCard,
+} from "./modes/connect/compaction-cards";
+import {
 	ConnectController,
 	MIRROR_URL,
 	REPO_URL,
@@ -1379,22 +1384,62 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	// Let the chat know when context compaction runs, so a mid-turn pause is
-	// explained rather than looking like a hang. There is no dedicated
-	// "compaction failed" event; a genuine failure surfaces through the normal
-	// agent error path.
-	pi.on("session_before_compact", async () => {
-		await connect
-			?.sendToChat(
-				card("🗜", "Compacting context", [
-					note("Freeing up space — one moment…"),
-				]),
+	/**
+	 * Compact the context on the owner's ask (`/compact` in the chat).
+	 *
+	 * `ctx.compact()` returns immediately and reports back on a callback. Success is
+	 * already narrated by the two events below, so only the FAILURE needs a card of its
+	 * own: without one, a compaction that threw left "Compacting context…" standing as
+	 * the last word in the chat, with nothing ever following it.
+	 */
+	const compactContext = async (): Promise<void> => {
+		const ctx = activeCtx;
+		const controller = connect;
+		if (!ctx || !controller) return;
+		// Compacting rewrites the history the running turn is reading from. Wait for the
+		// turn to finish, exactly as /clear does.
+		if (busy) {
+			await controller
+				.sendToChat(
+					card("⏳", "Busy right now", [
+						note("Send /compact again once I finish."),
+					]),
+				)
+				.catch(() => {});
+			return;
+		}
+		ctx.compact({
+			onError: (error) => {
+				void chatLane
+					.run(() => controller.sendToChat(compactionFailedCard(error.message)))
+					.catch(() => {});
+			},
+		});
+	};
+
+	// Narrate compaction, whoever started it: the owner (/compact), the context
+	// threshold, or an overflow recovery. It rewrites what the model remembers and takes
+	// long enough that saying nothing reads as a hang.
+	pi.on("session_before_compact", async (event, ctx) => {
+		const controller = connect;
+		if (!controller) return;
+		await chatLane
+			.run(() =>
+				controller.sendToChat(
+					compactingCard(event.reason, ctx.getContextUsage()),
+				),
 			)
 			.catch(() => {});
 	});
-	pi.on("session_compact", async () => {
-		await connect
-			?.sendToChat(card("✅", "Context compacted", [note("Continuing.")]))
+	pi.on("session_compact", async (event) => {
+		const controller = connect;
+		if (!controller) return;
+		await chatLane
+			.run(() =>
+				controller.sendToChat(
+					compactedCard(event.compactionEntry.tokensBefore),
+				),
+			)
 			.catch(() => {});
 	});
 	pi.on("session_shutdown", async () => {
@@ -1956,6 +2001,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					]),
 				);
 			},
+			onCompact: compactContext,
 			onAbort: async () => {
 				// Interrupt the running turn via the handler armed on agent_start.
 				const stopped = await abort.abort();
@@ -2781,6 +2827,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					})
 					.catch(() => {});
 				if (!stopped) scheduleSwitch("stop");
+				return true;
+			}
+			// The command menu is one list for every mode, so it offers /compact in manager
+			// mode too — where it would do nothing: the manager REBUILDS the model's context
+			// from the chat store on every turn (see pi.on("context")), so compacting the
+			// session history changes nothing it reads. Say that, rather than let a menu
+			// entry go silently nowhere. (In mixed, `connect` is live and handles it.)
+			if (!connect && /^\/compact(@\w+)?$/i.test(text)) {
+				await api
+					.sendMessage({
+						chat_id: ownerUserId,
+						message_thread_id: threadOf(event) ?? personalThread(),
+						text: "🗜 /compact applies to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is nothing to compact.",
+					})
+					.catch(() => {});
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own
