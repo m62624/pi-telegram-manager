@@ -15,7 +15,7 @@
  * A message counts as bot-sent if *either* signal matches. The marker helpers
  * are pure; {@link isBotMessage} consults the async registry too.
  */
-import type { SentRegistry } from "../../storage/sent-registry";
+import type { SentRegistry } from "../../storage/chat-state";
 
 /**
  * A fixed, invisible zero-width signature appended to every bot message. Built

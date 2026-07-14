@@ -230,7 +230,6 @@ export interface TelegramSettings {
 		 * as an observability feed. Default true: with `topics` on it lands in its own
 		 * `log` topic, so it informs without burying the conversation. Without topics
 		 * it shares the single DM and is chatty — turn it off there if that annoys you.
-		 * Reads the former `manager.debugFeed` key when `manager.log` is unset.
 		 */
 		log: boolean;
 		/**
@@ -539,14 +538,16 @@ export function normalizeSettings(
 		},
 		topics: {
 			enabled: asBoolean(topics.enabled, "topics.enabled", d.topics.enabled),
-			// Renamed from chatName/logName; an existing settings.json keeps working.
+			// Renamed from chatName/logName. The rename happens in the owner's FILE, once,
+			// on the way in (`storage/migrations.ts`) — a reader that understands both
+			// spellings is a reader that guarantees the file is never fixed.
 			personalName: asString(
-				topics.personalName ?? topics.chatName,
+				topics.personalName,
 				"topics.personalName",
 				d.topics.personalName,
 			),
 			managerName: asString(
-				topics.managerName ?? topics.logName,
+				topics.managerName,
 				"topics.managerName",
 				d.topics.managerName,
 			),
@@ -658,14 +659,9 @@ export function normalizeSettings(
 				"manager.reviseThreshold",
 				d.manager.reviseThreshold,
 			),
-			// Renamed from `manager.debugFeed` (which now that the feed has its own `log`
-			// topic defaults to ON): an existing settings.json keeps working — the old
-			// key is read whenever the new one is unset.
-			log: asBoolean(
-				manager.log ?? manager.debugFeed,
-				"manager.log",
-				d.manager.log,
-			),
+			// Renamed from `manager.debugFeed`. Migrated in the owner's file, not papered
+			// over here — see `storage/migrations.ts`.
+			log: asBoolean(manager.log, "manager.log", d.manager.log),
 			promptAlerts: asBoolean(
 				manager.promptAlerts,
 				"manager.promptAlerts",

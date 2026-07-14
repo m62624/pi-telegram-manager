@@ -175,21 +175,17 @@ import {
 	type BusinessStore,
 	createBusinessStore,
 } from "./storage/business-store";
-import {
-	type ChatCursorStore,
-	createChatCursorStore,
-} from "./storage/chat-cursors";
+import { type ChatCursorStore, createChatState } from "./storage/chat-state";
 import {
 	type ChatMessageRecord,
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
-import { createConsolidationQueue } from "./storage/consolidation-queue";
 import { createContactStore } from "./storage/contact-store";
+import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
 import { readJsonIfExists, writeJson } from "./storage/json";
-import { migrateMemory } from "./storage/memory-migration";
-import { createSentRegistry } from "./storage/sent-registry";
+import { migrateStorage } from "./storage/migrations";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
 	fetchBytesFromUrl,
@@ -226,6 +222,7 @@ import {
 	placeOfOwnerMessage,
 	TopicRouter,
 	type TopicsApi,
+	type TopicsState,
 } from "./telegram/topics";
 import type { TelegramEvent } from "./telegram/updates";
 import { fitLine, fitLines, terminalWidth } from "./ui/fit";
@@ -808,32 +805,27 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * restarted Pi that forgot them used to pin a SECOND message next to the first.
 	 */
 	let modePinMessageIds: number[] = [];
-	interface ModePinState {
-		ownerChatId: number;
-		/** Historic single-id form; still read so an existing pin is not orphaned. */
-		messageId?: number;
-		messageIds?: number[];
-	}
 	let modePinLoaded = false;
+	/**
+	 * The owner's DM state: the topic threads we opened in it and the mode message we
+	 * pinned to it. One file, because they are one question — see `storage/dm-state.ts`.
+	 * The historic single-id pin (`messageId`) is not read here any more; the migration
+	 * folds it into `messageIds` once, on the way in.
+	 */
+	const dmState = createDmState<TopicsState>(fs, paths.dmStatePath);
 
 	const loadModePin = async (ownerChatId: number): Promise<void> => {
 		if (modePinLoaded) return;
 		modePinLoaded = true;
-		const stored = await readJsonIfExists<ModePinState>(
-			fs,
-			paths.modePinPath,
-		).catch(() => null);
+		const stored = await dmState.loadModePin().catch(() => null);
 		if (!stored || stored.ownerChatId !== ownerChatId) return;
-		modePinMessageIds = [
-			...(stored.messageIds ?? []),
-			...(stored.messageId !== undefined ? [stored.messageId] : []),
-		];
+		modePinMessageIds = [...stored.messageIds];
 	};
 
 	/** Forget the pin entirely (an error path: better a new one than a ghost). */
 	const forgetModePin = async (): Promise<void> => {
 		modePinMessageIds = [];
-		await fs.removeFile(paths.modePinPath).catch(() => {});
+		await dmState.clearModePin().catch(() => {});
 	};
 
 	const saveModePin = async (
@@ -841,10 +833,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		messageIds: number[],
 	): Promise<void> => {
 		modePinMessageIds = messageIds;
-		await writeJson<ModePinState>(fs, paths.modePinPath, {
-			ownerChatId,
-			messageIds,
-		}).catch(() => {});
+		await dmState.saveModePin({ ownerChatId, messageIds }).catch(() => {});
 	};
 
 	// Connection watchdog: a silent timer that probes the active bot connection and
@@ -2081,6 +2070,38 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const loadSettingsAndToken = async (
 		ctx: ExtensionCommandContext,
 	): Promise<{ settings: TelegramSettings; token: string } | null> => {
+		// BEFORE the settings are read, and before any store opens a file: the migration
+		// is what puts the files where the stores expect them, and it rewrites
+		// `settings.json` itself (the keys we renamed are renamed in the owner's own file,
+		// so the reader below understands exactly one spelling). Both launchers come
+		// through here, which is why it lives here and not in one of them.
+		//
+		// A failed migration must not take the bot down with it: the old files are still
+		// there, untouched by any step that did not complete, and the owner is told.
+		try {
+			const outcome = await migrateStorage(
+				fs,
+				paths,
+				createContactStore(fs, paths),
+			);
+			if (outcome.applied.length > 0) {
+				ctx.ui.notify(
+					`Telegram storage upgraded (layout v${outcome.from} → v${outcome.to}): ${outcome.applied.join(", ")}.`,
+				);
+			}
+			if (outcome.factsCleared > 0) {
+				ctx.ui.notify(
+					`Memory upgraded: contact facts were cleared for ${outcome.factsCleared} contact(s) and will be re-learned.`,
+					"warning",
+				);
+			}
+		} catch (error) {
+			ctx.ui.notify(
+				`Telegram storage migration failed: ${String(error)}. Your files were left as they were.`,
+				"error",
+			);
+			return null;
+		}
 		const { settings, warnings } = await loadSettings(fs, paths.settingsPath);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 		activeTimezone = settings.timezone;
@@ -2108,8 +2129,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<void> => {
 		topics = new TopicRouter({
 			api: api as TopicsApi,
-			fs,
-			path: paths.topicsPath,
+			store: dmState,
 			ownerChatId,
 			options: settings.topics,
 			onFallback: (reason) => {
@@ -2893,20 +2913,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// isolation is guaranteed by pi.on("context") rebuilding messages, and the
 		// banner tells the user this session is now the manager.
 
-		// One-off memory migration: wipe pre-v2 contact facts (captured without
-		// subject attribution, so mis-attributed under the who-is-who firewall).
-		// Runs once, guarded by the version marker; failure never blocks the manager.
-		if (
-			await migrateMemory(fs, paths.memoryVersionPath, contactStore).catch(
-				() => false,
-			)
-		) {
-			ctx.ui.notify(
-				"Memory upgraded: previous contact facts were cleared.",
-				"warning",
-			);
-		}
-
 		// Bound each chat transcript on disk to the last-N window the model reads
 		// (rememberMessages); older messages are pruned so files never grow forever.
 		const chatStore = createChatStore(
@@ -2914,14 +2920,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			paths,
 			settings.manager.rememberMessages,
 		);
-		const consolidationQueue = createConsolidationQueue(
-			fs,
-			paths.consolidationQueuePath,
-		);
-		// How far each chat has already been taken — the one thing a restart used to
-		// forget, and the reason it re-answered and re-interrogated the same messages
-		// every launch.
-		const chatCursors = createChatCursorStore(fs, paths.chatCursorsPath);
+		// Everything we know ABOUT a chat that is not the chat itself: the ids we sent, the
+		// memory-pass queue, and how far it has been answered and consolidated. One subject,
+		// one file, one lock — three views of it (see `storage/chat-state.ts`).
+		const chatState = createChatState(fs, paths.chatStatePath);
+		const {
+			consolidationQueue,
+			cursors: chatCursors,
+			sentRegistry,
+		} = chatState;
 		managerClient = new TelegramClient({
 			token,
 			onEvent: routeManagerEvent,
@@ -3034,7 +3041,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			contactStore,
 			consolidationQueue,
 			chatCursors,
-			sentRegistry: createSentRegistry(fs, paths.sentRegistryPath),
+			sentRegistry,
 			businessStore,
 			// In mixed mode the manager may only run a turn while the shared brain is
 			// in the Telegram polarity; during coding the owner owns the session, so

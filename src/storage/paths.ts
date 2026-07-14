@@ -18,18 +18,43 @@ export interface TelegramPaths {
 	settingsPath: string;
 	/** Business connection ids + rights (sensitive). */
 	businessPath: string;
-	/** Registry of message ids/UUIDs the bot sent (bot-vs-owner identity). */
-	sentRegistryPath: string;
-	/** Persisted queue of chats awaiting idle memory consolidation. */
-	consolidationQueuePath: string;
-	/** How far each chat has been answered and consolidated (survives a restart). */
-	chatCursorsPath: string;
-	/** Marker of the applied contact-fact schema version (one-off migrations). */
-	memoryVersionPath: string;
-	/** Thread ids of the personal/manager topics in the owner's bot DM. */
-	topicsPath: string;
-	/** The pinned "current mode" message in the owner's DM (survives restarts). */
-	modePinPath: string;
+	/**
+	 * Everything we know ABOUT a chat that is not the chat itself: the ids we sent, the
+	 * memory-pass queue, how far it has been answered and consolidated. One subject, one
+	 * file — see `chat-state.ts`.
+	 */
+	chatStatePath: string;
+	/** The on-disk layout this directory is written in — see `migrations.ts`. */
+	schemaVersionPath: string;
+	/**
+	 * What we have put in the owner's DM and where it is: the topic threads we opened
+	 * and the mode message we pinned — see `dm-state.ts`.
+	 */
+	dmStatePath: string;
+	/**
+	 * Files an earlier layout wrote, and only the migration runner may read.
+	 *
+	 * They are named here rather than spelled out inside the migration because a path
+	 * this project once used is a fact about this project, and the place facts about
+	 * paths live is this file. Nothing else may touch them: to the running bot they do
+	 * not exist.
+	 */
+	legacy: {
+		/** → `chatStatePath` (`sent`). */
+		sentRegistryPath: string;
+		/** → `chatStatePath` (`consolidation`). */
+		consolidationQueuePath: string;
+		/** → `chatStatePath` (`handledThrough` / `consolidatedThrough`). */
+		chatCursorsPath: string;
+		/** → `dmStatePath` (`topics`), including its own pre-rename `chat`/`log` keys. */
+		topicsPath: string;
+		/** → `dmStatePath` (`modePin`), including its historic single-id form. */
+		modePinPath: string;
+		/** → `schemaVersionPath`: the contact-fact schema had a marker of its own. */
+		memoryVersionPath: string;
+		/** Where the owner's settings file is copied before its keys are rewritten. */
+		settingsBackupPath: string;
+	};
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
 	/** Per-contact profile + important-facts directory (both modes). */
@@ -60,12 +85,18 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		singletonPath: join(extensionDir, "singleton.json"),
 		settingsPath: join(extensionDir, "settings.json"),
 		businessPath: join(extensionDir, "business.json"),
-		sentRegistryPath: join(extensionDir, "sent-registry.json"),
-		consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
-		chatCursorsPath: join(extensionDir, "chat-cursors.json"),
-		memoryVersionPath: join(extensionDir, "memory-version.json"),
-		topicsPath: join(extensionDir, "topics.json"),
-		modePinPath: join(extensionDir, "mode-pin.json"),
+		chatStatePath: join(extensionDir, "chat-state.json"),
+		schemaVersionPath: join(extensionDir, "schema-version.json"),
+		dmStatePath: join(extensionDir, "dm-state.json"),
+		legacy: {
+			sentRegistryPath: join(extensionDir, "sent-registry.json"),
+			consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
+			chatCursorsPath: join(extensionDir, "chat-cursors.json"),
+			topicsPath: join(extensionDir, "topics.json"),
+			modePinPath: join(extensionDir, "mode-pin.json"),
+			memoryVersionPath: join(extensionDir, "memory-version.json"),
+			settingsBackupPath: join(extensionDir, "settings.backup.json"),
+		},
 		chatsDir,
 		contactsDir,
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),

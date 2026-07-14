@@ -6,7 +6,7 @@ import {
 	stripBotMarker,
 	tagBotText,
 } from "../../../src/modes/manager/identity";
-import type { SentRegistry } from "../../../src/storage/sent-registry";
+import type { SentRegistry } from "../../../src/storage/chat-state";
 
 function fakeRegistry(known: Record<string, number[]> = {}): SentRegistry {
 	return {

@@ -87,11 +87,12 @@ export interface ContactStore {
 	/** A contact's important facts, oldest-first (empty when none/unseen). */
 	getFacts(userId: string): Promise<ContactFact[]>;
 	/**
-	 * Wipe every contact's `facts` list (profiles kept). Used by the one-off memory
-	 * migration when the fact schema changes, so stale mis-attributed facts don't
-	 * linger under the new rules.
+	 * Wipe every contact's `facts` list (profiles kept). Used by the memory-schema
+	 * migration when the fact schema changes, so stale mis-attributed facts don't linger
+	 * under the new rules. Returns how many contacts actually lost facts — a directory
+	 * with nothing in it is not an upgrade, and the owner should not be told it was.
 	 */
-	clearAllFacts(): Promise<void>;
+	clearAllFacts(): Promise<number>;
 }
 
 /**
@@ -271,6 +272,7 @@ export function createContactStore(
 
 		async clearAllFacts() {
 			const entries = await safeReaddir(fs, paths.contactsDir);
+			let cleared = 0;
 			for (const name of entries) {
 				if (!name.endsWith(".json")) continue;
 				const userId = name.slice(0, -".json".length);
@@ -279,9 +281,11 @@ export function createContactStore(
 					const existing = await read(userId);
 					if (!existing || existing.facts.length === 0) return;
 					existing.facts = [];
+					cleared += 1;
 					await writeJson(fs, path, existing);
 				});
 			}
+			return cleared;
 		},
 	};
 }

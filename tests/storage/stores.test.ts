@@ -7,7 +7,6 @@ import {
 } from "../../src/storage/chat-store";
 import { createContactStore } from "../../src/storage/contact-store";
 import { createTelegramPaths } from "../../src/storage/paths";
-import { createSentRegistry } from "../../src/storage/sent-registry";
 import type { TelegramProfile } from "../../src/telegram/profile";
 import { FakeFs } from "../helpers/fake-fs";
 
@@ -123,28 +122,6 @@ describe("business-store", () => {
 	});
 });
 
-describe("sent-registry", () => {
-	it("records bot message ids and distinguishes them", async () => {
-		const fs = new FakeFs();
-		const reg = createSentRegistry(fs, paths.sentRegistryPath);
-		await reg.recordSent("c", 100);
-		expect(await reg.wasSentByBot("c", 100)).toBe(true);
-		expect(await reg.wasSentByBot("c", 101)).toBe(false);
-		// Manual owner message id (never recorded) reads as not-bot.
-		expect(await reg.wasSentByBot("other", 100)).toBe(false);
-	});
-
-	it("bounds retention per chat", async () => {
-		const fs = new FakeFs();
-		const reg = createSentRegistry(fs, paths.sentRegistryPath, {
-			maxPerChat: 3,
-		});
-		for (let i = 0; i < 5; i++) await reg.recordSent("c", i);
-		expect(await reg.wasSentByBot("c", 0)).toBe(false); // evicted
-		expect(await reg.wasSentByBot("c", 4)).toBe(true);
-	});
-});
-
 describe("contact-store", () => {
 	const profile = (over: Partial<TelegramProfile> = {}): TelegramProfile => ({
 		userId: "42",
@@ -225,10 +202,13 @@ describe("contact-store", () => {
 		expect((await store.get("2"))?.profile.displayName).toBe("Two");
 	});
 
-	it("clearAllFacts is a no-op when no contacts exist", async () => {
+	it("clearAllFacts clears nothing, and says so, when there is nothing to clear", async () => {
+		// The count is what tells the owner whether their memory was actually thrown away.
+		// A fresh install passes through the memory migration too, and must not be told
+		// that facts it never had were "upgraded".
 		const fs = new FakeFs();
 		const store = createContactStore(fs, paths);
-		await expect(store.clearAllFacts()).resolves.toBeUndefined();
+		expect(await store.clearAllFacts()).toBe(0);
 	});
 
 	it("stores a fact once, however many times it is learned", async () => {

@@ -169,17 +169,6 @@ describe("normalizeSettings", () => {
 		);
 	});
 
-	it("still honours the former manager.debugFeed key", () => {
-		expect(
-			normalizeSettings({ manager: { debugFeed: false } }).manager.log,
-		).toBe(false);
-		// The new key wins when both are present.
-		expect(
-			normalizeSettings({ manager: { debugFeed: false, log: true } }).manager
-				.log,
-		).toBe(true);
-	});
-
 	it("defaults the prompt-head alert on and accepts an explicit toggle", () => {
 		// On, because another extension quietly costing tens of thousands of tokens a turn
 		// is worth one card. Off, because it is a warning about something this extension
@@ -207,12 +196,6 @@ describe("normalizeSettings", () => {
 			personalName: "personal",
 			managerName: "secretary",
 		});
-	});
-
-	it("still honours the former topics.chatName / topics.logName keys", () => {
-		expect(
-			normalizeSettings({ topics: { chatName: "me", logName: "bot" } }).topics,
-		).toEqual({ enabled: true, personalName: "me", managerName: "bot" });
 	});
 
 	it("caps images per turn at Telegram's album size by default", () => {
