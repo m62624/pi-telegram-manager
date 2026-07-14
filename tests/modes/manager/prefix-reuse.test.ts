@@ -165,10 +165,10 @@ describe("prompt prefix reuse", () => {
 		console.log(
 			`\n  same chat, 13 turns: worst re-read ${worst} chars, mean ${Math.round(steady.reduce((a, b) => a + b, 0) / steady.length)}\n`,
 		);
-		// Measured today: worst 2478, mean 1344 — the transcript of short messages is a
-		// kilobyte, so even re-reading all of it is cheap. The long-message case below is
-		// where this same sliding costs real time.
-		expect(worst).toBeLessThan(3_000);
+		// A turn adds one message and one reply, and that is ALL it may cost: the window is
+		// anchored, so the transcript above the new line does not move. Was 2,478 worst /
+		// 1,344 mean when the window slid by one message per message; now ~820 flat.
+		expect(worst).toBeLessThan(1_200);
 	});
 
 	it("keeps the whole transcript when the model loops on tools inside one turn", async () => {
@@ -248,7 +248,8 @@ describe("prompt prefix reuse", () => {
 			`\n  turn after learning a fact: re-reads ${after.reread} chars\n`,
 		);
 		// It must cost the fact and the tail — not the whole conversation above it.
-		expect(after.reread).toBeLessThan(3_000);
+		// Was 2,367 with the facts in the head block; now ~830.
+		expect(after.reread).toBeLessThan(1_200);
 	});
 
 	it("keeps the head byte-identical, whoever is talking and whatever it has learned", async () => {
@@ -318,10 +319,15 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
 			await env.controller.onAgentEnd();
 		}
 		const steady = reread.slice(1);
+		const mean = Math.round(steady.reduce((a, b) => a + b, 0) / steady.length);
 		console.log(
-			`\n  long transcript, 15 turns: worst re-read ${Math.max(...steady)} chars, mean ${Math.round(steady.reduce((a, b) => a + b, 0) / steady.length)}\n`,
+			`\n  long transcript, 15 turns: worst re-read ${Math.max(...steady)} chars, mean ${mean}\n`,
 		);
-		expect(steady.length).toBe(15);
+		// Was 9,328 mean: every turn re-read the whole transcript, because the window slid
+		// by one message and moved the first line the model reads. Now the window holds
+		// still for a block at a time — most turns cost only their own new lines, and the
+		// turn where the window finally moves pays for the whole transcript, once.
+		expect(mean).toBeLessThan(5_000);
 	});
 
 	it("measures what a learned fact costs a long-transcript chat", async () => {
@@ -353,6 +359,8 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
 		console.log(
 			`\n  long transcript, turn after a fact: re-reads ${after.reread} chars\n`,
 		);
-		expect(after.reread).toBeGreaterThan(0);
+		// Was 19,397 — a single line learned about a person, paid for with the entire
+		// conversation. This is the number that started the whole audit.
+		expect(after.reread).toBeLessThan(4_000);
 	});
 });

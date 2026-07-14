@@ -55,10 +55,10 @@ import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
 import {
 	boundaryDirective,
-	budgetRecords,
 	buildIsolatedMessages,
 	type IsolatedImage,
 	type IsolatedMessage,
+	windowRecords,
 } from "./context-isolation";
 import { analyzeChat, type ConversationState } from "./conversation-state";
 import {
@@ -1159,19 +1159,21 @@ export class ManagerController {
 		if (this.consolidating) return this.buildConsolidationContext();
 		const active = this.scheduler.activeChat();
 		if (active === null) return null;
-		const raw = await this.deps.chatStore.getRecent(
-			active,
-			this.deps.rememberMessages,
-		);
+		// The whole transcript, because the window that is cut from it is ANCHORED to the
+		// conversation's length — a window measured from the end alone slides by one line
+		// per line, and a transcript whose first line moves is a transcript the model must
+		// read again from the top. (`getRecent` reads the same file to serve its slice, so
+		// this costs no more I/O.)
+		const raw = await this.deps.chatStore.all(active);
 		// Rehydrate the contact's userId from the transcript if the in-memory meta
 		// lacks it (e.g. after a restart, before a fresh live message repopulates it),
 		// so known facts are shown and new facts are stored by the right contact.
 		this.rememberUserId(active, raw);
-		const records = budgetRecords(
-			raw,
-			this.deps.maxCharsPerMessage,
-			this.deps.maxContextChars,
-		);
+		const records = windowRecords(raw, {
+			maxMessages: this.deps.rememberMessages,
+			maxCharsPerMessage: this.deps.maxCharsPerMessage,
+			maxContextChars: this.deps.maxContextChars,
+		});
 		const meta = this.chats.get(active);
 		const isolated = buildIsolatedMessages({
 			records,
@@ -1261,16 +1263,13 @@ export class ManagerController {
 			chatId: string;
 			loop: InterrogationState;
 		};
-		const raw = await this.deps.chatStore.getRecent(
-			current.chatId,
-			this.deps.rememberMessages,
-		);
+		const raw = await this.deps.chatStore.all(current.chatId);
 		this.rememberUserId(current.chatId, raw);
-		const records = budgetRecords(
-			raw,
-			this.deps.maxCharsPerMessage,
-			this.deps.maxContextChars,
-		);
+		const records = windowRecords(raw, {
+			maxMessages: this.deps.rememberMessages,
+			maxCharsPerMessage: this.deps.maxCharsPerMessage,
+			maxContextChars: this.deps.maxContextChars,
+		});
 		const meta = this.chats.get(current.chatId);
 		const isolated = buildIsolatedMessages({
 			records,
