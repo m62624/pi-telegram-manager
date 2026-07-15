@@ -17,12 +17,14 @@
  *    text corrections, and the runtime notices. What you open only when something looks
  *    off. This is where the noise that used to bury the `manager` topic now lives.
  *
- * There is no API to LIST a chat's topics, so the two thread ids are persisted and
- * re-verified on start by renaming them to the wanted names (`editForumTopic` fails on
- * a thread that is gone): a topic the owner deleted while the bot was off is simply
- * recreated. Everything here is best-effort —
- * Threaded Mode off, an old API server, or any error degrades to `undefined` thread
- * ids, which route every message to the plain DM exactly as before.
+ * There is no API to LIST a chat's topics, so the thread ids are persisted and re-verified
+ * on start (`editForumTopic` fails on a thread that is gone): a topic the owner deleted
+ * while the bot was off is simply recreated. That same missing-LIST is why an id we ever
+ * minted must never be dropped: a `personal` we rotate away, or a stored topic we can no
+ * longer adopt, is kept (in `stale`) and its deletion retried every start until Telegram
+ * confirms it gone — an id we forget is an orphan we can never find to clean up. Everything
+ * here is best-effort — Threaded Mode off, an old API server, or any error degrades to
+ * `undefined` thread ids, which route every message to the plain DM exactly as before.
  */
 import type { DmStateStore } from "../storage/dm-state";
 
@@ -259,21 +261,42 @@ export class TopicRouter {
 				return false;
 			}
 			const stored = await this.load();
-			const personal = await this.resolveTopic(
+			const personalR = await this.resolveTopic(
 				"personal",
 				options.personalName,
 				stored,
 			);
+			const personal = personalR.id;
 			this.personalIsFresh = personal !== stored?.personal;
-			const manager = await this.resolveTopic(
+			const managerR = await this.resolveTopic(
 				"manager",
 				options.managerName,
 				stored,
 			);
+			const manager = managerR.id;
 			// The diagnostics topic. Missing from an install that predates it (see
 			// TopicsState.log) — resolveTopic then simply creates it, which is exactly how
 			// "everyone picks up the new log topic" happens: on the next start.
-			const log = await this.resolveTopic("log", options.logName, stored);
+			const logR = await this.resolveTopic("log", options.logName, stored);
+			const log = logR.id;
+			// Ids we minted and just replaced (a stored topic we could not adopt), plus any we
+			// still owe a delete from before. NEVER a live id — the same number can come back
+			// as a freshly created topic, and a topic in use must never be queued for its own
+			// deletion. This is the orphan fix: an id dropped here can never be found again
+			// (Telegram cannot LIST topics), so it is kept until a delete confirms it gone.
+			const live = new Set<number>([
+				personal,
+				manager,
+				log,
+				...(stored?.archive !== undefined ? [stored.archive] : []),
+			]);
+			const pending = [
+				...(stored?.stale ?? []),
+				personalR.abandoned,
+				managerR.abandoned,
+				logR.abandoned,
+			].filter((id): id is number => id !== undefined && !live.has(id));
+			const stale = await this.sweepStale([...new Set(pending)]);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
 				personal,
@@ -292,7 +315,7 @@ export class TopicRouter {
 				...(personal === stored?.personal && stored?.used
 					? { used: true }
 					: {}),
-				...(stored?.stale !== undefined ? { stale: stored.stale } : {}),
+				...(stale.length > 0 ? { stale } : {}),
 			};
 			await this.save(state);
 			this.state = state;
@@ -467,7 +490,13 @@ export class TopicRouter {
 		});
 	}
 
-	/** Delete a topic, and say whether Telegram actually did it (see startSession). */
+	/**
+	 * Delete a topic, and say whether it is now gone. "Gone" includes a topic that was
+	 * ALREADY gone: a `message thread not found` is a deletion that already happened, so it
+	 * reports success and stops being retried (a topic the owner deleted themselves would
+	 * otherwise be chased forever). Only a real refusal — `TOPIC_ID_INVALID`, a topic that
+	 * survived the owner clearing the chat — returns false and is kept pending.
+	 */
 	private async deleteTopic(threadId: number): Promise<boolean> {
 		return await this.deps.api
 			.deleteForumTopic({
@@ -475,7 +504,7 @@ export class TopicRouter {
 				message_thread_id: threadId,
 			})
 			.then(() => true)
-			.catch(() => false);
+			.catch((error) => TopicRouter.isMissingThread(error));
 	}
 
 	/**
@@ -534,20 +563,42 @@ export class TopicRouter {
 		}
 	}
 
-	/** A stored topic that still exists (adopted under the wanted name), else a new one. */
+	/**
+	 * A stored topic that still exists (adopted under the wanted name), else a new one —
+	 * and, when a stored id could not be adopted, that id back as `abandoned` so the caller
+	 * can queue it for deletion instead of losing it (see {@link ensure}). An id we forget
+	 * is an orphan we can never find again: Telegram offers no way to LIST a chat's topics.
+	 */
 	private async resolveTopic(
 		kind: TopicKind,
 		name: string,
 		stored: TopicsState | null,
-	): Promise<number> {
+	): Promise<{ id: number; abandoned?: number }> {
 		const known = stored?.[kind];
 		if (
 			known !== undefined &&
 			(await this.adopt(known, name, stored?.names?.[kind]))
 		)
-			return known;
+			return { id: known };
 		const created = await this.create(kind, name);
-		return created.message_thread_id;
+		return {
+			id: created.message_thread_id,
+			...(known !== undefined ? { abandoned: known } : {}),
+		};
+	}
+
+	/**
+	 * Retry the deletions we still owe — every id we minted and could not remove yet — and
+	 * return the ones Telegram STILL refuses (`TOPIC_ID_INVALID`), to try again next start.
+	 * An id already gone counts as done and drops off (see {@link deleteTopic}), so a topic
+	 * the owner deleted themselves is not chased forever.
+	 */
+	private async sweepStale(ids: readonly number[]): Promise<number[]> {
+		const survivors: number[] = [];
+		for (const id of ids) {
+			if (!(await this.deleteTopic(id))) survivors.push(id);
+		}
+		return survivors;
 	}
 
 	/**

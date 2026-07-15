@@ -307,6 +307,109 @@ describe("TopicRouter.recreate", () => {
 	});
 });
 
+// A stored topic that goes bad (adopt fails) is replaced — and the id it replaced must
+// NOT be lost. Telegram cannot LIST topics, so an id we forget is an orphan we can never
+// find to delete: it lingers in the DM as a live duplicate forever. These tests pin down
+// that a replaced/rotated id is kept and its deletion retried until Telegram confirms it.
+describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
+	/** The persisted state, read straight off disk. */
+	function readState(fs: FakeFs) {
+		return createDmState<TopicsState>(fs, PATH).loadTopics();
+	}
+
+	/** A fake whose personal (100) fails adopt, so a fresh one is minted. */
+	function personalWentBad(
+		firstThread: number,
+		extra: Partial<TopicsApi> = {},
+	) {
+		return fakeApi(
+			{
+				editForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
+					if (args.message_thread_id === 100) throw new Error("bad topic");
+					return {};
+				}),
+				...extra,
+			},
+			firstThread,
+		);
+	}
+
+	it("deletes a stored personal it could not adopt, instead of leaving it live", async () => {
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // personal 100, manager 101, log 102
+
+		const second = personalWentBad(200);
+		const r = router(second, fs).router;
+		await r.ensure();
+
+		expect(r.thread("personal")).toBe(200); // a fresh personal
+		// The one it replaced is deleted, not abandoned as a duplicate "personal".
+		expect(second.deleteForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+		expect((await readState(fs))?.stale ?? []).toEqual([]);
+	});
+
+	it("keeps an orphan Telegram refuses to delete, and clears it once it goes", async () => {
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // 100/101/102
+
+		const second = personalWentBad(200, {
+			deleteForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
+				if (args.message_thread_id === 100) {
+					throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+				}
+				return {};
+			}),
+		});
+		await router(second, fs).router.ensure();
+		// Refused → remembered for a later retry, not silently dropped.
+		expect((await readState(fs))?.stale).toEqual([100]);
+
+		// Next start: adopt of 200 is fine, and Telegram now lets 100 go.
+		const third = fakeApi({}, 300);
+		const r3 = router(third, fs).router;
+		await r3.ensure();
+		expect(third.deleteForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ message_thread_id: 100 }),
+		);
+		expect((await readState(fs))?.stale ?? []).toEqual([]);
+		expect(r3.thread("personal")).toBe(200); // no needless churn
+	});
+
+	it("drops an orphan the owner already deleted, instead of retrying it forever", async () => {
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // 100/101/102
+
+		const second = personalWentBad(200, {
+			deleteForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
+				if (args.message_thread_id === 100) {
+					throw new Error("400: Bad Request: message thread not found");
+				}
+				return {};
+			}),
+		});
+		await router(second, fs).router.ensure();
+		// Already gone is done: not kept, not chased.
+		expect((await readState(fs))?.stale ?? []).toEqual([]);
+	});
+
+	it("never queues a live topic for its own deletion", async () => {
+		// A created topic can be handed the very id a just-abandoned one had — the fake
+		// reuses ids, reality does not, but the guard must hold either way.
+		const fs = new FakeFs();
+		await router(fakeApi(), fs).router.ensure(); // personal 100
+
+		const second = personalWentBad(100); // the fresh one is handed 100 again
+		const r = router(second, fs).router;
+		await r.ensure();
+
+		expect(r.thread("personal")).toBe(100);
+		// 100 is the LIVE personal now — it must never have been swept.
+		expect(second.deleteForumTopic).not.toHaveBeenCalled();
+	});
+});
+
 // A topic that lives on stops accepting ordinary messages from the phone: they are
 // posted OUTSIDE it, with no message_thread_id, while a topic created minutes earlier
 // takes them fine. Nothing announces when a topic goes that way, so every session
