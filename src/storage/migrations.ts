@@ -193,12 +193,16 @@ async function migrateSettingsKeys(
 		changed = true;
 	}
 
+	// The old two-topic layout is `chatName`/`logName`. Since then `logName` has been
+	// GIVEN A NEW MEANING — the diagnostics topic's name — so it can no longer be treated
+	// as legacy on its own: a new owner who sets `logName: "diag"` must keep it. The one
+	// unambiguous signal of the old layout is `chatName`, a key with no new meaning at all.
+	// So the rename fires ONLY when `chatName` is present; there, and only there, a sibling
+	// `logName` is the old secretary-topic name and is consumed into `managerName`.
 	const topics = asRecord(settings.topics);
-	if (topics && ("chatName" in topics || "logName" in topics)) {
+	if (topics && "chatName" in topics) {
 		const next = { ...topics };
-		if (!("personalName" in next) && "chatName" in next) {
-			next.personalName = next.chatName;
-		}
+		if (!("personalName" in next)) next.personalName = next.chatName;
 		if (!("managerName" in next) && "logName" in next) {
 			next.managerName = next.logName;
 		}

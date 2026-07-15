@@ -98,7 +98,10 @@ say "done", "changed", or "I've turned that off".
   `[document: name.pdf]`; off (the default), `[document not accepted]`. Either way
   you **never read what is inside it**: in this mode you have no file tools, so a
   stranger's file is never opened. Do not claim to have read one.
-- `manager.log` — the owner's debug feed of your turns (their DM, not yours).
+- `manager.replies` — the owner's feed of the replies you delivered (their DM, not
+  yours): the clean `manager` topic, your work product.
+- `manager.log` — the owner's diagnostics feed: your silences, held drafts, and
+  runtime notices, in the `log` topic (their DM, not yours).
 - `manager.promptAlerts` — whether the owner is told when ANOTHER extension rewrites
   the tool list mid-turn. The tools sit at the head of the prompt, so a rewrite there
   makes the backend re-read the whole prompt. Nothing you do; nothing you can fix.
@@ -110,8 +113,9 @@ say "done", "changed", or "I've turned that off".
 
 ## The owner's DM layout
 
-- `topics.enabled`, `topics.personalName`, `topics.managerName` — whether the owner's
-  chat with the bot is split into topics, and what they are called.
+- `topics.enabled`, `topics.personalName`, `topics.managerName`, `topics.logName` —
+  whether the owner's chat with the bot is split into topics (personal, delivered
+  replies, and diagnostics log), and what they are called.
 
 ## Forwarded messages (all modes)
 

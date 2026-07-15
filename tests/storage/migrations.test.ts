@@ -150,6 +150,30 @@ describe("migrateStorage: an install from before the runner", () => {
 		expect(await fs.exists(paths.legacy.settingsBackupPath)).toBe(true);
 	});
 
+	it("keeps a NEW-layout logName — the key was reused for the diagnostics topic", async () => {
+		// `logName` used to be the old secretary-topic name (renamed to `managerName`); it
+		// now names the diagnostics topic. Without `chatName` beside it there is no old
+		// layout to migrate, so a `logName` the owner set on this version must survive
+		// untouched — the rename must not eat the new meaning of a reused key.
+		const { fs, run } = setup();
+		await write(fs, paths.settingsPath, {
+			botToken: "env:TG_TOKEN",
+			topics: { personalName: "me", managerName: "bot", logName: "diag" },
+		});
+		await run();
+
+		const settings = await readJsonIfExists<{
+			topics: Record<string, unknown>;
+		}>(fs, paths.settingsPath);
+		expect(settings?.topics).toEqual({
+			personalName: "me",
+			managerName: "bot",
+			logName: "diag",
+		});
+		// Nothing to rewrite, so no hand-file backup is made.
+		expect(await fs.exists(paths.legacy.settingsBackupPath)).toBe(false);
+	});
+
 	it("keeps the value the owner actually set when both spellings are present", async () => {
 		const { fs, run } = setup();
 		await write(fs, paths.settingsPath, {

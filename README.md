@@ -179,7 +179,7 @@ Being addressed **in substance** works too ("what does the bot think?") — but 
 
 ### What you see
 
-With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), every turn is mirrored to the **manager** topic of your bot DM: which chat, the model's thinking, the tools it called, the decision it made and why it stayed silent. It is the audit trail; reading it for a day is a reasonable way to decide whether to trust the bot with your chats.
+Every turn is mirrored to your bot DM, split by what happened. With [`manager.replies`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), the replies the bot actually delivered land in the clean **manager** topic — the log of what it said to people. With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), everything else — turns where it stayed silent, held a draft, or was re-prompted, plus every runtime notice — lands in the **log** topic, with the model's thinking and the tools it called folded in. Together they are the audit trail; reading it for a day is a reasonable way to decide whether to trust the bot with your chats.
 
 ---
 
@@ -213,7 +213,7 @@ Personal mode does not need it.
 
 ### 3. Enable Threaded Mode — required
 
-Your DM with the bot is **two topics**, split by *whose* conversation it is: **personal** (you and the model — your prompts, its replies, and the full trace of the tool calls it made for you) and **manager** (what the bot did for other people — the per-turn feed and runtime notices). Without them both streams share one chat: every moderation card, every notice and your own conversation interleaved — which makes the DM useless as either. The bot creates both topics itself; it only needs the toggle:
+Your DM with the bot is **three topics**, split by *whose* conversation it is and — for the secretary side — by whether the bot actually spoke: **personal** (you and the model — your prompts, its replies, and the full trace of the tool calls it made for you), **manager** (only the replies the bot delivered to other people — its work product, kept clean) and **log** (the diagnostics — silences, held drafts, corrections and runtime notices). Without them every moderation card, every notice and your own conversation share one chat, interleaved — which makes the DM useless as any of them. The bot creates the topics itself; it only needs the toggle:
 
 > `@BotFather` → open the **Mini App** (tap the menu button next to the message field) → *select your bot* → **Threaded Mode** → **on**
 
@@ -225,13 +225,13 @@ Your DM with the bot is **two topics**, split by *whose* conversation it is: **p
 
 *Not rendering? Open them in the repository: [`assets/threaded-mode-1-open-mini-app.jpg`](assets/threaded-mode-1-open-mini-app.jpg), [`assets/threaded-mode-2-toggle.jpg`](assets/threaded-mode-2-toggle.jpg).*
 
-Leave **Disallow users to create new threads** off — the extension creates the `personal` and `manager` topics itself, and you may want your own besides. They are safe to keep: the bot **never deletes a topic you made**, and it only ever removes the ones it created (see [below](#why-the-personal-topic-is-new-every-session)). A message you write in a topic of your own is **copied** into `personal` so the conversation there stays whole, and the original is left exactly where you put it. Only the "All" view is different — nothing lives there, so a message typed in it is *moved*, not copied.
+Leave **Disallow users to create new threads** off — the extension creates the `personal`, `manager` and `log` topics itself, and you may want your own besides. They are safe to keep: the bot **never deletes a topic you made**, and it only ever removes the ones it created (see [below](#why-the-personal-topic-is-new-every-session)). A message you write in a topic of your own is **copied** into `personal` so the conversation there stays whole, and the original is left exactly where you put it. Only the "All" view is different — nothing lives there, so a message typed in it is *moved*, not copied.
 
 Turn the switch **on** if you would rather the DM held nothing but the bot's own topics; you then cannot create or delete topics there at all — including, usefully, not deleting `personal` by accident.
 
 If the toggle is off, the bot does not die — it falls back to one flat DM — but it **tells you so**, in that DM, with a link back to this section, on every mode start. Silence it only by deciding: either turn Threaded Mode on, or say you meant it with `topics.enabled: false` (then also consider `manager.log: false`, since the feed is chatty in a single stream).
 
-Mute the **manager** topic by hand if you don't want its notifications — Telegram gives bots no API for that. Rename the topics with [`topics.personalName` / `topics.managerName`](SETTINGS.md#topics-owner-dm-layout).
+Mute the **log** (or **manager**) topic by hand if you don't want its notifications — Telegram gives bots no API for that, and muting one topic leaves the others alone. Rename the topics with [`topics.personalName` / `topics.managerName` / `topics.logName`](SETTINGS.md#topics-owner-dm-layout).
 
 ### 4. Find your Telegram user id
 

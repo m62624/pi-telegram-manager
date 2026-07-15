@@ -91,19 +91,22 @@ export interface TelegramSettings {
 	};
 	/**
 	 * Forum topics in the owner's private chat with the bot (Bot API 9.3): the DM is
-	 * split by WHOSE conversation it is — a `personal` topic (you and the model: your
-	 * prompts, its replies, and the full trace of its tool calls) and a `manager` topic
-	 * (what the bot did for other people: the per-turn feed and runtime notices).
-	 * Requires Threaded Mode for the bot (the @BotFather Mini App); without it — or on
-	 * any error — everything degrades to the plain single DM.
+	 * split into three — a `personal` topic (you and the model: your prompts, its
+	 * replies, and the full trace of its tool calls), a `manager` topic (only the
+	 * replies the bot delivered to other people — its work product, kept clean) and a
+	 * `log` topic (the diagnostics: deliberate silences, held drafts, corrections and
+	 * runtime notices). Requires Threaded Mode for the bot (the @BotFather Mini App);
+	 * without it — or on any error — everything degrades to the plain single DM.
 	 */
 	topics: {
 		/** Use topics when the bot supports them. Default true. */
 		enabled: boolean;
 		/** Name of your own conversation topic. Default "personal". */
 		personalName: string;
-		/** Name of the secretary-side topic. Default "manager". */
+		/** Name of the delivered-replies topic. Default "manager". */
 		managerName: string;
+		/** Name of the diagnostics topic. Default "log". */
+		logName: string;
 	};
 	/** Markdown instruction files injected as system prompt while any mode is active. */
 	instructionFiles: string[];
@@ -225,11 +228,20 @@ export interface TelegramSettings {
 		 */
 		reviseThreshold: number;
 		/**
-		 * Mirror every manager turn (thinking, tool calls, decision) to the owner's
-		 * private chat with the bot — the bot account is idle in mode 2, so it doubles
-		 * as an observability feed. Default true: with `topics` on it lands in its own
-		 * `log` topic, so it informs without burying the conversation. Without topics
-		 * it shares the single DM and is chatty — turn it off there if that annoys you.
+		 * Mirror the manager's DELIVERED replies (with the turn's thinking and tool calls)
+		 * to the owner's private chat with the bot — the bot account is idle in mode 2, so
+		 * it doubles as a log of what the bot actually said to people. Default true: with
+		 * `topics` on it lands in the `manager` topic, kept clean of everything else.
+		 * This is the work product; `log` below is the diagnostics that used to bury it.
+		 */
+		replies: boolean;
+		/**
+		 * Mirror the manager's DIAGNOSTICS to the owner: turns where the bot stayed silent,
+		 * held a draft, or was re-prompted for writing plain text, plus every runtime
+		 * warning/error/info notice. Default true: with `topics` on it lands in its own
+		 * `log` topic, so behaviour you only read when something looks off never buries the
+		 * replies. Without topics it shares the single DM with the replies and is chatty —
+		 * turn it off there if that annoys you. Renamed from the all-in-one `debugFeed`.
 		 */
 		log: boolean;
 		/**
@@ -303,7 +315,12 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 	},
 	connectionCheck: { enabled: true, intervalMs: 600_000, maxRetries: 3 },
 	mixed: { returnToTelegramMs: 480_000 },
-	topics: { enabled: true, personalName: "personal", managerName: "manager" },
+	topics: {
+		enabled: true,
+		personalName: "personal",
+		managerName: "manager",
+		logName: "log",
+	},
 	instructionFiles: [],
 	connect: { instructionFiles: [] },
 	manager: {
@@ -321,6 +338,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		liveFreshnessMs: 600_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
+		replies: true,
 		log: true,
 		promptAlerts: true,
 		strictReplyGuard: true,
@@ -551,6 +569,7 @@ export function normalizeSettings(
 				"topics.managerName",
 				d.topics.managerName,
 			),
+			logName: asString(topics.logName, "topics.logName", d.topics.logName),
 		},
 		instructionFiles: asStringArray(root.instructionFiles, "instructionFiles"),
 		connect: {
@@ -659,6 +678,7 @@ export function normalizeSettings(
 				"manager.reviseThreshold",
 				d.manager.reviseThreshold,
 			),
+			replies: asBoolean(manager.replies, "manager.replies", d.manager.replies),
 			// Renamed from `manager.debugFeed`. Migrated in the owner's file, not papered
 			// over here — see `storage/migrations.ts`.
 			log: asBoolean(manager.log, "manager.log", d.manager.log),
