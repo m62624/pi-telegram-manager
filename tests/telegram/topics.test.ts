@@ -83,18 +83,16 @@ describe("TopicRouter", () => {
 		expect(r2.thread("manager")).toBe(101);
 	});
 
-	it("does not rename a topic that is already called that", async () => {
-		// Regression: the liveness probe passed the name every start, so Telegram posted
-		// "Pi Agent changed the topic name to personal" on every single start.
+	it("makes no API call for a topic whose name is unchanged", async () => {
+		// The old no-field call ran every start; it validated nothing (editForumTopic returns
+		// ok for ANY id) and a same-name rename posts "changed the topic name" every start. So
+		// an unchanged topic is now simply trusted — no editForumTopic, no createForumTopic.
 		const fs = new FakeFs();
 		await router(api, fs).router.ensure();
 		const second = fakeApi();
 		expect(await router(second, fs).router.ensure()).toBe(true);
-		// Probed (no fields = keep values), never renamed.
-		expect(second.editForumTopic).toHaveBeenCalledTimes(3);
-		for (const call of second.editForumTopic.mock.calls) {
-			expect(call[0].name).toBeUndefined();
-		}
+		expect(second.editForumTopic).not.toHaveBeenCalled();
+		expect(second.createForumTopic).not.toHaveBeenCalled();
 	});
 
 	it("renames when the configured name actually changed", async () => {
@@ -120,23 +118,36 @@ describe("TopicRouter", () => {
 		expect(renames[0][0].name).toBe("me");
 	});
 
-	it("recreates a topic the owner deleted while the bot was off", async () => {
+	it("recreates a gone topic caught by a name change (the validating rename fails)", async () => {
+		// A gone topic can only be caught PROACTIVELY by a call that validates — the rename
+		// does, and only fires when the configured name changed. (An unchanged name is caught
+		// reactively instead, on the first failed send — see recreate().)
 		const fs = new FakeFs();
-		await router(api, fs).router.ensure();
-		// The personal topic is gone: claiming it fails; the manager one still answers.
+		await router(api, fs).router.ensure(); // personal 100, manager 101, log 102
 		const second = fakeApi({
 			editForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
 				if (args.message_thread_id === 100) {
-					throw new Error("Bad Request: message thread not found");
+					throw new Error("400: Bad Request: TOPIC_ID_INVALID");
 				}
 				return {};
 			}),
 		});
-		const r2 = router(second, fs).router;
+		const r2 = new TopicRouter({
+			api: second,
+			store: createDmState<TopicsState>(fs, PATH),
+			ownerChatId: OWNER,
+			options: {
+				enabled: true,
+				personalName: "renamed",
+				managerName: "manager",
+				logName: "log",
+			},
+		});
 		expect(await r2.ensure()).toBe(true);
+		// personal name changed → validating rename on 100 throws → recreated; manager/log
+		// unchanged → trusted, no call.
 		expect(second.createForumTopic).toHaveBeenCalledTimes(1);
-		// A fresh topic id (the fake hands out 100 again), not a stale one.
-		expect(r2.thread("personal")).toBe(100);
+		expect(r2.thread("personal")).toBe(100); // a fresh id from the fake
 		expect(r2.thread("manager")).toBe(101);
 	});
 
@@ -223,25 +234,23 @@ describe("TopicRouter", () => {
 });
 
 describe("TopicRouter.revalidate", () => {
-	it("recreates the topics the owner deleted, so their message is not swallowed", async () => {
-		// The owner deletes both topics and writes in the plain DM. The router still
-		// pointed at the dead threads, and every send died with "message thread not
-		// found" — the message vanished. Now an unexpected thread re-checks.
+	it("re-adopts the stored topics; a dead one is caught reactively, not here", async () => {
+		// revalidate re-runs ensure. With unchanged names there is no free way to validate a
+		// thread — the no-field call returns ok for anything, a rename spams — so the live ids
+		// are trusted and reused. A topic the owner actually deleted is caught on the next
+		// failed send (see recreate()), not here.
 		const fs = new FakeFs();
 		const api = fakeApi();
 		const { router: r } = router(api, fs);
 		expect(await r.ensure()).toBe(true);
 		expect(r.thread("personal")).toBe(100);
 
-		// Both topics are gone: the probe now fails.
-		api.editForumTopic.mockRejectedValue(
-			new Error("400: Bad Request: message thread not found"),
-		);
 		expect(await r.revalidate()).toBe(true);
-		expect(r.thread("personal")).toBe(103);
-		expect(r.thread("manager")).toBe(104);
-		expect(r.thread("log")).toBe(105);
-		expect(api.createForumTopic).toHaveBeenCalledTimes(6);
+		// Reused, not recreated.
+		expect(r.thread("personal")).toBe(100);
+		expect(r.thread("manager")).toBe(101);
+		expect(r.thread("log")).toBe(102);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(3); // only the first ensure
 	});
 
 	it("keeps the live topics when they are still there", async () => {
@@ -317,7 +326,11 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 		return createDmState<TopicsState>(fs, PATH).loadTopics();
 	}
 
-	/** A fake whose personal (100) fails adopt, so a fresh one is minted. */
+	/**
+	 * A fake whose personal (100) is GONE: the validating rename throws. adopt only calls
+	 * editForumTopic when the name changed, so these tests drive it through {@link renamedRouter}
+	 * (a changed personalName), the one proactive path that catches a dead topic.
+	 */
 	function personalWentBad(
 		firstThread: number,
 		extra: Partial<TopicsApi> = {},
@@ -325,7 +338,9 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 		return fakeApi(
 			{
 				editForumTopic: vi.fn(async (args: { message_thread_id: number }) => {
-					if (args.message_thread_id === 100) throw new Error("bad topic");
+					if (args.message_thread_id === 100) {
+						throw new Error("400: Bad Request: TOPIC_ID_INVALID");
+					}
 					return {};
 				}),
 				...extra,
@@ -334,12 +349,28 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 		);
 	}
 
+	/** A router whose personalName differs from the stored one, so adopt runs the validating
+	 *  rename on the stored personal (and, against {@link personalWentBad}, finds it gone). */
+	function renamedRouter(api: TopicsApi, fs: FakeFs) {
+		return new TopicRouter({
+			api,
+			store: createDmState<TopicsState>(fs, PATH),
+			ownerChatId: OWNER,
+			options: {
+				enabled: true,
+				personalName: "personal2",
+				managerName: "manager",
+				logName: "log",
+			},
+		});
+	}
+
 	it("deletes a stored personal it could not adopt, instead of leaving it live", async () => {
 		const fs = new FakeFs();
 		await router(fakeApi(), fs).router.ensure(); // personal 100, manager 101, log 102
 
 		const second = personalWentBad(200);
-		const r = router(second, fs).router;
+		const r = renamedRouter(second, fs);
 		await r.ensure();
 
 		expect(r.thread("personal")).toBe(200); // a fresh personal
@@ -362,13 +393,14 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 				return {};
 			}),
 		});
-		await router(second, fs).router.ensure();
+		await renamedRouter(second, fs).ensure();
 		// Refused → remembered for a later retry, not silently dropped.
 		expect((await readState(fs))?.stale).toEqual([100]);
 
-		// Next start: adopt of 200 is fine, and Telegram now lets 100 go.
+		// Next start: 200 is now the stored personal (unchanged name → trusted), and Telegram
+		// lets 100 go.
 		const third = fakeApi({}, 300);
-		const r3 = router(third, fs).router;
+		const r3 = renamedRouter(third, fs);
 		await r3.ensure();
 		expect(third.deleteForumTopic).toHaveBeenCalledWith(
 			expect.objectContaining({ message_thread_id: 100 }),
@@ -389,7 +421,7 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 				return {};
 			}),
 		});
-		await router(second, fs).router.ensure();
+		await renamedRouter(second, fs).ensure();
 		// Already gone is done: not kept, not chased.
 		expect((await readState(fs))?.stale ?? []).toEqual([]);
 	});
@@ -401,7 +433,7 @@ describe("TopicRouter: orphaned topics are cleaned, never lost", () => {
 		await router(fakeApi(), fs).router.ensure(); // personal 100
 
 		const second = personalWentBad(100); // the fresh one is handed 100 again
-		const r = router(second, fs).router;
+		const r = renamedRouter(second, fs);
 		await r.ensure();
 
 		expect(r.thread("personal")).toBe(100);
