@@ -17,14 +17,16 @@
  *    text corrections, and the runtime notices. What you open only when something looks
  *    off. This is where the noise that used to bury the `manager` topic now lives.
  *
- * There is no API to LIST a chat's topics, so the thread ids are persisted and re-verified
- * on start (`editForumTopic` fails on a thread that is gone): a topic the owner deleted
- * while the bot was off is simply recreated. That same missing-LIST is why an id we ever
- * minted must never be dropped: a `personal` we rotate away, or a stored topic we can no
- * longer adopt, is kept (in `stale`) and its deletion retried every start until Telegram
- * confirms it gone — an id we forget is an orphan we can never find to clean up. Everything
- * here is best-effort — Threaded Mode off, an old API server, or any error degrades to
- * `undefined` thread ids, which route every message to the plain DM exactly as before.
+ * There is no API to LIST a chat's topics, so the thread ids are persisted and reused. A
+ * gone thread cannot be probed for free — `editForumTopic` with no fields returns `ok` for
+ * ANY id (see {@link adopt}) — so a topic the owner deleted is caught either by a validating
+ * rename (when its name changed) or reactively, when the first send fails "message thread not
+ * found" and {@link recreate} rebuilds it. That same missing-LIST is why an id we ever minted
+ * must never be dropped: a `personal` we rotate away, or a stored topic we can no longer
+ * adopt, is kept (in `stale`) and its deletion retried every start until Telegram confirms it
+ * gone — an id we forget is an orphan we can never find to clean up. Everything here is
+ * best-effort — Threaded Mode off, an old API server, or any error degrades to `undefined`
+ * thread ids, which route every message to the plain DM exactly as before.
  */
 import type { DmStateStore } from "../storage/dm-state";
 
@@ -604,40 +606,39 @@ export class TopicRouter {
 	/**
 	 * Claim a stored thread, and say whether it is still there.
 	 *
-	 * The probe is `editForumTopic` with NO fields: per the Bot API, omitted `name` /
-	 * `icon_custom_emoji_id` keep the existing values, so it changes nothing — yet it
-	 * FAILS on a thread that is gone, which is exactly the check we need. (The old
-	 * probe was `sendChatAction`, which Telegram accepts even for a dead thread, so a
-	 * deleted topic passed verification and every later send died with "message thread
-	 * not found".)
+	 * The old probe was `editForumTopic` with NO fields, believed to fail on a gone thread.
+	 * Measured live on a private-chat forum (Bot API 9.x), it does NOT: with no fields it
+	 * returns `ok` for ANY id — a deleted topic, even an id that was never a topic. So it
+	 * validated nothing; a topic the owner deleted was "adopted" and then addressed until
+	 * every send failed, which is one engine of the orphan pile. `sendChatAction`, the probe
+	 * before that, was just as blind.
 	 *
-	 * The rename is a SEPARATE call, made only when the name actually differs from the
-	 * one we last set — renaming posts a "changed the topic name" service message, so
-	 * doing it on every start littered the chat with them. `currentName` is undefined
-	 * for a topic created before we stored names (or under the old chat/log layout),
-	 * which is precisely when a one-off rename is wanted.
+	 * A `name` makes the call actually validate — a gone thread throws `TOPIC_ID_INVALID`.
+	 * But renaming to a name the topic does not already have posts a "changed the topic name"
+	 * service message, and setting the SAME name posts one too (measured), so we cannot probe
+	 * for free. Hence: only when the wanted name differs from the one we last set do we send
+	 * it — that one call both validates and renames. When the name already matches we trust
+	 * the id and let the reactive path catch a dead one: a real send to a gone thread fails
+	 * "message thread not found" and {@link recreate} rebuilds it on the spot. `currentName`
+	 * is undefined for a topic stored before we tracked names, which is exactly when the
+	 * one-off validating rename is wanted anyway.
 	 */
 	private async adopt(
 		threadId: number,
 		name: string,
 		currentName?: string,
 	): Promise<boolean> {
-		try {
-			await this.deps.api.editForumTopic({
-				chat_id: this.deps.ownerChatId,
-				message_thread_id: threadId,
-			});
-		} catch {
-			return false;
-		}
 		if (currentName !== name) {
-			await this.deps.api
-				.editForumTopic({
+			try {
+				await this.deps.api.editForumTopic({
 					chat_id: this.deps.ownerChatId,
 					message_thread_id: threadId,
 					name,
-				})
-				.catch(() => {});
+				});
+				return true;
+			} catch {
+				return false; // TOPIC_ID_INVALID — the topic is gone; the caller recreates it.
+			}
 		}
 		return true;
 	}
