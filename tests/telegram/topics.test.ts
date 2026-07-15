@@ -30,7 +30,7 @@ function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
 		getForumTopicIconStickers: vi.fn(async () => [
 			{ emoji: "💻", custom_emoji_id: "id-personal" },
 			{ emoji: "📣", custom_emoji_id: "id-manager" },
-			{ emoji: "📋", custom_emoji_id: "id-log" },
+			{ emoji: "📝", custom_emoji_id: "id-log" },
 			{ emoji: "📁", custom_emoji_id: "id-archive" },
 		]),
 		...overrides,

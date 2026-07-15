@@ -107,7 +107,10 @@ const ICON_COLOR: Record<TopicKind, number> = {
 const ICON_EMOJI = {
 	personal: "💻",
 	manager: "📣",
-	log: "📋",
+	// A memo, not a clipboard: only the emoji Telegram itself offers as a topic icon
+	// (getForumTopicIconStickers) render — 📋 is NOT in that set and silently degraded to
+	// a bare colour, so the diagnostics topic wore no icon. 📝 is in the set.
+	log: "📝",
 	archive: "📁",
 } as const;
 
