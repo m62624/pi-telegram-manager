@@ -30,6 +30,7 @@ function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
 		getForumTopicIconStickers: vi.fn(async () => [
 			{ emoji: "💻", custom_emoji_id: "id-personal" },
 			{ emoji: "📣", custom_emoji_id: "id-manager" },
+			{ emoji: "📋", custom_emoji_id: "id-log" },
 			{ emoji: "📁", custom_emoji_id: "id-archive" },
 		]),
 		...overrides,
@@ -48,6 +49,7 @@ function router(api: TopicsApi, fs = new FakeFs(), onFallback = vi.fn()) {
 				enabled: true,
 				personalName: "personal",
 				managerName: "manager",
+				logName: "log",
 			},
 			onFallback,
 		}),
@@ -61,12 +63,13 @@ describe("TopicRouter", () => {
 		api = fakeApi();
 	});
 
-	it("creates both topics (personal + manager) and routes each kind to its thread", async () => {
+	it("creates all three topics (personal + manager + log) and routes each kind to its thread", async () => {
 		const { router: r } = router(api);
 		expect(await r.ensure()).toBe(true);
-		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(3);
 		expect(r.thread("personal")).toBe(100);
 		expect(r.thread("manager")).toBe(101);
+		expect(r.thread("log")).toBe(102);
 	});
 
 	it("reuses the persisted threads on the next run instead of creating new ones", async () => {
@@ -88,7 +91,7 @@ describe("TopicRouter", () => {
 		const second = fakeApi();
 		expect(await router(second, fs).router.ensure()).toBe(true);
 		// Probed (no fields = keep values), never renamed.
-		expect(second.editForumTopic).toHaveBeenCalledTimes(2);
+		expect(second.editForumTopic).toHaveBeenCalledTimes(3);
 		for (const call of second.editForumTopic.mock.calls) {
 			expect(call[0].name).toBeUndefined();
 		}
@@ -102,7 +105,12 @@ describe("TopicRouter", () => {
 			api: second,
 			store: createDmState<TopicsState>(fs, PATH),
 			ownerChatId: OWNER,
-			options: { enabled: true, personalName: "me", managerName: "manager" },
+			options: {
+				enabled: true,
+				personalName: "me",
+				managerName: "manager",
+				logName: "log",
+			},
 		});
 		expect(await renamed.ensure()).toBe(true);
 		const renames = second.editForumTopic.mock.calls.filter(
@@ -165,6 +173,7 @@ describe("TopicRouter", () => {
 				enabled: false,
 				personalName: "personal",
 				managerName: "manager",
+				logName: "log",
 			},
 		});
 		expect(await r.ensure()).toBe(false);
@@ -184,10 +193,11 @@ describe("TopicRouter", () => {
 				enabled: true,
 				personalName: "personal",
 				managerName: "manager",
+				logName: "log",
 			},
 		});
 		expect(await r.ensure()).toBe(true);
-		expect(other.createForumTopic).toHaveBeenCalledTimes(2);
+		expect(other.createForumTopic).toHaveBeenCalledTimes(3);
 	});
 
 	it("fallBack() drops the threads so sends go to the plain DM again", async () => {
@@ -228,9 +238,10 @@ describe("TopicRouter.revalidate", () => {
 			new Error("400: Bad Request: message thread not found"),
 		);
 		expect(await r.revalidate()).toBe(true);
-		expect(r.thread("personal")).toBe(102);
-		expect(r.thread("manager")).toBe(103);
-		expect(api.createForumTopic).toHaveBeenCalledTimes(4);
+		expect(r.thread("personal")).toBe(103);
+		expect(r.thread("manager")).toBe(104);
+		expect(r.thread("log")).toBe(105);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(6);
 	});
 
 	it("keeps the live topics when they are still there", async () => {
@@ -239,7 +250,7 @@ describe("TopicRouter.revalidate", () => {
 		await r.ensure();
 		expect(await r.revalidate()).toBe(true);
 		expect(r.thread("personal")).toBe(100);
-		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+		expect(api.createForumTopic).toHaveBeenCalledTimes(3);
 	});
 
 	it("degrades to the plain DM when topics cannot be restored", async () => {
@@ -263,10 +274,11 @@ describe("TopicRouter.recreate", () => {
 		expect(r.thread("manager")).toBe(101);
 
 		const thread = await r.recreate("manager");
-		expect(thread).toBe(102);
-		expect(r.thread("manager")).toBe(102);
-		// The personal topic is untouched.
+		expect(thread).toBe(103);
+		expect(r.thread("manager")).toBe(103);
+		// The personal and log topics are untouched.
 		expect(r.thread("personal")).toBe(100);
+		expect(r.thread("log")).toBe(102);
 		expect(r.active).toBe(true);
 	});
 
@@ -279,8 +291,9 @@ describe("TopicRouter.recreate", () => {
 
 		const { router: second } = router(fakeApi(), fs);
 		await second.ensure();
-		expect(second.thread("manager")).toBe(102);
+		expect(second.thread("manager")).toBe(103);
 		expect(second.thread("personal")).toBe(100);
+		expect(second.thread("log")).toBe(102);
 	});
 
 	it("degrades to the plain DM when even creating a topic fails", async () => {
@@ -313,8 +326,8 @@ describe("TopicRouter: a fresh personal topic every session", () => {
 		const fs = new FakeFs();
 		const { api, router: r } = await session(fs, 100, false);
 
-		// personal + manager, and nothing else: no second topic, no delete, no rename.
-		expect(api.createForumTopic).toHaveBeenCalledTimes(2);
+		// personal + manager + log, and nothing else: no fresh rotation, no delete, no rename.
+		expect(api.createForumTopic).toHaveBeenCalledTimes(3);
 		expect(api.deleteForumTopic).not.toHaveBeenCalled();
 		expect(r.thread("personal")).toBe(100);
 	});
@@ -401,6 +414,12 @@ describe("TopicRouter: topic icons", () => {
 				icon_custom_emoji_id: "id-manager",
 			}),
 		);
+		expect(first.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "log",
+				icon_custom_emoji_id: "id-log",
+			}),
+		);
 		await a.markUsed();
 
 		const second = fakeApi({}, 200);
@@ -431,6 +450,9 @@ describe("TopicRouter: topic icons", () => {
 		);
 		expect(api.createForumTopic).toHaveBeenCalledWith(
 			expect.objectContaining({ name: "manager", icon_color: 16478047 }),
+		);
+		expect(api.createForumTopic).toHaveBeenCalledWith(
+			expect.objectContaining({ name: "log", icon_color: 16766590 }),
 		);
 	});
 });
@@ -574,10 +596,10 @@ describe("TopicRouter.ownThreads", () => {
 		await third.ensure();
 		await third.startSession();
 
-		// personal 300, archive 200, and 100 still hanging around: all of them ours, so a
-		// message the owner types in any of them is moved back into `personal`.
+		// personal 300, manager 101, log 102, archive 200, and 100 still hanging around: all
+		// of them ours, so a message the owner types in any of them moves back into `personal`.
 		expect([...third.ownThreads].sort((a, b) => a - b)).toEqual([
-			100, 101, 200, 300,
+			100, 101, 102, 200, 300,
 		]);
 	});
 

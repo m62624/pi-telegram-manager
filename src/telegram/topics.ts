@@ -6,13 +6,16 @@
  * @BotFather Mini App — it is not in the classic Bot Settings keyboard) the DM can
  * be split into topics, and a bot may create them itself: `createForumTopic` accepts
  * a private chat, and every send method takes a `message_thread_id` there (`getMe`
- * reports the toggle as `has_topics_enabled`). We keep exactly two, split by WHOSE
- * conversation it is, not by how chatty it is:
+ * reports the toggle as `has_topics_enabled`). We keep three, split by WHOSE
+ * conversation it is and — for the secretary side — by whether the bot actually SPOKE:
  *
  *  - `personal` — you and the model: your prompts, its replies, and the full trace
  *    of what it did for you (tool calls), in Personal mode and in mixed;
- *  - `manager`  — the secretary side: the per-turn manager feed and runtime notices,
- *    i.e. what the bot did for OTHER people.
+ *  - `manager`  — the secretary's work product: only the replies the bot delivered to
+ *    OTHER people. Kept clean so it reads as a log of what was actually said;
+ *  - `log`      — the secretary's diagnostics: deliberate silences, held drafts, plain-
+ *    text corrections, and the runtime notices. What you open only when something looks
+ *    off. This is where the noise that used to bury the `manager` topic now lives.
  *
  * There is no API to LIST a chat's topics, so the two thread ids are persisted and
  * re-verified on start by renaming them to the wanted names (`editForumTopic` fails on
@@ -23,8 +26,8 @@
  */
 import type { DmStateStore } from "../storage/dm-state";
 
-/** The two topics we maintain in the owner's DM. */
-export type TopicKind = "personal" | "manager";
+/** The three topics we maintain in the owner's DM. */
+export type TopicKind = "personal" | "manager" | "log";
 
 /** The name the outgoing `personal` is renamed to when it is kept. */
 export function archiveName(personalName: string): string {
@@ -85,11 +88,13 @@ export function placeOfOwnerMessage(input: {
 const ICON_COLOR: Record<TopicKind, number> = {
 	personal: 7322096, // 0x6FB9F0 — blue
 	manager: 16478047, // 0xFB6F5F — red
+	log: 16766590, // 0xFFD67E — yellow
 };
 
 /**
- * The icon each topic wears, so the three chips are told apart at a glance: the
- * conversation, the secretary's feed, and the conversation before this one.
+ * The icon each topic wears, so the chips are told apart at a glance: the
+ * conversation, the replies the secretary delivered, its diagnostics log, and the
+ * conversation before this one.
  *
  * These are plain emoji, resolved at run time to the custom-emoji ids Telegram allows
  * as topic icons (`getForumTopicIconStickers` — an arbitrary emoji is refused). If the
@@ -102,6 +107,7 @@ const ICON_COLOR: Record<TopicKind, number> = {
 const ICON_EMOJI = {
 	personal: "💻",
 	manager: "📣",
+	log: "📋",
 	archive: "📁",
 } as const;
 
@@ -142,7 +148,14 @@ export interface TopicsState {
 	ownerChatId: number;
 	personal: number;
 	manager: number;
-	names?: Record<TopicKind, string>;
+	/**
+	 * The diagnostics topic. Optional in the STORED shape only: an install that
+	 * predates this topic has `{personal, manager}` and no `log`, and must still load
+	 * so {@link TopicRouter.ensure} can create the missing one rather than throwing the
+	 * whole pair away. Once resolved it is always present.
+	 */
+	log?: number;
+	names?: Partial<Record<TopicKind, string>>;
 	/** The previous session's `personal`, kept to read back (see {@link TopicRouter.startSession}). */
 	archive?: number;
 	/** Whether anything was actually said in the current `personal` this session. */
@@ -160,6 +173,7 @@ export interface TopicsOptions {
 	enabled: boolean;
 	personalName: string;
 	managerName: string;
+	logName: string;
 }
 
 export interface TopicRouterDeps {
@@ -218,6 +232,7 @@ export class TopicRouter {
 		return [
 			state.personal,
 			state.manager,
+			...(state.log !== undefined ? [state.log] : []),
 			...(state.archive !== undefined ? [state.archive] : []),
 			...(state.stale ?? []),
 		];
@@ -252,13 +267,19 @@ export class TopicRouter {
 				options.managerName,
 				stored,
 			);
+			// The diagnostics topic. Missing from an install that predates it (see
+			// TopicsState.log) — resolveTopic then simply creates it, which is exactly how
+			// "everyone picks up the new log topic" happens: on the next start.
+			const log = await this.resolveTopic("log", options.logName, stored);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
 				personal,
 				manager,
+				log,
 				names: {
 					personal: options.personalName,
 					manager: options.managerName,
+					log: options.logName,
 				},
 				// Carried, not rebuilt: which topic is the archive, and whether the current
 				// `personal` holds a conversation, is what the next session's rotation
@@ -374,6 +395,7 @@ export class TopicRouter {
 			ownerChatId: state.ownerChatId,
 			personal: fresh,
 			manager: state.manager,
+			log: state.log,
 			names: state.names,
 			used: false,
 			...(archive !== undefined ? { archive } : {}),
@@ -479,16 +501,22 @@ export class TopicRouter {
 		const { options } = this.deps;
 		if (!options.enabled) return undefined;
 		const name =
-			kind === "personal" ? options.personalName : options.managerName;
+			kind === "personal"
+				? options.personalName
+				: kind === "manager"
+					? options.managerName
+					: options.logName;
 		try {
 			const created = await this.create(kind, name);
 			const state: TopicsState = {
 				ownerChatId: this.deps.ownerChatId,
 				personal: this.state?.personal ?? created.message_thread_id,
 				manager: this.state?.manager ?? created.message_thread_id,
+				log: this.state?.log ?? created.message_thread_id,
 				names: {
 					personal: options.personalName,
 					manager: options.managerName,
+					log: options.logName,
 				},
 			};
 			state[kind] = created.message_thread_id;

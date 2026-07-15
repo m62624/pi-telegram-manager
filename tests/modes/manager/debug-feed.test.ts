@@ -3,6 +3,7 @@ import type { ManagerTurnLog } from "../../../src/modes/manager/controller";
 import {
 	buildManagerFeed,
 	buildManagerNotice,
+	feedTopicOf,
 	isEmptyFeedTurn,
 } from "../../../src/modes/manager/debug-feed";
 
@@ -195,5 +196,21 @@ describe("buildManagerNotice", () => {
 		const err = buildManagerNotice("error", "Telegram error: 429", NOW);
 		expect(err.toString()).toContain("Error");
 		expect(err.toString()).toContain("Telegram error: 429");
+	});
+});
+
+describe("feedTopicOf", () => {
+	it("routes only a delivered reply to the clean manager topic", () => {
+		// The one outcome that put words in front of a person. A held draft that is
+		// finally sent settles as `reply` in the controller, so it lands here too.
+		expect(feedTopicOf("reply")).toBe("manager");
+	});
+
+	it("routes every non-reply outcome to the diagnostics log topic", () => {
+		// Silence, a held draft, a plain-text correction — behaviour you read only when
+		// something looks off, kept out of the replies so it never buries them.
+		expect(feedTopicOf("silent")).toBe("log");
+		expect(feedTopicOf("held")).toBe("log");
+		expect(feedTopicOf("corrected")).toBe("log");
 	});
 });

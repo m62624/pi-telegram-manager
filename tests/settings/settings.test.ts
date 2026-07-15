@@ -181,11 +181,12 @@ describe("normalizeSettings", () => {
 		).toBe(false);
 	});
 
-	it("defaults topics on, with personal/manager names", () => {
+	it("defaults topics on, with personal/manager/log names", () => {
 		expect(normalizeSettings({}).topics).toEqual({
 			enabled: true,
 			personalName: "personal",
 			managerName: "manager",
+			logName: "log",
 		});
 		expect(
 			normalizeSettings({
@@ -195,6 +196,7 @@ describe("normalizeSettings", () => {
 			enabled: false,
 			personalName: "personal",
 			managerName: "secretary",
+			logName: "log",
 		});
 	});
 

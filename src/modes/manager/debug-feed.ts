@@ -20,6 +20,21 @@ import {
 } from "../../telegram/rich-builder";
 import type { ManagerTurnLog, ManagerTurnOutcome } from "./controller";
 
+/**
+ * Which owner-DM topic a finished turn's card belongs to.
+ *
+ * A DELIVERED reply is the manager's work product and lands in the clean `manager`
+ * topic — that topic now holds only what the bot actually SAID to people. Everything
+ * else — a deliberate silence, a held draft, a plain-text correction — is behaviour
+ * you read only when something looks off, so it goes to the `log` topic alongside the
+ * runtime notices. A held draft that is finally sent settles as `reply` in the
+ * controller (not `held`), so a delivered answer always lands with the replies, never
+ * with the diagnostics.
+ */
+export function feedTopicOf(outcome: ManagerTurnOutcome): "manager" | "log" {
+	return outcome === "reply" ? "manager" : "log";
+}
+
 /** Human badge for each turn outcome, shown as the card's headline. */
 const OUTCOME_BADGE: Record<ManagerTurnOutcome, string> = {
 	reply: "💬 Replied",

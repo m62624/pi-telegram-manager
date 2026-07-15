@@ -123,6 +123,7 @@ import {
 import {
 	buildManagerFeed,
 	buildManagerNotice,
+	feedTopicOf,
 	isEmptyFeedTurn,
 	type ManagerNoticeLevel,
 	type ManagerToolCall,
@@ -184,7 +185,6 @@ import {
 import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
-import { readJsonIfExists, writeJson } from "./storage/json";
 import { migrateStorage } from "./storage/migrations";
 import { createSingletonStore } from "./storage/singleton-store";
 import {
@@ -2329,6 +2329,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	const personalThread = (): number | undefined => topics?.thread("personal");
 	const managerThread = (): number | undefined => topics?.thread("manager");
+	const logThread = (): number | undefined => topics?.thread("log");
 
 	/** The topic an inbound message was posted in (undefined without topics). */
 	const threadOf = (event: TelegramEvent): number | undefined =>
@@ -3087,12 +3088,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				});
 			},
 		});
-		// The bot account is idle in mode 2, so with `manager.log` on it doubles as an
-		// observability channel: each turn (and runtime warnings/errors) is mirrored
-		// to the owner's private chat with the bot — into the `log` topic when topics
-		// are live, the plain DM otherwise — sent AS the bot (no business connection),
-		// so it never leaks into the managed conversation.
-		if (settings.manager.log) {
+		// The bot account is idle in mode 2, so it doubles as an observability channel:
+		// each turn (and runtime warnings/errors) is mirrored to the owner's private chat
+		// with the bot, sent AS the bot (no business connection) so it never leaks into
+		// the managed conversation. It is split by WHAT happened: a delivered reply goes
+		// to the `manager` topic (the work product, gated by `manager.replies`), while a
+		// silence/hold/correction and every notice go to the `log` topic (diagnostics,
+		// gated by `manager.log`). Either toggle on is reason enough to wire the feed; the
+		// per-card routing below re-checks which one applies. Without topics both share
+		// the plain DM.
+		if (settings.manager.replies || settings.manager.log) {
 			// Resolve the owner's private-chat id. `allowedUserId` is the configured
 			// owner and the exact DM mode 1 talks to, so it is the reliable target —
 			// the business store can be empty (the manager runs off each message's
@@ -3107,22 +3112,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return target ? Number(target) : null;
 			};
 			const sendOwnerFeed = async (
+				kind: "manager" | "log",
 				html: ReturnType<typeof buildManagerFeed>,
 			): Promise<void> => {
 				const chatId = await ownerChatId();
 				if (chatId === null) return;
+				const threadOf = () =>
+					kind === "manager" ? managerThread() : logThread();
 				try {
 					await managerOutbound.notify(
-						{ chatId, messageThreadId: managerThread() },
+						{ chatId, messageThreadId: threadOf() },
 						html,
 					);
 				} catch (error) {
-					// The manager topic is gone (the owner deleted it). A failed send is the
-					// only reliable proof of that — so recreate the topic here and retry the
+					// The target topic is gone (the owner deleted it). A failed send is the
+					// only reliable proof of that — so recreate THAT topic here and retry the
 					// card in it, instead of quietly degrading the whole run to the plain DM
 					// and never bringing the topic back.
 					if (topics?.active && TopicRouter.isMissingThread(error)) {
-						const thread = await topics.recreate("manager");
+						const thread = await topics.recreate(kind);
 						await managerOutbound
 							.notify({ chatId, messageThreadId: thread }, html)
 							.catch(() => {});
@@ -3143,7 +3151,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				}
 			};
 			deliverManagerFeed = async (log, thinking, tools) => {
+				// Route the whole card by outcome, so one turn is never split across two
+				// topics: a delivered reply to `manager`, everything else to `log`. Each
+				// side has its own toggle, so a card is skipped when its topic is off.
+				const kind = feedTopicOf(log.outcome);
+				if (
+					kind === "manager" ? !settings.manager.replies : !settings.manager.log
+				)
+					return;
 				await sendOwnerFeed(
+					kind,
 					buildManagerFeed({
 						log,
 						nowLine: formatNowLine(Date.now(), settings.timezone),
@@ -3153,7 +3170,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				);
 			};
 			mirrorManagerNotice = (level, message) => {
+				// Runtime notices are diagnostics — the `log` side, gated by `manager.log`.
+				if (!settings.manager.log) return;
 				void sendOwnerFeed(
+					"log",
 					buildManagerNotice(
 						level,
 						message,

@@ -122,7 +122,8 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- owner is called: ${s.manager.ownerName || "(not set)"}`,
 			`- images from interlocutors: ${s.manager.media.images ? "shown to you" : "not shown (you see [image not shown])"}`,
 			`- documents from interlocutors: ${s.manager.media.documents ? "acknowledged by name" : "not accepted"} — never opened either way (no file tools in this mode)`,
-			`- debug feed to the owner's DM: ${onOff(s.manager.log)}`,
+			`- delivered replies to the owner's DM: ${onOff(s.manager.replies)}`,
+			`- diagnostics log to the owner's DM: ${onOff(s.manager.log)}`,
 			"",
 		);
 	}
@@ -140,7 +141,7 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 		`- budget per batch: ${s.forwards.maxMessages} messages, ${humanCount(s.forwards.maxChars)} chars, grouped within ${humanMs(s.forwards.groupWindowMs)}`,
 		"",
 		"## The owner's DM layout",
-		`- topics: ${onOff(s.topics.enabled)}${s.topics.enabled ? ` ("${s.topics.personalName}" / "${s.topics.managerName}")` : ""}`,
+		`- topics: ${onOff(s.topics.enabled)}${s.topics.enabled ? ` ("${s.topics.personalName}" / "${s.topics.managerName}" / "${s.topics.logName}")` : ""}`,
 		"",
 		"## Reliability",
 		`- connection watchdog: ${onOff(s.connectionCheck.enabled)}${
