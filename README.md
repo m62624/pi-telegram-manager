@@ -255,9 +255,9 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 
 ### 6. (Manager / mixed only) Connect the bot to your account
 
-The toggle in step 2 only *allows* the bot to be connected; this is where you actually hand it your chats. Open Telegram **Settings → Telegram Business / Secretary → Chatbots** (Telegram is rolling out the *Secretary* label), enter your bot's username, and choose which chats it may access — and make sure it is allowed to **reply** (without that permission the bot can read but not answer, and the manager will sit there silent).
+The toggle in step 2 only *allows* the bot to be connected; this is where you actually hand it your chats. Open Telegram **Settings → Account → Chat automation** (this is where the setting lives now — older guides pointed at *Business / Secretary → Chatbots*), enter your bot's username, and choose which chats it may access — and make sure it is allowed to **reply** (without that permission the bot can read but not answer, and the manager will sit there silent).
 
-<img src="assets/connect-secretary-bot.gif" alt="Telegram Settings → Business/Secretary → Chatbots: adding the bot and picking its chats" width="300">
+<img src="assets/connect-secretary-bot.gif" alt="Telegram Settings → Account → Chat automation: adding the bot and picking its chats" width="300">
 
 *Not rendering? Open it in the repository: [`assets/connect-secretary-bot.gif`](assets/connect-secretary-bot.gif).*
 

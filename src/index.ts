@@ -368,7 +368,7 @@ const REPLY_RIGHT_NOTICE = [
 	"⛔ This bot is connected to your account but is NOT allowed to reply.",
 	"It can read your chats and answer nothing.",
 	"",
-	"Fix it in Telegram: Settings → Business / Secretary → Chatbots →",
+	"Fix it in Telegram: Settings → Account → Chat automation →",
 	"this bot → allow it to reply to messages.",
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
@@ -385,7 +385,7 @@ const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
 		"⛔ The Secretary connection to this bot was just switched OFF.",
 		"It no longer receives your chats and cannot answer them.",
 		"",
-		"Turn it back on: Telegram → Settings → Business / Secretary → Chatbots.",
+		"Turn it back on: Telegram → Settings → Account → Chat automation.",
 	].join("\n"),
 	enabled:
 		"✅ The Secretary connection is back on — the manager is listening again.",
@@ -393,7 +393,7 @@ const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
 		"⛔ This bot just LOST the right to reply on your behalf.",
 		"It still reads every managed chat and can answer none of them.",
 		"",
-		"Restore it: Telegram → Settings → Business / Secretary → Chatbots →",
+		"Restore it: Telegram → Settings → Account → Chat automation →",
 		"this bot → allow it to reply to messages.",
 	].join("\n"),
 	reply_right_restored:
@@ -412,8 +412,8 @@ const NOT_CONNECTED_NOTICE = [
 	"since this mode started. If the bot IS already connected, ignore this: it",
 	"clears itself as soon as any message arrives in a managed chat.",
 	"",
-	"If it is not connected: Telegram → Settings → Business / Secretary →",
-	"Chatbots → add this bot and pick which chats it may access (and let it reply).",
+	"If it is not connected: Telegram → Settings → Account → Chat automation",
+	"→ add this bot and pick which chats it may access (and let it reply).",
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
 ].join("\n");
