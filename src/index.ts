@@ -156,6 +156,7 @@ import {
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { managerToolGate } from "./modes/manager/tool-gate";
 import { resolveTelegramPaths } from "./pi/agent-dir";
+import { commandContextFromBase } from "./pi/command-ctx";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { compact } from "./pi/sdk";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
@@ -182,6 +183,10 @@ import {
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
+import {
+	createConnectIntentStore,
+	intentApplies,
+} from "./storage/connect-intent";
 import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
@@ -510,6 +515,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
 	const paths = resolveTelegramPaths();
 	const singletonStore = createSingletonStore(fs, paths.singletonPath);
+	const connectIntent = createConnectIntentStore(fs, paths.connectIntentPath);
 	const contactStore = createContactStore(fs, paths);
 	const lifecycle = createLifecycleController({
 		store: singletonStore,
@@ -2064,11 +2070,57 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			)
 			.catch(() => {});
 	});
-	pi.on("session_shutdown", async () => {
-		// No goodbye card: the pinned mode line is the one place that says whether the
-		// bridge is up, and it now flips to "Stopped" here. A card said the same thing
-		// once, then stayed in the chat saying it forever.
-		if (connect || manager) await updateModePin("stop");
+	// How long a re-arm note stays valid after the picker writes it — a switch fires the
+	// next session_start within milliseconds, so this only has to outlast that, while
+	// being short enough that a note orphaned by a crash cannot auto-connect a later launch.
+	const CONNECT_INTENT_MAX_AGE_MS = 60_000;
+
+	pi.on("session_shutdown", async (event, ctx) => {
+		if (!(connect || manager)) return;
+		// A session switch (new/resume/fork) re-arms the bridge in the next instance, so
+		// leave the pin for it to set; only a real stop flips it to "Stopped" here. (No
+		// goodbye card: a card said the same thing once, then stayed in the chat forever.)
+		const reArming =
+			event.reason === "new" ||
+			event.reason === "resume" ||
+			event.reason === "fork";
+		if (!reArming) await updateModePin("stop");
+		// Tear the bridge FULLY down before this instance is disposed. Otherwise the
+		// orphaned Telegram client keeps polling in the dead closure and the re-armed one
+		// collides with it (getUpdates 409), and the lapsed heartbeat holds the lock on
+		// this same pid. Use the shutdown context (still valid pre-dispose) via the adapter.
+		const commandCtx = commandContextFromBase(ctx);
+		if (manager) await stopManager();
+		if (connect) await stopConnect(commandCtx);
+	});
+
+	// The other half of a session switch: the freshly-loaded instance finds the note the
+	// picker left and brings the bridge back up in the new session (see connect-intent.ts
+	// and the Part 3 spike). session_start hands a BASE context; the adapter makes it do.
+	pi.on("session_start", async (event, ctx) => {
+		const intent = await connectIntent.load();
+		if (!intent) return;
+		const now = Date.now();
+		if (
+			intentApplies(intent, {
+				cwd: ctx.cwd,
+				reason: event.reason,
+				now,
+				maxAgeMs: CONNECT_INTENT_MAX_AGE_MS,
+			})
+		) {
+			await connectIntent.clear();
+			const commandCtx = commandContextFromBase(ctx);
+			if (intent.mode === "mixed") {
+				await startManager(commandCtx, { mixed: true });
+			} else {
+				await startConnect(commandCtx);
+			}
+		} else if (now - intent.armedAt > CONNECT_INTENT_MAX_AGE_MS) {
+			// A note nobody consumed (a crash between arming and the switch): clean it up so
+			// it can never fire on a later launch.
+			await connectIntent.clear();
+		}
 	});
 
 	// Both mode launchers load settings, surface any warnings, and need the bot
