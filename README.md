@@ -62,8 +62,10 @@ Binds your **current Pi terminal session** to your **private chat with the bot**
 - Messages you send while it is busy are **queued**, not dropped; editing a queued message rewrites it in place.
 - **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)) — a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
 - The bot talks only to **you** (`allowedUserId`) and touches no other chats.
+- **Your context stays yours.** Personal and manager run in one Pi session, so the raw log holds both — but each Personal turn **strips the other side out** before the model sees it: after the bot has answered other people (in manager or mixed), their messages are removed from what Personal reads. You never inherit a stranger's conversation, and you don't have to `/clear` to be sure of it.
+- **Choose which session you are in.** Starting Personal — or sending `/resume` in the chat — offers a picker: keep the **current** session, start a **new** one, or **resume** any earlier session from this project (paged, so a long history stays navigable in the terminal too). Resuming a *different* session replays its last few messages into the topic as **read-only** cards, so your phone shows which conversation is now live — those replays are for reading only, never sent to the model, and ordinary forwarding works as before afterwards.
 
-Start it with `/telegram-personal`. In the chat: `/clear` (wipe history), `/compact` (summarise the history to free up context), `/esc` (cancel the running turn), `/help`.
+Start it with `/telegram-personal`. In the chat: `/resume` (pick / resume a session), `/clear` (wipe history), `/compact` (summarise the history to free up context), `/esc` (cancel the running turn), `/help`.
 
 ### 🕵️ Secretary manager — answer other people on your behalf
 
@@ -275,7 +277,7 @@ Then open Pi and start a mode.
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`.
+**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/resume` (pick / resume which session Personal runs in).
 
 `/status` reports the model and its provider, how full the context is (`~77k of 131.1k tokens (59% full)`), the working directory, whether a turn is running, what is queued, and — in mixed — which side holds the session. Every command above is refused to anyone but the owner, and none appear in the menu strangers see.
 
@@ -318,7 +320,7 @@ If one of them fixes it, please [open an issue](https://github.com/m62624/pi-tel
 
 ## Why the `personal` topic is new every session
 
-Start a mode and you get a **fresh `personal` topic**; the one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted. So the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind — its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
+You get a **fresh `personal` topic** whenever the Pi **session** behind it changes — you start or resume a *different* session (with `/resume`, the terminal picker, or a resume at the terminal), or `/clear` wipes the history. Merely switching modes keeps the topic, because it keeps the session: the topic mirrors the model's actual memory, not your last command, so a manager↔personal↔mixed round-trip in one session no longer breeds a pile of look-alike topics. The one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted, so the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind — its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
 
 That is not a filing preference. It is the only defence we have against a bug we could not otherwise survive.
 
@@ -326,7 +328,7 @@ A topic can stop accepting ordinary messages **from the phone**. You open it in 
 
 We measured it rather than guessed: the same text, from the same phone, into a topic created minutes earlier and into one that was three days old (and had survived a rename and a deleted chat). The new topic took it. The old one did not.
 
-There is no signal for this. Nothing in the API says a topic has gone that way, and "no thread id" cannot be read as "the topic is broken" — it is also the perfectly normal shape of a message typed outside the topics. So the bot does not try to detect it. It simply never keeps a topic long enough for it to happen: **one session, one topic.** Your history is not lost — it is one chip to the left, in `personal (archive)`.
+There is no signal for this. Nothing in the API says a topic has gone that way, and "no thread id" cannot be read as "the topic is broken" — it is also the perfectly normal shape of a message typed outside the topics. So the bot does not try to detect it. It simply never keeps a topic long enough for it to happen: **one session, one topic.** And because a single session can now outlive many mode switches, a topic that approaches Telegram's staleness window is rotated **on age alone** — with a one-line "this session continues" note, so a fresh topic does not read as a fresh conversation — which keeps a long-running session from ever crossing into the broken state. Your history is not lost — it is one chip to the left, in `personal (archive)`.
 
 If you use the bot only from Telegram Desktop, none of this affects you; the rotation is harmless there.
 
