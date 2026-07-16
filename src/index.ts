@@ -2311,6 +2311,38 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	/**
+	 * The `/clear` operation, shared by the typed command and the Telegram Clear button.
+	 * A soft reset: it drops a boundary so the model stops seeing the prior conversation
+	 * (same session, same file — the terminal's shared view clears too) and force-rotates
+	 * the personal topic to mirror the now-empty memory. Refused mid-turn, since clearing
+	 * then could orphan a tool_use/tool_result pair. Returns whether it actually cleared.
+	 */
+	const clearPersonalHistory = async (): Promise<boolean> => {
+		if (busy) {
+			await connect?.sendToChat(
+				card("⏳", "Busy right now", [
+					note("Send /clear again once I finish."),
+				]),
+			);
+			return false;
+		}
+		contextReset.clear(Date.now());
+		// Force a fresh topic: the id gate would keep the old one (same session), but the
+		// visible thread must match the empty memory. Rotate BEFORE the card, so the card
+		// is the new topic's first line.
+		await rotatePersonalTopic(activeCtx?.sessionManager.getSessionId(), {
+			force: true,
+		});
+		await connect?.sendToChat(
+			card("🧹", "History cleared", [
+				"Starting fresh.",
+				note("Shared session: the terminal sees the cleared context too."),
+			]),
+		);
+		return true;
+	};
+
 	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
 	const notePersonalActivity = (): void => {
 		void topics?.markUsed().catch(() => {});
@@ -2780,29 +2812,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			saveAttachments,
 			uploadFile,
 			onClear: async () => {
-				// Clearing mid-turn could orphan a tool_use/tool_result pair, so
-				// only reset while the agent is idle.
-				if (busy) {
-					await connect?.sendToChat(
-						card("⏳", "Busy right now", [
-							note("Send /clear again once I finish."),
-						]),
-					);
-					return;
-				}
-				contextReset.clear(Date.now());
-				// The context was wiped inside the SAME session, so the id gate would keep
-				// the old topic — force a fresh one, so the visible thread matches the empty
-				// memory. Rotate BEFORE the card, so the card is the new topic's first line.
-				await rotatePersonalTopic(activeCtx?.sessionManager.getSessionId(), {
-					force: true,
-				});
-				await connect?.sendToChat(
-					card("🧹", "History cleared", [
-						"Starting fresh.",
-						note("Shared session: the terminal sees the cleared context too."),
-					]),
-				);
+				await clearPersonalHistory();
 			},
 			onCompact: compactContext,
 			onStatus: buildStatus,
@@ -3650,22 +3660,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await ack("Staying in the current session.");
 			return;
 		}
-		let targetPath: string | null = null;
-		if (action.kind === "pick") {
-			const sessions = await listSessions(ctx.cwd).catch(() => []);
-			targetPath = sessions.find((s) => s.id === action.id)?.path ?? null;
-			if (!targetPath) {
-				await ack("That session is gone.");
-				return;
-			}
+		// Starting a genuinely new session needs a Pi command context Telegram lacks, so
+		// the phone offers a soft clear of the current session instead (see ResumeAction).
+		if (action.kind === "clear") {
+			await ack("Clearing history…");
+			await clearPersonalHistory();
+			return;
 		}
-		await ack(action.kind === "new" ? "Starting a new session…" : "Resuming…");
+		const sessions = await listSessions(ctx.cwd).catch(() => []);
+		const targetPath = sessions.find((s) => s.id === action.id)?.path ?? null;
+		if (!targetPath) {
+			await ack("That session is gone.");
+			return;
+		}
+		await ack("Resuming…");
 		await armConnectIntent(mixedActive ? "mixed" : "connect", ctx.cwd);
-		if (action.kind === "new") {
-			await ctx.newSession();
-		} else if (targetPath) {
-			await ctx.switchSession(targetPath);
-		}
+		await ctx.switchSession(targetPath);
 	};
 
 	// Keep a pinned message at the top of the owner's DM showing the active mode, so

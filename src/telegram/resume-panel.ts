@@ -21,10 +21,17 @@ export const RESUME_PAGE_SIZE = 5;
 /** The `callback_data` namespace so a press is unambiguously ours. */
 const CALLBACK_PREFIX = "resume:";
 
-/** What a `/resume` button press means. */
+/**
+ * What a `/resume` button press means.
+ *
+ * There is no "new session" here, unlike the TUI picker: creating a session needs a Pi
+ * command context, which a Telegram callback does not have (the bridge runs off a base
+ * context after any switch). So the phone offers `clear` instead — a soft reset of the
+ * CURRENT session — while starting a genuinely new session stays a terminal action.
+ */
 export type ResumeAction =
 	| { kind: "current" }
-	| { kind: "new" }
+	| { kind: "clear" }
 	| { kind: "page"; page: number }
 	| { kind: "pick"; id: string };
 
@@ -84,7 +91,12 @@ export function buildResumeKeyboard(
 
 	const keyboard: InlineKeyboardMarkup["inline_keyboard"] = [
 		[{ text: "● Current session", callback_data: `${CALLBACK_PREFIX}current` }],
-		[{ text: "＋ New session", callback_data: `${CALLBACK_PREFIX}new` }],
+		[
+			{
+				text: "🧹 Clear current session",
+				callback_data: `${CALLBACK_PREFIX}clear`,
+			},
+		],
 	];
 	for (const session of rows.slice(start, start + RESUME_PAGE_SIZE)) {
 		keyboard.push([
@@ -124,7 +136,7 @@ export function parseResumeCallback(
 	if (!data?.startsWith(CALLBACK_PREFIX)) return null;
 	const rest = data.slice(CALLBACK_PREFIX.length);
 	if (rest === "current") return { kind: "current" };
-	if (rest === "new") return { kind: "new" };
+	if (rest === "clear") return { kind: "clear" };
 	if (rest.startsWith("page:")) {
 		const page = Number(rest.slice("page:".length));
 		return Number.isInteger(page) && page >= 0 ? { kind: "page", page } : null;

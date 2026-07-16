@@ -39,16 +39,18 @@ every MODE" — never "to everyone".
   and the automatic ones Pi starts on its own — is summarised with instructions to keep
   what the person said over the tool output that dwarfs it.
 - `/resume` — choose which Pi session personal runs in, with buttons: keep the **current**
-  one, start a **new** one, or **resume** any other session from this project (paged, five
-  at a time). Picking new or resume switches the session — the personal topic rotates to
-  mirror the change — and the bridge comes back up in the chosen one. Whenever the bridge
-  binds to a session that already holds a conversation — resuming a different one, or just
-  connecting to a terminal session used without Telegram — its last few messages are
-  replayed into the fresh topic as **display-only** cards, so the phone shows what the
-  session is about; those replayed messages are for reading only — they are not sent to the
-  agent, and ordinary forwarding works as before afterwards. The same picker appears in the
-  terminal when the owner runs
-  `/telegram-personal`; there the roster is paged too, so a long history stays readable.
+  one, **clear** it (a soft reset of the current session — see `/clear`), or **resume** any
+  other session from this project (paged, five at a time). Resuming switches the session —
+  the personal topic rotates to mirror the change — and the bridge comes back up in it.
+  Starting a genuinely NEW session is offered only in the terminal picker (`/telegram-personal`),
+  not here: creating one needs a terminal command context the chat does not have, so the chat
+  gives **clear** in its place. Whenever the bridge binds to a session that already holds a
+  conversation — resuming a different one, or just connecting to a terminal session used
+  without Telegram — its last few messages are replayed into the fresh topic as
+  **display-only** cards, so the phone shows what the session is about; those replayed
+  messages are for reading only — they are not sent to the agent, and ordinary forwarding
+  works as before afterwards. The terminal picker (`/telegram-personal`) additionally offers
+  a new session, and pages a long roster too.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
 each conversation, so there is no accumulated history to clear or to compact.

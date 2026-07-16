@@ -49,7 +49,7 @@ describe("buildResumeKeyboard", () => {
 		const kb = buildResumeKeyboard(sessions(3), "none");
 		const rows = texts(kb);
 		expect(rows[0]).toEqual(["● Current session"]);
-		expect(rows[1]).toEqual(["＋ New session"]);
+		expect(rows[1]).toEqual(["🧹 Clear current session"]);
 		// Resume rows carry the cleaned preview (a time prefix rides along too).
 		expect(rows[2]?.[0]).toContain("chat 2");
 		expect(rows[3]?.[0]).toContain("chat 1");
@@ -117,7 +117,7 @@ describe("resumePageCount", () => {
 describe("parseResumeCallback", () => {
 	it("parses each of our actions", () => {
 		expect(parseResumeCallback("resume:current")).toEqual({ kind: "current" });
-		expect(parseResumeCallback("resume:new")).toEqual({ kind: "new" });
+		expect(parseResumeCallback("resume:clear")).toEqual({ kind: "clear" });
 		expect(parseResumeCallback("resume:page:2")).toEqual({
 			kind: "page",
 			page: 2,
