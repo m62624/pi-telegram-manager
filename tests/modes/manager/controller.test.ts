@@ -516,6 +516,35 @@ describe("ManagerController", () => {
 		expect(withImage?.content).toContain("[replied image]");
 	});
 
+	it("loads a photo the owner ATTACHES to a wake-word message (photo + caption)", async () => {
+		const { controller, deps } = await setup(["qwen"]);
+		const loadImages = vi.fn(async () => [
+			{ data: "FACEPIC", mimeType: "image/jpeg" },
+		]);
+		deps.loadImages = loadImages;
+		// The owner attaches a photo straight to the summoning message, no reply.
+		const ownerPhoto = {
+			...ownerMsg("hey qwen, what is this photo?", 100),
+			photo: [{ file_id: "FACE", file_size: 100 }],
+		} as Message;
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerPhoto,
+		});
+		await controller.onTick();
+		// The attached picture was fetched from the owner's own message...
+		expect(loadImages).toHaveBeenCalledTimes(1);
+		expect(loadImages.mock.calls[0][0]).toMatchObject({ message_id: 100 });
+		// ...and reaches the model, instead of it regurgitating an earlier photo.
+		const ctx = await controller.buildContextForActive();
+		const withImage = ctx?.find((message) => message.images?.length);
+		expect(withImage?.images).toEqual([
+			{ data: "FACEPIC", mimeType: "image/jpeg" },
+		]);
+	});
+
 	it("fetches no owner media when the owner is not addressing the bot", async () => {
 		const { controller, deps } = await setup(["квен"]);
 		const loadImages = vi.fn(async () => [
