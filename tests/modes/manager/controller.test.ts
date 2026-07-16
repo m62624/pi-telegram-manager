@@ -785,6 +785,46 @@ describe("ManagerController", () => {
 		expect(interlocutor?.content).not.toContain('Owner]: "');
 	});
 
+	it("loads the IMAGE of a message an interlocutor REPLIED to, for vision", async () => {
+		const { controller, deps, clock } = await setup();
+		const loadImages = vi.fn(async (m: { photo?: unknown }) =>
+			m.photo ? [{ data: "REPLIED64", mimeType: "image/jpeg" }] : [],
+		);
+		deps.loadImages = loadImages as never;
+		deps.maxImages = 4;
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				message_id: 3,
+				date: 0,
+				chat: { id: 42, type: "private", first_name: "Alice" },
+				from: { id: 5, is_bot: false, first_name: "Alice" },
+				text: "what's on this?",
+				reply_to_message: {
+					message_id: 2,
+					date: 0,
+					chat: { id: 42, type: "private", first_name: "Alice" },
+					from: { id: OWNER_ID, is_bot: false, first_name: "Owner" },
+					photo: [{ file_id: "P1", file_unique_id: "U1" }],
+				},
+			} as Message,
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		const ctx = await controller.buildContextForActive();
+		const interlocutor = ctx?.find((m) =>
+			m.content.includes("what's on this?"),
+		);
+		expect(interlocutor?.content).toContain("[replied image]");
+		// The replied-to picture rides inline on the freshest turn for vision.
+		expect((interlocutor as { images?: unknown[] })?.images).toEqual([
+			{ data: "REPLIED64", mimeType: "image/jpeg" },
+		]);
+		expect(loadImages).toHaveBeenCalled();
+	});
+
 	it("queues a second chat (per-user) while the first is active", async () => {
 		const { controller, triggerAgent, setIdle, clock } = await setup();
 		// Chat 42's window lapses first → it becomes active.

@@ -503,10 +503,24 @@ export class ConnectController {
 		return false;
 	}
 
-	/** Download image attachments for a message, swallowing per-file failures. */
+	/**
+	 * Download a message's inline images — and, when it REPLIES to one, the replied-to
+	 * picture too. Replying to a photo is how a person says "look at this one" (including
+	 * a photo the bot itself sent), exactly as {@link saveAttachments} does for files.
+	 * Without this the model got no picture on a reply and confabulated one from the
+	 * caption. The topic's root message is not something the owner "replied to" — Telegram
+	 * attaches it to every message in the topic — so it is skipped. Per-file failures are
+	 * swallowed; the text header still notes the attachment.
+	 */
 	private async loadImages(message: Message): Promise<InboundImage[]> {
 		if (!this.deps.loadImages) return [];
-		return this.deps.loadImages(message).catch(() => []);
+		const own = await this.deps.loadImages(message).catch(() => []);
+		const repliedTo = message.reply_to_message;
+		if (!repliedTo || isTopicAnchor(message, repliedTo)) return own;
+		const quoted = await this.deps
+			.loadImages(repliedTo as Message)
+			.catch(() => []);
+		return quoted.length > 0 ? [...own, ...quoted] : own;
 	}
 
 	/**

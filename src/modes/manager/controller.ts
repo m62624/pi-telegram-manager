@@ -1005,23 +1005,24 @@ export class ManagerController {
 		message: Message,
 	): Promise<{ note: string; kind?: string }> {
 		const refs = describeAttachments(message, this.deps.maxBytes);
-		if (refs.length === 0) return { note: "" };
+		// A reply may carry no attachment of its own yet still POINT at a photo — so the
+		// replied-to picture is checked before the early return, or a "look at this"
+		// text reply would drop it.
+		const repliedTo = message.reply_to_message;
+		const repliedImageRefs =
+			this.deps.media.images && repliedTo
+				? describeAttachments(repliedTo as Message, this.deps.maxBytes).filter(
+						isImage,
+					)
+				: [];
+		if (refs.length === 0 && repliedImageRefs.length === 0) return { note: "" };
 		const images = refs.filter(isImage);
 		const documents = refs.filter((ref) => !isImage(ref));
 		const parts: string[] = [];
 		if (images.length > 0) {
 			if (this.deps.media.images) {
 				parts.push("[image]");
-				const loaded = (await this.deps.loadImages?.(message)) ?? [];
-				if (loaded.length > 0) {
-					const pending = this.latestImages.get(chatId) ?? [];
-					const merged = [...pending, ...loaded];
-					const cap = this.deps.maxImages;
-					this.latestImages.set(
-						chatId,
-						cap && merged.length > cap ? merged.slice(-cap) : merged,
-					);
-				}
+				this.stashImages(chatId, (await this.deps.loadImages?.(message)) ?? []);
 			} else {
 				parts.push("[image not shown]");
 			}
@@ -1034,7 +1035,30 @@ export class ManagerController {
 					: "[document not accepted]",
 			);
 		}
+		// A reply to a photo points at it — load the replied-to picture too (mode-2
+		// vision), so the model sees what the interlocutor is answering rather than only
+		// its own note. Documents in a reply stay refused (repliedImageRefs is images
+		// only); only pictures are ever pulled in.
+		if (repliedImageRefs.length > 0 && repliedTo) {
+			parts.push("[replied image]");
+			this.stashImages(
+				chatId,
+				(await this.deps.loadImages?.(repliedTo as Message)) ?? [],
+			);
+		}
 		return { note: parts.join(" "), kind: refs[0]?.kind };
+	}
+
+	/** Merge freshly-loaded interlocutor images into the freshest turn, capped. */
+	private stashImages(chatId: string, loaded: IsolatedImage[]): void {
+		if (loaded.length === 0) return;
+		const pending = this.latestImages.get(chatId) ?? [];
+		const merged = [...pending, ...loaded];
+		const cap = this.deps.maxImages;
+		this.latestImages.set(
+			chatId,
+			cap && merged.length > cap ? merged.slice(-cap) : merged,
+		);
 	}
 
 	/**

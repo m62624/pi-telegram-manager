@@ -277,6 +277,70 @@ describe("ConnectController", () => {
 		expect(sendFollowUp.mock.calls[0][0]).toContain("/work/bash-1.log");
 	});
 
+	it("loads the IMAGE of a message the owner REPLIED to — replying to a photo points at it", async () => {
+		// Mirrors the file case: replying to a photo (including one the bot sent) is how a
+		// person says "look at this one". Without re-loading it the model gets no picture
+		// on the reply and confabulates one from the caption.
+		const loadImages = vi.fn(async (message: { photo?: unknown }) =>
+			message.photo ? [{ data: "REPLIED64", mimeType: "image/jpeg" }] : [],
+		);
+		const { controller, sendFollowUp } = setup({
+			loadImages: loadImages as never,
+		});
+		const event = classifyUpdate({
+			update_id: 11,
+			message: {
+				message_id: 11,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "what is in this pic?",
+				reply_to_message: {
+					message_id: 8,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					photo: [{ file_id: "P1", file_unique_id: "U1" }],
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Both the message (no photo) and the one it replies to (a photo) are consulted.
+		expect(loadImages).toHaveBeenCalledTimes(2);
+		const content = sendFollowUp.mock.calls[0][0];
+		expect(content).toEqual([
+			{ type: "image", data: "REPLIED64", mimeType: "image/jpeg" },
+			{ type: "text", text: expect.stringContaining("what is in this pic?") },
+		]);
+	});
+
+	it("does not read a topic's root message as a reply worth an image", async () => {
+		const loadImages = vi.fn(async () => []);
+		const { controller } = setup({ loadImages });
+		const event = classifyUpdate({
+			update_id: 12,
+			message: {
+				message_id: 12,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "hi",
+				message_thread_id: 4,
+				is_topic_message: true,
+				reply_to_message: {
+					message_id: 4,
+					message_thread_id: 4,
+					is_topic_message: true,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		expect(loadImages).toHaveBeenCalledTimes(1);
+	});
+
 	it("does not treat a topic's root message as a reply worth reading", async () => {
 		const saveAttachments = vi.fn(async () => ({ savedFiles: [], errors: [] }));
 		const { controller } = setup({ saveAttachments });
