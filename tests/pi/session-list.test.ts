@@ -88,6 +88,24 @@ describe("sessionLabel", () => {
 		expect(label.endsWith("…")).toBe(true);
 	});
 
+	it("strips the Telegram meta header so the real body shows, not the framing", () => {
+		const firstMessage =
+			'[telegram|from:Alice|chat:General|at:Mon 2026-07-10 14:32 +05:00]\n[reply to Ada]: "earlier"\n[attachments: photo]\n\nhey are you around?';
+		expect(
+			sessionLabel({ name: undefined, firstMessage, messageCount: 4 }),
+		).toBe("hey are you around?");
+	});
+
+	it("falls back to a generic preview when only meta lines remain", () => {
+		expect(
+			sessionLabel({
+				name: undefined,
+				firstMessage: "[telegram|from:Alice|at:now]",
+				messageCount: 2,
+			}),
+		).toBe("(no preview)");
+	});
+
 	it("names an empty session as such, and a nonempty one with no preview generically", () => {
 		expect(
 			sessionLabel({ name: undefined, firstMessage: "", messageCount: 0 }),

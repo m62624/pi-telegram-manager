@@ -37,10 +37,30 @@ export function isSessionEmpty(
 }
 
 /**
+ * The bracketed header/meta lines the bridge prepends to a Telegram-driven prompt
+ * (`[telegram|from:…|at:…]`, `[reply to …]`, `[attachments: …]`, `[forwarded from: …]`).
+ * They open every such session's first message, so a raw preview shows only framing —
+ * identical across rows and truncated before any real text. We drop them for the label.
+ */
+const META_LINE =
+	/^\[(telegram\b|reply to |attachments:|forwarded from:|quote\b|replying to)/i;
+
+/** The readable body of a first message: its meta header lines stripped, or nothing. */
+function previewOf(firstMessage: string | undefined): string | undefined {
+	if (!firstMessage) return undefined;
+	const body = firstMessage
+		.split("\n")
+		.filter((line) => !META_LINE.test(line.trim()))
+		.join(" ");
+	return nonEmpty(body);
+}
+
+/**
  * A one-line label for a picker row: the session's display name if it has one, else its
- * first message as a preview, else a placeholder — whitespace-collapsed and truncated so
- * it never blows out a Telegram inline button (the TUI selector wraps on its own, but the
- * same cap is harmless there).
+ * first message as a preview (with the Telegram meta header stripped, so the actual text
+ * shows rather than `[telegram|from:…]` framing), else a placeholder — whitespace-collapsed
+ * and truncated so it never blows out a Telegram inline button (the TUI selector wraps on
+ * its own, but the same cap is harmless there).
  */
 export function sessionLabel(
 	info: Pick<SessionInfo, "name" | "firstMessage" | "messageCount">,
@@ -48,7 +68,7 @@ export function sessionLabel(
 ): string {
 	const base =
 		nonEmpty(info.name) ??
-		nonEmpty(info.firstMessage) ??
+		previewOf(info.firstMessage) ??
 		(info.messageCount === 0 ? "(empty session)" : "(no preview)");
 	return truncate(collapseWhitespace(base), maxLen);
 }
@@ -163,6 +183,6 @@ export function resolveSessionPick(
 }
 
 /** A compact, deterministic "MM-DD HH:mm" (UTC) stamp for a picker row. */
-function formatSessionTime(date: Date): string {
+export function formatSessionTime(date: Date): string {
 	return date.toISOString().slice(5, 16).replace("T", " ");
 }

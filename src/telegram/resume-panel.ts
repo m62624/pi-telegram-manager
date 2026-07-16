@@ -9,7 +9,11 @@
  */
 import type { InlineKeyboardMarkup } from "@grammyjs/types";
 import type { SessionInfo } from "../pi/sdk";
-import { sessionLabel, sortSessionsByRecency } from "../pi/session-list";
+import {
+	formatSessionTime,
+	sessionLabel,
+	sortSessionsByRecency,
+} from "../pi/session-list";
 
 /** How many resume rows a single page shows, below the fixed Current/New rows. */
 export const RESUME_PAGE_SIZE = 5;
@@ -32,6 +36,16 @@ export function resumePanelText(): string {
 /** Whether a plain message is the `/resume` command (bare or `/resume@bot`). */
 export function isResumeCommand(text: string): boolean {
 	return /^\/resume(@\w+)?$/i.test(text.trim());
+}
+
+/**
+ * A resume button's caption: the modified time FIRST, then the cleaned preview. Time
+ * leads because a Telegram button clips its text to roughly one line — leading with the
+ * stamp means every row stays distinguishable at a glance even when the preview is cut,
+ * where a preview-first label would show the same truncated framing on every row.
+ */
+export function resumeButtonLabel(session: SessionInfo): string {
+	return `${formatSessionTime(session.modified)}  ·  ${sessionLabel(session, 28)}`;
 }
 
 /** The resume rows (current session excluded, newest first) across all pages. */
@@ -75,7 +89,7 @@ export function buildResumeKeyboard(
 	for (const session of rows.slice(start, start + RESUME_PAGE_SIZE)) {
 		keyboard.push([
 			{
-				text: sessionLabel(session, 40),
+				text: resumeButtonLabel(session),
 				callback_data: `${CALLBACK_PREFIX}pick:${session.id}`,
 			},
 		]);
