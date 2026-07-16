@@ -480,7 +480,7 @@ describe("ManagerController", () => {
 	});
 
 	it("loads a photo the owner REPLIES to when summoning the bot to look", async () => {
-		const { controller, deps } = await setup(["квен"]);
+		const { controller, deps } = await setup(["qwen"]);
 		const loadImages = vi.fn(async () => [
 			{ data: "PICDATA", mimeType: "image/jpeg" },
 		]);
@@ -498,7 +498,7 @@ describe("ManagerController", () => {
 			chatId: "42",
 			fromId: OWNER_ID,
 			message: {
-				...ownerMsg("квен, что ты видишь?", 100),
+				...ownerMsg("qwen, what do you see?", 100),
 				reply_to_message: photo,
 			} as Message,
 		});
@@ -546,7 +546,7 @@ describe("ManagerController", () => {
 	});
 
 	it("fetches no owner media when the owner is not addressing the bot", async () => {
-		const { controller, deps } = await setup(["квен"]);
+		const { controller, deps } = await setup(["qwen"]);
 		const loadImages = vi.fn(async () => [
 			{ data: "PICDATA", mimeType: "image/jpeg" },
 		]);
@@ -564,7 +564,7 @@ describe("ManagerController", () => {
 			chatId: "42",
 			fromId: OWNER_ID,
 			message: {
-				...ownerMsg("ага, понятно", 100),
+				...ownerMsg("got it, thanks", 100),
 				reply_to_message: photo,
 			} as Message,
 		});
