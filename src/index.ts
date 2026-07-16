@@ -2169,9 +2169,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const rotatePersonalTopic = async (
 		sessionId?: string,
 		opts?: { force?: boolean },
-	): Promise<void> => {
-		if (!topics?.active) return;
-		await topics.startSession(sessionId, opts);
+	): Promise<{ ageRefreshed: boolean }> => {
+		if (!topics?.active) return { ageRefreshed: false };
+		return await topics.startSession(sessionId, opts);
+	};
+
+	/**
+	 * The one rotation the owner is told about: the topic was refreshed only because it
+	 * outlived Telegram's id staleness, so the session actually continues in it. Sent
+	 * after the runtime exists (the startup rotation runs before `connect` is built).
+	 */
+	const noticeIfAgeRefreshed = async (rotation: {
+		ageRefreshed: boolean;
+	}): Promise<void> => {
+		if (!rotation.ageRefreshed) return;
+		await connect?.sendToChat(
+			card("↻", "Topic refreshed", [
+				"This session continues — the topic was rotated to keep Telegram in sync.",
+			]),
+		);
 	};
 
 	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
@@ -2777,8 +2793,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
-		await rotatePersonalTopic(ctx.sessionManager.getSessionId());
+		const rotation = await rotatePersonalTopic(
+			ctx.sessionManager.getSessionId(),
+		);
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
+		await noticeIfAgeRefreshed(rotation);
 		void client.start();
 		// Publish the tappable command menus (no manual setup needed by the user).
 		// Two scopes, deliberately: the control commands are refused to everyone but
@@ -2981,7 +3000,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// for the very same session — a message there is exactly a prompt typed at
 			// the terminal (and terminal prompts mirror back into it).
 			if (mixed) {
-				await rotatePersonalTopic(ctx.sessionManager.getSessionId());
+				const rotation = await rotatePersonalTopic(
+					ctx.sessionManager.getSessionId(),
+				);
 				await startConnectRuntime(
 					managerClient,
 					token,
@@ -2989,6 +3010,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					ctx,
 					settings.allowedUserId,
 				);
+				await noticeIfAgeRefreshed(rotation);
 			}
 		}
 		// Download an interlocutor message's inline images so the model can scan

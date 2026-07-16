@@ -177,6 +177,12 @@ export interface TopicsState {
 	 * existed, or when the session id was unknown at mint time.
 	 */
 	personalSessionId?: string;
+	/**
+	 * When the current `personal` topic was created (epoch ms). Read by the age net in
+	 * {@link TopicRouter.startSession} to refresh a topic that outlived Telegram's own
+	 * id staleness while its session stayed the same. Undefined for pre-existing topics.
+	 */
+	personalCreatedAt?: number;
 }
 
 /**
@@ -199,7 +205,17 @@ export interface TopicRouterDeps {
 	options: TopicsOptions;
 	/** Called once with the reason when topics are unavailable (a UI hint). */
 	onFallback?: (reason: string) => void;
+	/** The clock, injectable so the age net (see {@link startSession}) is testable. */
+	now?: () => number;
 }
+
+/**
+ * How old the `personal` topic may get before a start refreshes it even when the
+ * session did not change. Telegram's own topic ids go stale after a few days; a single
+ * Pi session kept alive that long would otherwise sit in an ageing topic forever. Two
+ * days leaves a wide margin under that.
+ */
+export const PERSONAL_TOPIC_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 
 /**
  * Resolves the `message_thread_id` for each kind of owner-DM message, creating the
@@ -219,6 +235,11 @@ export class TopicRouter {
 	private icons: Map<string, string> | null = null;
 
 	constructor(private readonly deps: TopicRouterDeps) {}
+
+	/** The current time, from the injected clock in tests or the wall clock otherwise. */
+	private now(): number {
+		return this.deps.now?.() ?? Date.now();
+	}
 
 	/** The thread a message of this kind belongs to; undefined → the plain DM. */
 	thread(kind: TopicKind): number | undefined {
@@ -325,12 +346,16 @@ export class TopicRouter {
 				...(personal === stored?.personal && stored?.used
 					? { used: true }
 					: {}),
-				// The session a carried-over `personal` belongs to travels with it: only a
-				// topic we actually re-adopted keeps its id, so the rotation gate still fires
-				// for a topic we had to recreate here.
+				// The session a carried-over `personal` belongs to travels with it, and so
+				// does its age: only a topic we actually re-adopted keeps them, so both the
+				// session gate and the age net still fire for a topic we had to recreate here.
 				...(personal === stored?.personal &&
 				stored?.personalSessionId !== undefined
 					? { personalSessionId: stored.personalSessionId }
+					: {}),
+				...(personal === stored?.personal &&
+				stored?.personalCreatedAt !== undefined
+					? { personalCreatedAt: stored.personalCreatedAt }
 					: {}),
 				...(stale.length > 0 ? { stale } : {}),
 			};
@@ -399,9 +424,10 @@ export class TopicRouter {
 	async startSession(
 		sessionId?: string,
 		opts?: { force?: boolean },
-	): Promise<void> {
+	): Promise<{ ageRefreshed: boolean }> {
+		const idle = { ageRefreshed: false };
 		const state = this.state;
-		if (!state || !this.deps.options.enabled) return;
+		if (!state || !this.deps.options.enabled) return idle;
 		const force = opts?.force ?? false;
 		// Just created (first run, or the owner deleted it): it IS the fresh topic this
 		// method exists to provide, and replacing it would only litter the chat with a
@@ -409,26 +435,31 @@ export class TopicRouter {
 		// later start in the SAME session recognises it and does not rotate.
 		if (this.personalIsFresh) {
 			await this.stampPersonalSession(state, sessionId);
-			return;
+			return idle;
 		}
-		// The topic already mirrors THIS session and the owner did not force a reset:
-		// its visible history is the model's memory, so keep it. This is what stops a
-		// mode switch (same session, no context change) from minting a topic every time.
-		// A missing sessionId means "session unknown" — treat as a change and rotate.
-		if (
-			!force &&
-			sessionId !== undefined &&
-			state.personalSessionId === sessionId
-		) {
-			return;
+		const sameSession =
+			sessionId !== undefined && state.personalSessionId === sessionId;
+		// The topic has outlived Telegram's own id staleness while its session stayed the
+		// same: refresh it even though nothing about the memory changed. This is the only
+		// rotation the owner is told about — the context genuinely continues.
+		const aged =
+			state.personalCreatedAt !== undefined &&
+			this.now() - state.personalCreatedAt > PERSONAL_TOPIC_MAX_AGE_MS;
+		// The topic already mirrors THIS session, the owner did not force a reset, and it
+		// is not stale: its visible history is the model's memory, so keep it. This is what
+		// stops a mode switch (same session, no context change) from minting a topic every
+		// time. A missing sessionId means "session unknown" — treat as a change and rotate.
+		if (!force && sameSession && !aged) {
+			return idle;
 		}
+		const ageRefreshed = !force && sameSession && aged;
 		const { options } = this.deps;
 		let fresh: number;
 		try {
 			const created = await this.create("personal", options.personalName);
 			fresh = created.message_thread_id;
 		} catch {
-			return; // no fresh topic — carry on in the one we have
+			return idle; // no fresh topic — carry on in the one we have
 		}
 		// Topics Telegram would not delete before: try again, it may allow it now.
 		const stale: number[] = [];
@@ -463,23 +494,34 @@ export class TopicRouter {
 			...(archive !== undefined ? { archive } : {}),
 			...(stale.length > 0 ? { stale } : {}),
 			...(sessionId !== undefined ? { personalSessionId: sessionId } : {}),
+			personalCreatedAt: this.now(),
 		};
 		this.state = next;
 		await this.save(next);
+		return { ageRefreshed };
 	}
 
 	/**
-	 * Record which session the current (already-fresh) `personal` belongs to, without
-	 * rotating it. A no-op when the id is unknown or already matches, so a fresh topic
-	 * is not re-saved for nothing.
+	 * Record which session the current (already-fresh) `personal` belongs to — and when
+	 * it was created, so the age net can measure it — without rotating it. A no-op when
+	 * the id is unknown or already recorded, so a fresh topic is not re-saved for nothing.
 	 */
 	private async stampPersonalSession(
 		state: TopicsState,
 		sessionId?: string,
 	): Promise<void> {
-		if (sessionId === undefined || state.personalSessionId === sessionId)
+		if (sessionId === undefined) return;
+		if (
+			state.personalSessionId === sessionId &&
+			state.personalCreatedAt !== undefined
+		) {
 			return;
-		const next: TopicsState = { ...state, personalSessionId: sessionId };
+		}
+		const next: TopicsState = {
+			...state,
+			personalSessionId: sessionId,
+			personalCreatedAt: this.now(),
+		};
 		this.state = next;
 		await this.save(next);
 	}
@@ -604,10 +646,13 @@ export class TopicRouter {
 					log: options.logName,
 				},
 				// Recreating the personal topic mints a brand-new one whose session is
-				// unknown here, so its id is dropped (the next start rotates it). Recreating
-				// any OTHER topic leaves `personal` untouched, so its session id is kept.
+				// unknown here, so its id and age are dropped (the next start rotates it).
+				// Recreating any OTHER topic leaves `personal` untouched, so both are kept.
 				...(kind !== "personal" && this.state?.personalSessionId !== undefined
 					? { personalSessionId: this.state.personalSessionId }
+					: {}),
+				...(kind !== "personal" && this.state?.personalCreatedAt !== undefined
+					? { personalCreatedAt: this.state.personalCreatedAt }
 					: {}),
 			};
 			state[kind] = created.message_thread_id;
