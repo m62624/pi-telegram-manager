@@ -157,13 +157,18 @@ import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { managerToolGate } from "./modes/manager/tool-gate";
 import { resolveTelegramPaths } from "./pi/agent-dir";
 import { commandContextFromBase } from "./pi/command-ctx";
-import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "./pi/sdk";
 import { compact } from "./pi/sdk";
 import {
 	buildSessionPickerOptions,
 	listSessions,
 	resolveSessionPick,
 } from "./pi/session-list";
+import { extractSessionTail, type TailSourceMessage } from "./pi/session-tail";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
 	CONSOLIDATION_DONE_END_TURN_HINT,
@@ -2129,6 +2134,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			} else {
 				await startConnect(commandCtx);
 			}
+			// A resume (not a fresh /new) restored a prior conversation: show its tail in
+			// the topic so the phone reflects which history is now live. Reads the base
+			// ctx's session manager, which now points at the resumed session.
+			if (event.reason === "resume") await renderResumeTail(ctx);
 		} else if (now - intent.armedAt > CONNECT_INTENT_MAX_AGE_MS) {
 			// A note nobody consumed (a crash between arming and the switch): clean it up so
 			// it can never fire on a later launch.
@@ -2253,6 +2262,52 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				"This session continues — the topic was rotated to keep Telegram in sync.",
 			]),
 		);
+	};
+
+	/** How many of the resumed session's last messages to replay into the topic. */
+	const RESUME_TAIL_MAX = 10;
+	/** A small gap between replayed posts, so a burst of them clears Telegram's limiter. */
+	const RESUME_TAIL_POST_DELAY_MS = 350;
+
+	/**
+	 * After the owner resumes a DIFFERENT session, mirror its last few messages into the
+	 * personal topic as display-only cards — so the phone shows WHICH history is now live,
+	 * not a blank topic. These are outgoing bot posts: they are never fed back to the agent
+	 * and never echoed to the terminal (Pi already shows the full transcript there), and
+	 * afterwards ordinary forwarding works exactly as before. Best-effort throughout — a
+	 * preview must never break the resume it follows. Only the personal bridge has a topic
+	 * to post into, so a null `connect` (e.g. a manager-only re-arm) simply renders nothing.
+	 */
+	const renderResumeTail = async (ctx: ExtensionContext): Promise<void> => {
+		if (!connect) return;
+		try {
+			const messages: TailSourceMessage[] = [];
+			for (const entry of ctx.sessionManager.buildContextEntries()) {
+				if (entry.type === "message") messages.push(entry.message);
+			}
+			const tail = extractSessionTail(messages, RESUME_TAIL_MAX);
+			if (tail.length === 0) return;
+			await connect.sendToChat(
+				card("↻", "Resumed session", [
+					"The recent messages below are from the session you just resumed, shown " +
+						"for reference only — they were not sent to the agent.",
+				]),
+			);
+			for (const message of tail) {
+				await connect.sendToChat(
+					card(
+						message.role === "user" ? "💬" : "🤖",
+						message.role === "user" ? "You" : "Assistant",
+						[message.text],
+					),
+				);
+				await new Promise((resolve) =>
+					setTimeout(resolve, RESUME_TAIL_POST_DELAY_MS),
+				);
+			}
+		} catch {
+			// The transcript preview is a courtesy; never let it fail the resume.
+		}
 	};
 
 	/** Anything said in `personal` — so the next session archives it instead of dropping it. */

@@ -1,0 +1,86 @@
+import { describe, expect, it } from "vitest";
+import { MIXED_TELEGRAM_MARKER } from "../../src/modes/manager/mixed-context";
+import {
+	extractSessionTail,
+	TAIL_MESSAGE_MAX_LEN,
+	type TailSourceMessage,
+} from "../../src/pi/session-tail";
+
+/** A user message with plain string content. */
+function user(text: string): TailSourceMessage {
+	return { role: "user", content: text };
+}
+
+/** An assistant message with block content. */
+function assistant(text: string): TailSourceMessage {
+	return { role: "assistant", content: [{ type: "text", text }] };
+}
+
+describe("extractSessionTail", () => {
+	it("keeps only the last N user/assistant messages, oldest-first", () => {
+		const messages = [
+			user("one"),
+			assistant("two"),
+			user("three"),
+			assistant("four"),
+		];
+		expect(extractSessionTail(messages, 2)).toEqual([
+			{ role: "user", text: "three" },
+			{ role: "assistant", text: "four" },
+		]);
+	});
+
+	it("returns everything when fewer than the cap", () => {
+		const messages = [user("hi"), assistant("hello")];
+		expect(extractSessionTail(messages, 10)).toEqual([
+			{ role: "user", text: "hi" },
+			{ role: "assistant", text: "hello" },
+		]);
+	});
+
+	it("drops tool results and toolCall-only assistant messages", () => {
+		const messages: TailSourceMessage[] = [
+			user("do a thing"),
+			{ role: "assistant", content: [{ type: "toolCall" }] },
+			{ role: "toolResult", content: [{ type: "text", text: "result blob" }] },
+			assistant("done"),
+		];
+		expect(extractSessionTail(messages, 10)).toEqual([
+			{ role: "user", text: "do a thing" },
+			{ role: "assistant", text: "done" },
+		]);
+	});
+
+	it("drops empty and whitespace-only messages", () => {
+		const messages = [user("   "), assistant(""), user("real")];
+		expect(extractSessionTail(messages, 10)).toEqual([
+			{ role: "user", text: "real" },
+		]);
+	});
+
+	it("strips the hidden Telegram-turn marker and collapses whitespace", () => {
+		const messages = [user(`${MIXED_TELEGRAM_MARKER}hello   there\n\nagain`)];
+		expect(extractSessionTail(messages, 10)).toEqual([
+			{ role: "user", text: "hello there again" },
+		]);
+	});
+
+	it("truncates an over-long message with an ellipsis", () => {
+		const long = "x".repeat(TAIL_MESSAGE_MAX_LEN + 50);
+		const [only] = extractSessionTail([user(long)], 10);
+		expect(only?.text).toHaveLength(TAIL_MESSAGE_MAX_LEN);
+		expect(only?.text.endsWith("…")).toBe(true);
+	});
+
+	it("returns nothing for a session with no readable conversation", () => {
+		const messages: TailSourceMessage[] = [
+			{ role: "toolResult", content: "blob" },
+			{ role: "assistant", content: [{ type: "toolCall" }] },
+		];
+		expect(extractSessionTail(messages, 10)).toEqual([]);
+	});
+
+	it("treats a non-positive cap as empty", () => {
+		expect(extractSessionTail([user("a")], 0)).toEqual([]);
+	});
+});
