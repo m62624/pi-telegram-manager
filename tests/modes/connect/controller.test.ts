@@ -345,7 +345,9 @@ describe("ConnectController", () => {
 		// The history cards are display-only bot posts, so a reply to one otherwise
 		// reaches the model as `which said: ""`. The anchor hands back what it said.
 		const resolveHistoryAnchor = vi.fn((id: number) =>
-			id === 77 ? "the earlier thing I asked about" : undefined,
+			id === 77
+				? { text: "the earlier thing I asked about", images: [] }
+				: undefined,
 		);
 		const { controller, sendFollowUp } = setup({ resolveHistoryAnchor });
 		const event = classifyUpdate({
@@ -370,6 +372,49 @@ describe("ConnectController", () => {
 		const content = sendFollowUp.mock.calls[0][0] as string;
 		expect(content).toContain("answering an earlier message");
 		expect(content).toContain("the earlier thing I asked about");
+	});
+
+	it("re-delivers the image of a replayed history card the owner replied to", async () => {
+		// The card is a display-only text post, so its own message has no photo — the
+		// picture comes from the anchor and must ride inline so the model can see it.
+		const resolveHistoryAnchor = vi.fn((id: number) =>
+			id === 88
+				? {
+						text: "the pic I sent earlier",
+						images: [{ data: "HIST64", mimeType: "image/jpeg" }],
+					}
+				: undefined,
+		);
+		const { controller, sendFollowUp } = setup({
+			resolveHistoryAnchor,
+			loadImages: async () => [], // the reply message itself carries no photo
+		});
+		const event = classifyUpdate({
+			update_id: 22,
+			message: {
+				message_id: 22,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "how many people are in it?",
+				reply_to_message: {
+					message_id: 88,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					text: "",
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		const content = sendFollowUp.mock.calls[0][0];
+		expect(content).toEqual([
+			{ type: "image", data: "HIST64", mimeType: "image/jpeg" },
+			{
+				type: "text",
+				text: expect.stringContaining("how many people are in it?"),
+			},
+		]);
 	});
 
 	it("leaves an ordinary reply untouched when it is not an anchored card", async () => {

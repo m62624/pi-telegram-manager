@@ -2271,15 +2271,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const HISTORY_ANCHOR_MAX = 200;
 
 	/**
-	 * Message id of a replayed history card → the text it showed. The cards are
-	 * display-only, so a reply to one otherwise reaches the model with an empty quote;
-	 * this lets the controller fill the quote with what the card actually said. Bounded,
-	 * evicting oldest, so a long-lived session cannot grow it without limit.
+	 * Message id of a replayed history card → what it stood for: the text it showed and
+	 * any images that message carried (verbatim base64). The cards are display-only, so a
+	 * reply to one otherwise reaches the model with an empty quote and no picture; this
+	 * lets the controller fill the quote AND re-deliver the photo. Bounded, evicting
+	 * oldest, so a long-lived session cannot grow it without limit.
 	 */
-	const historyAnchors = new Map<number, string>();
-	const anchorHistoryCard = (ids: readonly number[], text: string): void => {
+	const historyAnchors = new Map<
+		number,
+		{ text: string; images: { data: string; mimeType: string }[] }
+	>();
+	const anchorHistoryCard = (
+		ids: readonly number[],
+		anchor: { text: string; images: { data: string; mimeType: string }[] },
+	): void => {
 		for (const id of ids) {
-			historyAnchors.set(id, text);
+			historyAnchors.set(id, anchor);
 			if (historyAnchors.size > HISTORY_ANCHOR_MAX) {
 				const oldest = historyAnchors.keys().next().value;
 				if (oldest !== undefined) historyAnchors.delete(oldest);
@@ -2321,8 +2328,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						[message.text],
 					),
 				);
-				// Anchor the card so a reply to it can quote the real text, not "".
-				anchorHistoryCard(ids, message.text);
+				// Anchor the card so a reply to it can quote the real text — and re-deliver
+				// any picture it carried — instead of an empty "" and no image.
+				anchorHistoryCard(ids, { text: message.text, images: message.images });
 				await new Promise((resolve) =>
 					setTimeout(resolve, RESUME_TAIL_POST_DELAY_MS),
 				);

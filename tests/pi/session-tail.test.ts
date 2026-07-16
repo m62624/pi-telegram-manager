@@ -25,16 +25,16 @@ describe("extractSessionTail", () => {
 			assistant("four"),
 		];
 		expect(extractSessionTail(messages, 2)).toEqual([
-			{ role: "user", text: "three" },
-			{ role: "assistant", text: "four" },
+			{ role: "user", text: "three", images: [] },
+			{ role: "assistant", text: "four", images: [] },
 		]);
 	});
 
 	it("returns everything when fewer than the cap", () => {
 		const messages = [user("hi"), assistant("hello")];
 		expect(extractSessionTail(messages, 10)).toEqual([
-			{ role: "user", text: "hi" },
-			{ role: "assistant", text: "hello" },
+			{ role: "user", text: "hi", images: [] },
+			{ role: "assistant", text: "hello", images: [] },
 		]);
 	});
 
@@ -46,22 +46,51 @@ describe("extractSessionTail", () => {
 			assistant("done"),
 		];
 		expect(extractSessionTail(messages, 10)).toEqual([
-			{ role: "user", text: "do a thing" },
-			{ role: "assistant", text: "done" },
+			{ role: "user", text: "do a thing", images: [] },
+			{ role: "assistant", text: "done", images: [] },
 		]);
 	});
 
 	it("drops empty and whitespace-only messages", () => {
 		const messages = [user("   "), assistant(""), user("real")];
 		expect(extractSessionTail(messages, 10)).toEqual([
-			{ role: "user", text: "real" },
+			{ role: "user", text: "real", images: [] },
 		]);
 	});
 
 	it("strips the hidden Telegram-turn marker and collapses whitespace", () => {
 		const messages = [user(`${MIXED_TELEGRAM_MARKER}hello   there\n\nagain`)];
 		expect(extractSessionTail(messages, 10)).toEqual([
-			{ role: "user", text: "hello there again" },
+			{ role: "user", text: "hello there again", images: [] },
+		]);
+	});
+
+	it("extracts images verbatim, and keeps a photo-only message as a card", () => {
+		const messages: TailSourceMessage[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "look" },
+					{ type: "image", data: "AAA", mimeType: "image/png" },
+				],
+			},
+			// A photo with no words still becomes a card (so a reply can point at it).
+			{
+				role: "user",
+				content: [{ type: "image", data: "BBB", mimeType: "image/jpeg" }],
+			},
+		];
+		expect(extractSessionTail(messages, 10)).toEqual([
+			{
+				role: "user",
+				text: "look",
+				images: [{ data: "AAA", mimeType: "image/png" }],
+			},
+			{
+				role: "user",
+				text: "[photo]",
+				images: [{ data: "BBB", mimeType: "image/jpeg" }],
+			},
 		]);
 	});
 

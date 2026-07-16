@@ -24,11 +24,7 @@ import {
 } from "../../core/forwards";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
-import {
-	buildPromptTurn,
-	type TurnReplyContext,
-	type TurnSavedFile,
-} from "../../core/turns";
+import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import { isTopicAnchor } from "../../telegram/message-context";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
@@ -118,13 +114,16 @@ export interface ConnectControllerDeps {
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
-	 * Resolve the real text behind a replayed session-history card, keyed by the id of
-	 * the card the owner replied to. The cards are display-only bot posts, so a reply to
-	 * one otherwise carries an empty quote (`which said: ""`); this hands back what that
-	 * historical message actually said so the model can answer about it. Undefined for a
+	 * Resolve what a replayed session-history card stood for, keyed by the id of the card
+	 * the owner replied to: the text it showed and any images that message carried. The
+	 * cards are display-only bot posts, so a reply to one otherwise carries an empty quote
+	 * (`which said: ""`) and no picture; this hands back the real text (for the quote) and
+	 * the pictures (re-delivered inline) so the model can answer about it. Undefined for a
 	 * message that is not one of our anchored history cards.
 	 */
-	resolveHistoryAnchor?: (messageId: number) => string | undefined;
+	resolveHistoryAnchor?: (
+		messageId: number,
+	) => { text: string; images: InboundImage[] } | undefined;
 	/**
 	 * The owner's `personal` topic, resolved per send (it appears once the router has
 	 * created it, and vanishes again on a fallback to the plain DM). EVERYTHING of this
@@ -377,12 +376,13 @@ export class ConnectController {
 		// images ride along inline via loadImages.
 		const intake = await this.saveAttachments(event.message);
 		const input = messageToTurnInput(event.message, this.deps.maxBytes);
-		// A reply to a replayed history card carries an empty quote (the cards are
-		// display-only). Fill it with what that message actually said, so the model
-		// answers about it rather than about "".
-		const anchoredReply = this.anchoredReplyContext(event.message);
-		const withReply = anchoredReply
-			? { ...input, reply: anchoredReply }
+		// A reply to a replayed history card carries an empty quote and no picture (the
+		// cards are display-only). Fill the quote with what that message actually said,
+		// and its images are re-delivered inline below, so the model answers about the
+		// real thing rather than about "".
+		const anchor = this.historyAnchorFor(event.message);
+		const withReply = anchor
+			? { ...input, reply: { text: anchor.text } }
 			: input;
 		const turn = buildPromptTurn({
 			...withReply,
@@ -402,7 +402,13 @@ export class ConnectController {
 			return true; // still queued — rewrote it in place, no new dispatch
 		}
 
-		const images = await this.loadImages(event.message);
+		const ownImages = await this.loadImages(event.message);
+		// Re-deliver the pictures of an anchored history card the owner replied to, so
+		// "how many people are in this photo?" about a replayed image actually works.
+		const images =
+			anchor && anchor.images.length > 0
+				? [...ownImages, ...anchor.images]
+				: ownImages;
 
 		// An ALBUM is not one message: Telegram splits it into one message per photo
 		// (sharing a media_group_id), with your caption only on the first. Enqueued as
@@ -523,17 +529,17 @@ export class ConnectController {
 	}
 
 	/**
-	 * The reply context for a message that answers a replayed history card: the card's
-	 * real text, keyed by the id the owner replied to. No author — it stands for "an
-	 * earlier message in this session", not a person speaking now. Undefined when the
-	 * reply is not to one of our anchored cards, so ordinary reply handling is untouched.
+	 * What the replayed history card a message replied to stood for — its real text and
+	 * images — keyed by the id the owner replied to. Undefined when the reply is not to
+	 * one of our anchored cards, so ordinary reply handling is untouched.
 	 */
-	private anchoredReplyContext(message: Message): TurnReplyContext | undefined {
+	private historyAnchorFor(
+		message: Message,
+	): { text: string; images: InboundImage[] } | undefined {
 		const repliedId = message.reply_to_message?.message_id;
 		if (repliedId === undefined || !this.deps.resolveHistoryAnchor)
 			return undefined;
-		const text = this.deps.resolveHistoryAnchor(repliedId);
-		return text ? { text } : undefined;
+		return this.deps.resolveHistoryAnchor(repliedId);
 	}
 
 	/**
