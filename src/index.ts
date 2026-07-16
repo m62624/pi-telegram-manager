@@ -2158,14 +2158,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Start this session in a brand-new `personal` topic (see TopicRouter.startSession
-	 * for what we measured and why). Only where the conversation actually lives: personal
-	 * and mixed. The manager never talks in `personal` — it only pins the mode line there
-	 * — so rotating on its start would burn topics for nothing.
+	 * Rotate the `personal` topic when — and only when — the session behind it changed,
+	 * so the visible topic keeps mirroring the model's actual memory (see
+	 * TopicRouter.startSession for the gate). Pass the current Pi session id; a mode
+	 * switch that keeps the session keeps the topic, and `{ force: true }` (a `/clear`)
+	 * rotates it even within the same session. Only where the conversation actually
+	 * lives: personal and mixed. The manager never talks in `personal` — it only pins the
+	 * mode line there — so it never rotates.
 	 */
-	const rotatePersonalTopic = async (): Promise<void> => {
+	const rotatePersonalTopic = async (
+		sessionId?: string,
+		opts?: { force?: boolean },
+	): Promise<void> => {
 		if (!topics?.active) return;
-		await topics.startSession();
+		await topics.startSession(sessionId, opts);
 	};
 
 	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
@@ -2648,6 +2654,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				contextReset.clear(Date.now());
+				// The context was wiped inside the SAME session, so the id gate would keep
+				// the old topic — force a fresh one, so the visible thread matches the empty
+				// memory. Rotate BEFORE the card, so the card is the new topic's first line.
+				await rotatePersonalTopic(activeCtx?.sessionManager.getSessionId(), {
+					force: true,
+				});
 				await connect?.sendToChat(
 					card("🧹", "History cleared", [
 						"Starting fresh.",
@@ -2765,7 +2777,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
-		await rotatePersonalTopic();
+		await rotatePersonalTopic(ctx.sessionManager.getSessionId());
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		void client.start();
 		// Publish the tappable command menus (no manual setup needed by the user).
@@ -2969,7 +2981,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// for the very same session — a message there is exactly a prompt typed at
 			// the terminal (and terminal prompts mirror back into it).
 			if (mixed) {
-				await rotatePersonalTopic();
+				await rotatePersonalTopic(ctx.sessionManager.getSessionId());
 				await startConnectRuntime(
 					managerClient,
 					token,

@@ -528,6 +528,71 @@ describe("TopicRouter: a fresh personal topic every session", () => {
 	});
 });
 
+// The topic mirrors ONE session's memory. It rotates when that session changes — the
+// owner resumed a different one on the computer — not on every mode switch, which
+// keeps the same session and so must keep the same topic (no ghosts on a switch).
+describe("TopicRouter: rotation follows the session, not the mode switch", () => {
+	it("keeps the topic when the session id is unchanged (a mode switch)", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1"); // fresh topic 100, stamped with session-1
+
+		// A later start in the SAME session (personal → mixed → personal, etc.): adopt
+		// 100, recognise the session, leave the topic alone. That the stamp survived to
+		// disk is exactly what this asserts — otherwise 100 would be rotated away here.
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession("session-1");
+
+		expect(second.createForumTopic).not.toHaveBeenCalled();
+		expect(second.deleteForumTopic).not.toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(100);
+	});
+
+	it("rotates when the session id changed (the owner resumed a different session)", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1"); // topic 100 ↔ session-1
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession("session-2"); // different session → a fresh topic
+		expect(b.thread("personal")).toBe(200);
+
+		// session-2 is now the topic's session: a restart in it does NOT rotate again,
+		// which proves the new id was persisted by the rotation.
+		const third = fakeApi({}, 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession("session-2");
+		expect(third.createForumTopic).not.toHaveBeenCalled();
+		expect(c.thread("personal")).toBe(200);
+	});
+
+	it("force-rotates within the same session — a /clear wipes the memory the topic mirrors", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1");
+
+		// Same session id, but the context was just cleared: the topic no longer matches
+		// the (empty) memory, so force a fresh one despite the id being unchanged.
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession("session-1", { force: true });
+		expect(second.createForumTopic).toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(200);
+	});
+});
+
 // The three chips must be told apart at a glance. Icons, not colours: a colour can
 // only be set when a topic is created, and the archive is a renamed `personal`.
 describe("TopicRouter: topic icons", () => {
