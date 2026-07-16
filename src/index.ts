@@ -620,14 +620,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				toRebuiltMessages(isolated, Date.now()),
 			) as never;
 		}
-		const filtered = contextReset.apply(event.messages);
-		// Mode 1: the owner's thread, with the bridge's system block.
+		// Personal (mode 1): the owner's thread, with the bridge's system block — and
+		// with the manager's Telegram turns stripped, exactly as mixed-coding does above.
+		// Every mode shares ONE session log, so a stint in manager/mixed leaves other
+		// people's turns in the raw messages; without this they surface in the owner's
+		// personal context. The owner's own turns are untagged and stay.
 		if (connect && connectSystemBlock) {
+			const stripped = stripTelegramTurns(event.messages);
 			return measured(
 				"personal",
-				withConnectBlock(filtered ?? event.messages),
+				withConnectBlock(contextReset.apply(stripped) ?? stripped),
 			) as never;
 		}
+		// No mode active (terminal only): leave Pi's context as-is, applying just the
+		// /clear boundary when one is set.
+		const filtered = contextReset.apply(event.messages);
 		return filtered ? { messages: filtered } : {};
 	});
 
@@ -3050,9 +3057,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// triggers a turn until the return timer flips polarity.
 			isIdle: () => !busy && managerHoldsSession(mixedActive, polarity),
 			triggerAgent: async (prompt) => {
-				// Tag every injected Telegram turn in mixed mode so the coding-polarity
-				// context filter can strip it from the owner's thread.
-				const content = mixedActive ? tagTelegramPrompt(prompt) : prompt;
+				// Tag every injected Telegram turn — in ALL modes, not just mixed — so the
+				// context filter can strip it from the owner's personal/coding thread. Modes
+				// share one session log; an untagged manager turn would leak other people's
+				// messages into the owner's context after a switch to personal.
+				const content = tagTelegramPrompt(prompt);
 				// Through `deliverPrompt`, so a turn injected while the session is still
 				// settling cannot land in the SDK queue — from which the next abort would
 				// dump it into the terminal editor instead of answering anyone.
