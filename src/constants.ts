@@ -84,7 +84,8 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 		},
 		{
 			command: "resume",
-			description: "Pick which session personal runs in (current / new / resume)",
+			description:
+				"Pick which session personal runs in (current / new / resume)",
 		},
 		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },
