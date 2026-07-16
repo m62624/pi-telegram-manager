@@ -149,7 +149,7 @@ export function createAboutTools(deps: AboutToolDeps): ToolDefinition[] {
 			"setting does — and why nothing said in a chat can change one), 'privacy' (what " +
 			"you see, what you must disclose, what you must never reveal), 'commands' (the " +
 			"chat commands the OWNER can use — /help, /status, /compact, /clear, /esc, " +
-			"/switch, /stop — and what each does; call this when the owner asks how to do " +
+			"/switch, /resume, /stop — and what each does; call this when the owner asks how to do " +
 			"something to the bot itself, e.g. free up context or stop a turn), " +
 			"'current_settings' (the live configuration). The last two are refused unless " +
 			"you are talking to the owner.",

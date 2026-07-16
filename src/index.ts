@@ -214,6 +214,12 @@ import {
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
 import {
+	buildResumeKeyboard,
+	isResumeCommand,
+	parseResumeCallback,
+	resumePanelText,
+} from "./telegram/resume-panel";
+import {
 	buildSwitchKeyboard,
 	isStopCommand,
 	isSwitchCommand,
@@ -498,6 +504,7 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (manager / personal / mixed)",
+	"/resume — pick which session personal runs in (current / new / resume)",
 	"/status — model, context, working directory, queue",
 	"/context — what I am carrying, and what filled it up",
 	"/esc — cancel whatever the agent is doing right now",
@@ -3512,6 +3519,86 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			.catch(() => {});
 	};
 
+	/** Post the `/resume` session picker — the in-chat twin of the TUI picker. */
+	const sendResumePanel = async (
+		api: ControlApi,
+		threadId = personalThread(),
+	): Promise<void> => {
+		if (ownerUserId === null || !activeCtx) return;
+		const currentId = activeCtx.sessionManager.getSessionId();
+		const sessions = await listSessions(activeCtx.cwd).catch(() => []);
+		await api
+			.sendMessage({
+				chat_id: ownerUserId,
+				message_thread_id: threadId,
+				text: resumePanelText(),
+				reply_markup: buildResumeKeyboard(sessions, currentId, 0),
+			})
+			.catch(() => {});
+	};
+
+	/**
+	 * Act on a `/resume` button press. Paging just repaints the keyboard; Current stays put;
+	 * New/Resume arm the connect-intent and switch the session, exactly as the TUI picker
+	 * does — the reloaded instance's session_start then brings the bridge up in the chosen
+	 * session. The captured `api` keeps working for the ack even as the client is torn down.
+	 */
+	const handleResumeCallback = async (
+		api: ControlApi,
+		event: Extract<TelegramEvent, { kind: "callback_query" }>,
+		action: ReturnType<typeof parseResumeCallback> & object,
+	): Promise<void> => {
+		const ctx = activeCtx;
+		const ack = (text?: string) =>
+			api
+				.answerCallbackQuery({ callback_query_id: event.query.id, text })
+				.catch(() => {});
+		if (!ctx) {
+			await ack("No active session.");
+			return;
+		}
+		if (action.kind === "page") {
+			const sessions = await listSessions(ctx.cwd).catch(() => []);
+			const chatId = event.chatId;
+			const messageId = event.query.message?.message_id;
+			if (chatId !== undefined && messageId !== undefined) {
+				await api
+					.editMessageReplyMarkup({
+						chat_id: chatId,
+						message_id: messageId,
+						reply_markup: buildResumeKeyboard(
+							sessions,
+							ctx.sessionManager.getSessionId(),
+							action.page,
+						),
+					})
+					.catch(() => {});
+			}
+			await ack();
+			return;
+		}
+		if (action.kind === "current") {
+			await ack("Staying in the current session.");
+			return;
+		}
+		let targetPath: string | null = null;
+		if (action.kind === "pick") {
+			const sessions = await listSessions(ctx.cwd).catch(() => []);
+			targetPath = sessions.find((s) => s.id === action.id)?.path ?? null;
+			if (!targetPath) {
+				await ack("That session is gone.");
+				return;
+			}
+		}
+		await ack(action.kind === "new" ? "Starting a new session…" : "Resuming…");
+		await armConnectIntent(mixedActive ? "mixed" : "connect", ctx.cwd);
+		if (action.kind === "new") {
+			await ctx.newSession();
+		} else if (targetPath) {
+			await ctx.switchSession(targetPath);
+		}
+	};
+
 	// Keep a pinned message at the top of the owner's DM showing the active mode, so
 	// the current mode is always visible without running a command. Pinned once, then
 	// edited in place (no new pins per switch); "stop" shows the bot is off.
@@ -3666,6 +3753,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await sendSwitchPanel(api, threadOf(event) ?? personalThread());
 				return true;
 			}
+			// /resume picks which session personal runs in — only meaningful while a
+			// session-bound bridge (personal/mixed) is live.
+			if (isResumeCommand(text)) {
+				if (connect) {
+					await sendResumePanel(api, threadOf(event) ?? personalThread());
+				} else {
+					await api
+						.sendMessage({
+							chat_id: ownerUserId,
+							message_thread_id: threadOf(event) ?? personalThread(),
+							text: "/resume works in personal or mixed mode. Start one with /switch first.",
+						})
+						.catch(() => {});
+				}
+				return true;
+			}
 			// Stopping is a command, never a button: the Secretary connection is the
 			// whole point of the bot, and a mistap while switching modes must not end it.
 			if (isStopCommand(text)) {
@@ -3767,6 +3870,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		if (event.kind === "callback_query") {
 			if (event.fromId !== ownerUserId) return false;
+			const resume = parseResumeCallback(event.data);
+			if (resume) {
+				await handleResumeCallback(api, event, resume);
+				return true;
+			}
 			const target = parseSwitchData(event.data);
 			if (!target) return false;
 			const already = activeTarget() === target;

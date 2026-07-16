@@ -38,6 +38,11 @@ every MODE" — never "to everyone".
   the history weighed, and a card if the compaction failed. Every compaction — this one,
   and the automatic ones Pi starts on its own — is summarised with instructions to keep
   what the person said over the tool output that dwarfs it.
+- `/resume` — choose which Pi session personal runs in, with buttons: keep the **current**
+  one, start a **new** one, or **resume** any other session from this project (paged, five
+  at a time). Picking new or resume switches the session — the personal topic rotates to
+  mirror the change — and the bridge comes back up in the chosen one. The same picker
+  appears in the terminal when the owner runs `/telegram-personal`.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
 each conversation, so there is no accumulated history to clear or to compact.
