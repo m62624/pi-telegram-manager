@@ -855,17 +855,37 @@ export class ManagerController {
 				this.deps.sentRegistry,
 			);
 			if (bot) return;
+			// When the owner is putting something to the bot — a wake-word now, or a
+			// follow-up to a summons still open — a photo they attach or REPLY to must
+			// reach vision, exactly like an interlocutor's. Otherwise "look at this,
+			// what do you see?" arrives as the bare `<photo>` reply-label and the model
+			// hallucinates a picture. Ordinary owner chatter ingests nothing: no turn
+			// will run for it, so downloading its media would be pure waste.
+			const summons =
+				now - messageTime <= this.deps.liveFreshnessMs &&
+				matchesMention(text, this.deps.mentionWords);
+			const media =
+				(summons || this.ownerSummoned.has(chatId)) && !forwardDropped
+					? await this.ingestMedia(chatId, input.message)
+					: { note: "", kind: undefined as string | undefined };
+			const ownerBody = forwardBody(stripBotMarker(text));
+			const ownerText = media.note
+				? ownerBody
+					? `${media.note} ${ownerBody}`
+					: media.note
+				: ownerBody;
 			// A dropped forward still counts as the owner speaking (the gate below), it
 			// simply leaves no body in the transcript.
 			if (!forwardDropped || forward?.justHitLimit) {
 				await this.deps.chatStore.append(chatId, {
 					author: "owner",
-					text: forwardBody(stripBotMarker(text)),
+					text: ownerText,
 					context: messageContext(input.message),
 					forwarded: input.message.forward_origin !== undefined,
 					timestamp: messageTime,
 					senderId: ownerId,
 					messageId,
+					kind: media.kind,
 				});
 			}
 			await this.touchConsolidation(chatId, messageTime);
@@ -873,10 +893,7 @@ export class ManagerController {
 			// acts on owner messages otherwise. This is the ONE way an owner message
 			// opens a turn — and the only way the model may answer the owner at all.
 			// A stale/backlog message never wakes.
-			if (
-				now - messageTime <= this.deps.liveFreshnessMs &&
-				matchesMention(text, this.deps.mentionWords)
-			) {
+			if (summons) {
 				const existing = this.chats.get(chatId);
 				this.chats.set(chatId, {
 					connectionId: input.connectionId,

@@ -51,9 +51,12 @@ export interface BuildIsolatedInput {
 	boundary?: string;
 	labels?: Partial<IsolationLabels>;
 	/**
-	 * Inline images for the newest interlocutor message (mode 2 vision). They live
+	 * Inline images for the newest incoming message (mode 2 vision). They live
 	 * only in memory for the freshest turn — stored records keep just an `[image]`
-	 * marker — so they attach to the last interlocutor line, if any.
+	 * marker — so they attach to the last incoming line, if any. That line can be
+	 * the OWNER's: when the owner summons the bot to look at a photo they sent or
+	 * replied to, the picture belongs to their message, not to some earlier
+	 * interlocutor one.
 	 */
 	latestImages?: IsolatedImage[];
 }
@@ -68,7 +71,7 @@ export function buildIsolatedMessages(
 ): IsolatedMessage[] {
 	const labels = { ...DEFAULT_LABELS, ...input.labels };
 	const messages: IsolatedMessage[] = [];
-	let lastInterlocutorIndex = -1;
+	let lastIncomingIndex = -1;
 	if (input.boundary?.trim()) {
 		messages.push({ role: "user", content: input.boundary.trim() });
 	}
@@ -100,12 +103,11 @@ export function buildIsolatedMessages(
 				: "";
 			const spoken = text ? `${who}: ${text}` : `${who}:`;
 			messages.push({ role: "user", content: `${tag}${spoken}${trailer}` });
-			if (record.author === "interlocutor")
-				lastInterlocutorIndex = messages.length - 1;
+			lastIncomingIndex = messages.length - 1;
 		}
 	}
-	if (input.latestImages?.length && lastInterlocutorIndex >= 0) {
-		messages[lastInterlocutorIndex].images = input.latestImages;
+	if (input.latestImages?.length && lastIncomingIndex >= 0) {
+		messages[lastIncomingIndex].images = input.latestImages;
 	}
 	return messages;
 }

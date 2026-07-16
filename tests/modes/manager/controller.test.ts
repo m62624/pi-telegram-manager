@@ -479,6 +479,69 @@ describe("ManagerController", () => {
 		expect(ctx?.at(-1)?.content).toContain("wake-word");
 	});
 
+	it("loads a photo the owner REPLIES to when summoning the bot to look", async () => {
+		const { controller, deps } = await setup(["квен"]);
+		const loadImages = vi.fn(async () => [
+			{ data: "PICDATA", mimeType: "image/jpeg" },
+		]);
+		deps.loadImages = loadImages;
+		const photo = {
+			message_id: 1,
+			date: 0,
+			chat: { id: 42, type: "private", first_name: "Alice" },
+			from: { id: 5, is_bot: false, first_name: "Alice" },
+			photo: [{ file_id: "PIC", file_size: 100 }],
+		} as Message;
+		// The owner replies to that photo and calls the bot in one message.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: {
+				...ownerMsg("квен, что ты видишь?", 100),
+				reply_to_message: photo,
+			} as Message,
+		});
+		await controller.onTick();
+		// The replied-to picture was fetched — from the replied message, not the summon.
+		expect(loadImages).toHaveBeenCalledTimes(1);
+		expect(loadImages.mock.calls[0][0]).toMatchObject({ message_id: 1 });
+		// ...and attached to the owner's line so the model actually sees the image,
+		// not just the bare `<photo>` reply-label it used to hallucinate from.
+		const ctx = await controller.buildContextForActive();
+		const withImage = ctx?.find((message) => message.images?.length);
+		expect(withImage?.images).toEqual([
+			{ data: "PICDATA", mimeType: "image/jpeg" },
+		]);
+		expect(withImage?.content).toContain("[replied image]");
+	});
+
+	it("fetches no owner media when the owner is not addressing the bot", async () => {
+		const { controller, deps } = await setup(["квен"]);
+		const loadImages = vi.fn(async () => [
+			{ data: "PICDATA", mimeType: "image/jpeg" },
+		]);
+		deps.loadImages = loadImages;
+		const photo = {
+			message_id: 1,
+			date: 0,
+			chat: { id: 42, type: "private", first_name: "Alice" },
+			from: { id: 5, is_bot: false, first_name: "Alice" },
+			photo: [{ file_id: "PIC", file_size: 100 }],
+		} as Message;
+		// A plain owner reply with no wake-word opens no turn: nothing is downloaded.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: {
+				...ownerMsg("ага, понятно", 100),
+				reply_to_message: photo,
+			} as Message,
+		});
+		expect(loadImages).not.toHaveBeenCalled();
+	});
+
 	// Manager mode's half of the two-minute stall. A run cannot take a prompt while it
 	// is still ending, and `agent_end` is awaited from inside it — so `isIdle()` is
 	// false on every path that reaches `triggerTurn` from there. It used to be true (the

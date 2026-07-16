@@ -36,6 +36,23 @@ describe("buildIsolatedMessages — images", () => {
 		});
 	});
 
+	it("attaches latest images to a trailing owner line (owner summons the bot to look)", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({ author: "interlocutor", text: "some old message" }),
+				rec({ author: "bot", text: "noted" }),
+				rec({ author: "owner", text: "[replied image] what do you see?" }),
+			],
+			latestImages: [{ data: "OWNERPIC", mimeType: "image/jpeg" }],
+		});
+		// The picture belongs to the owner's freshest line, not the earlier
+		// interlocutor one.
+		expect(messages.at(-1)?.images).toEqual([
+			{ data: "OWNERPIC", mimeType: "image/jpeg" },
+		]);
+		expect(messages[0].images).toBeUndefined();
+	});
+
 	it("leaves text-only messages as plain string content", () => {
 		const rebuilt = toRebuiltMessages(
 			buildIsolatedMessages({ records: [rec({ text: "hi" })] }),
