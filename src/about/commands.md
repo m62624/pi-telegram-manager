@@ -41,11 +41,13 @@ every MODE" — never "to everyone".
 - `/resume` — choose which Pi session personal runs in, with buttons: keep the **current**
   one, start a **new** one, or **resume** any other session from this project (paged, five
   at a time). Picking new or resume switches the session — the personal topic rotates to
-  mirror the change — and the bridge comes back up in the chosen one. When resuming a
-  different session, its last few messages are replayed into the topic as **display-only**
-  cards, so the phone shows which conversation is now live; those replayed messages are for
-  reading only — they are not sent to the agent, and ordinary forwarding works as before
-  afterwards. The same picker appears in the terminal when the owner runs
+  mirror the change — and the bridge comes back up in the chosen one. Whenever the bridge
+  binds to a session that already holds a conversation — resuming a different one, or just
+  connecting to a terminal session used without Telegram — its last few messages are
+  replayed into the fresh topic as **display-only** cards, so the phone shows what the
+  session is about; those replayed messages are for reading only — they are not sent to the
+  agent, and ordinary forwarding works as before afterwards. The same picker appears in the
+  terminal when the owner runs
   `/telegram-personal`; there the roster is paged too, so a long history stays readable.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
