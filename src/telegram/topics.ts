@@ -424,10 +424,14 @@ export class TopicRouter {
 	async startSession(
 		sessionId?: string,
 		opts?: { force?: boolean },
-	): Promise<{ ageRefreshed: boolean }> {
-		const idle = { ageRefreshed: false };
+	): Promise<{ ageRefreshed: boolean; topicFresh: boolean }> {
+		// `topicFresh` says the personal topic is blank right now — brand new or just
+		// rotated — so the caller may want to mirror the session's history into it. `kept`
+		// is the opposite: the existing topic already shows that history, leave it be.
+		const kept = { ageRefreshed: false, topicFresh: false };
+		const freshIdle = { ageRefreshed: false, topicFresh: true };
 		const state = this.state;
-		if (!state || !this.deps.options.enabled) return idle;
+		if (!state || !this.deps.options.enabled) return kept;
 		const force = opts?.force ?? false;
 		// Just created (first run, or the owner deleted it): it IS the fresh topic this
 		// method exists to provide, and replacing it would only litter the chat with a
@@ -435,7 +439,7 @@ export class TopicRouter {
 		// later start in the SAME session recognises it and does not rotate.
 		if (this.personalIsFresh) {
 			await this.stampPersonalSession(state, sessionId);
-			return idle;
+			return freshIdle;
 		}
 		const sameSession =
 			sessionId !== undefined && state.personalSessionId === sessionId;
@@ -450,7 +454,7 @@ export class TopicRouter {
 		// stops a mode switch (same session, no context change) from minting a topic every
 		// time. A missing sessionId means "session unknown" — treat as a change and rotate.
 		if (!force && sameSession && !aged) {
-			return idle;
+			return kept;
 		}
 		const ageRefreshed = !force && sameSession && aged;
 		const { options } = this.deps;
@@ -459,7 +463,7 @@ export class TopicRouter {
 			const created = await this.create("personal", options.personalName);
 			fresh = created.message_thread_id;
 		} catch {
-			return idle; // no fresh topic — carry on in the one we have
+			return kept; // no fresh topic — carry on in the one we have
 		}
 		// Topics Telegram would not delete before: try again, it may allow it now.
 		const stale: number[] = [];
@@ -498,7 +502,7 @@ export class TopicRouter {
 		};
 		this.state = next;
 		await this.save(next);
-		return { ageRefreshed };
+		return { ageRefreshed, topicFresh: true };
 	}
 
 	/**

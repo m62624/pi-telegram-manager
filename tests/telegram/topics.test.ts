@@ -552,11 +552,13 @@ describe("TopicRouter: rotation follows the session, not the mode switch", () =>
 		const second = fakeApi({}, 200);
 		const b = router(second, fs).router;
 		await b.ensure();
-		await b.startSession("session-1");
+		const result = await b.startSession("session-1");
 
 		expect(second.createForumTopic).not.toHaveBeenCalled();
 		expect(second.deleteForumTopic).not.toHaveBeenCalled();
 		expect(b.thread("personal")).toBe(100);
+		// The topic already mirrors this session — not fresh, so no history is re-mirrored.
+		expect(result.topicFresh).toBe(false);
 	});
 
 	it("rotates when the session id changed (the owner resumed a different session)", async () => {
@@ -569,8 +571,9 @@ describe("TopicRouter: rotation follows the session, not the mode switch", () =>
 		const second = fakeApi({}, 200);
 		const b = router(second, fs).router;
 		await b.ensure();
-		await b.startSession("session-2"); // different session → a fresh topic
+		const rotated = await b.startSession("session-2"); // different session → a fresh topic
 		expect(b.thread("personal")).toBe(200);
+		expect(rotated.topicFresh).toBe(true); // fresh topic → history is mirrored in
 
 		// session-2 is now the topic's session: a restart in it does NOT rotate again,
 		// which proves the new id was persisted by the rotation.
@@ -612,7 +615,8 @@ describe("TopicRouter: the age net refreshes a stale topic in a live session", (
 		const first = fakeApi({}, 100);
 		const a = router(first, fs, vi.fn(), () => clock).router;
 		await a.ensure();
-		await a.startSession("session-1"); // topic 100, created at T0
+		const firstStart = await a.startSession("session-1"); // topic 100, created at T0
+		expect(firstStart.topicFresh).toBe(true); // a brand-new topic mirrors history in
 
 		clock = T0 + 60 * 60 * 1000; // one hour later — well within the max age
 		const second = fakeApi({}, 200);
@@ -621,6 +625,8 @@ describe("TopicRouter: the age net refreshes a stale topic in a live session", (
 		const result = await b.startSession("session-1");
 
 		expect(result.ageRefreshed).toBe(false);
+		expect(result.topicFresh).toBe(false); // young topic kept — no re-mirror
+
 		expect(second.createForumTopic).not.toHaveBeenCalled();
 		expect(b.thread("personal")).toBe(100);
 	});
@@ -640,6 +646,7 @@ describe("TopicRouter: the age net refreshes a stale topic in a live session", (
 		const result = await b.startSession("session-1"); // same session, but stale
 
 		expect(result.ageRefreshed).toBe(true);
+		expect(result.topicFresh).toBe(true); // a rotated topic is fresh
 		expect(second.createForumTopic).toHaveBeenCalled();
 		expect(b.thread("personal")).toBe(200);
 	});

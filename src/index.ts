@@ -2134,10 +2134,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			} else {
 				await startConnect(commandCtx);
 			}
-			// A resume (not a fresh /new) restored a prior conversation: show its tail in
-			// the topic so the phone reflects which history is now live. Reads the base
-			// ctx's session manager, which now points at the resumed session.
-			if (event.reason === "resume") await renderResumeTail(ctx);
+			// The tail is mirrored inside startConnect/startManager when the topic is fresh
+			// (see renderSessionTail), so a re-armed resume shows its history through the
+			// same path as a direct /telegram-personal — nothing extra to do here.
 		} else if (now - intent.armedAt > CONNECT_INTENT_MAX_AGE_MS) {
 			// A note nobody consumed (a crash between arming and the switch): clean it up so
 			// it can never fire on a later launch.
@@ -2243,8 +2242,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const rotatePersonalTopic = async (
 		sessionId?: string,
 		opts?: { force?: boolean },
-	): Promise<{ ageRefreshed: boolean }> => {
-		if (!topics?.active) return { ageRefreshed: false };
+	): Promise<{ ageRefreshed: boolean; topicFresh: boolean }> => {
+		if (!topics?.active) return { ageRefreshed: false, topicFresh: false };
 		return await topics.startSession(sessionId, opts);
 	};
 
@@ -2270,15 +2269,17 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const RESUME_TAIL_POST_DELAY_MS = 350;
 
 	/**
-	 * After the owner resumes a DIFFERENT session, mirror its last few messages into the
-	 * personal topic as display-only cards — so the phone shows WHICH history is now live,
-	 * not a blank topic. These are outgoing bot posts: they are never fed back to the agent
-	 * and never echoed to the terminal (Pi already shows the full transcript there), and
-	 * afterwards ordinary forwarding works exactly as before. Best-effort throughout — a
-	 * preview must never break the resume it follows. Only the personal bridge has a topic
-	 * to post into, so a null `connect` (e.g. a manager-only re-arm) simply renders nothing.
+	 * When a FRESH personal topic binds to a session that already has history — resuming a
+	 * different session, or just running `/telegram-personal` on a terminal session you had
+	 * been working in without Telegram — mirror its last few messages into the topic as
+	 * display-only cards, so the phone shows what the session is about rather than a blank
+	 * topic. These are outgoing bot posts: never fed back to the agent, never echoed to the
+	 * terminal (Pi already shows the full transcript there), and ordinary forwarding works
+	 * exactly as before afterwards. Skipped when the topic already mirrors this session (a
+	 * mode switch keeps it) — only a fresh topic gets the replay, so it never repeats.
+	 * Best-effort throughout; a null `connect` (no personal bridge) simply renders nothing.
 	 */
-	const renderResumeTail = async (ctx: ExtensionContext): Promise<void> => {
+	const renderSessionTail = async (ctx: ExtensionContext): Promise<void> => {
 		if (!connect) return;
 		try {
 			const messages: TailSourceMessage[] = [];
@@ -2288,9 +2289,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			const tail = extractSessionTail(messages, RESUME_TAIL_MAX);
 			if (tail.length === 0) return;
 			await connect.sendToChat(
-				card("↻", "Resumed session", [
-					"The recent messages below are from the session you just resumed, shown " +
-						"for reference only — they were not sent to the agent.",
+				card("↻", "Session history", [
+					"The recent messages below are from this session, shown for reference " +
+						"only — they were not sent to the agent.",
 				]),
 			);
 			for (const message of tail) {
@@ -2971,6 +2972,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		);
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
 		await noticeIfAgeRefreshed(rotation);
+		// A fresh topic on a session that already has history (a resume, or /telegram-personal
+		// on a terminal session) gets that history mirrored in, for reference only.
+		if (rotation.topicFresh) await renderSessionTail(ctx);
 		void client.start();
 		// Publish the tappable command menus (no manual setup needed by the user).
 		// Two scopes, deliberately: the control commands are refused to everyone but
@@ -3184,6 +3188,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					settings.allowedUserId,
 				);
 				await noticeIfAgeRefreshed(rotation);
+				if (rotation.topicFresh) await renderSessionTail(ctx);
 			}
 		}
 		// Download an interlocutor message's inline images so the model can scan
