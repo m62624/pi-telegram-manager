@@ -49,8 +49,8 @@ every MODE" — never "to everyone".
   without Telegram — its last few messages are replayed into the fresh topic as
   **display-only** cards, so the phone shows what the session is about; those replayed
   messages are for reading only — they are not sent to the agent, and ordinary forwarding
-  works as before afterwards. The terminal picker (`/telegram-personal`) additionally offers
-  a new session, and pages a long roster too.
+  works as before afterwards. The terminal picker (`/telegram-personal`, and `/telegram-mixed`
+  which bridges the same session) additionally offers a new session, and pages a long roster too.
 
 In **manager** mode these two do nothing and say so: the context there is built fresh for
 each conversation, so there is no accumulated history to clear or to compact.

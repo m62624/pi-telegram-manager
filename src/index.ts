@@ -2914,25 +2914,30 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Ask the owner which session personal should run in, symmetric with the Telegram
-	 * `/resume` panel. Returns whether to start the bridge in the CURRENT session now
-	 * (true), or to stand down (false) because either the owner cancelled or we switched
-	 * to another session — in which case the note above steers the reloaded instance's
+	 * Ask the owner which session to run in, symmetric with the Telegram `/resume` panel.
+	 * `mode` is what the re-arm brings back up in the chosen session — `connect` for
+	 * personal, `mixed` for mixed — so the same picker drives both `/telegram-personal`
+	 * and `/telegram-mixed`. Returns whether to start the bridge in the CURRENT session now
+	 * (true), or to stand down (false) because either the owner cancelled or we switched to
+	 * another session — in which case the connect-intent steers the reloaded instance's
 	 * `session_start` to start the bridge there. TUI/RPC only; without a dialog the caller
 	 * simply keeps the current session.
 	 */
 	const runSessionPicker = async (
 		ctx: ExtensionCommandContext,
+		mode: ReArmMode,
 	): Promise<boolean> => {
 		const currentId = ctx.sessionManager.getSessionId();
 		const sessions = await listSessions(ctx.cwd).catch(() => []);
+		const title =
+			mode === "mixed" ? "Mixed — pick a session" : "Personal — pick a session";
 		// Loop so a busy project stays navigable: the SDK's flat select has no scrollback,
 		// so an "Older/Newer" pick just re-opens the picker on that page instead of choosing.
 		let page = 0;
 		for (;;) {
 			const options = buildSessionPickerOptions(sessions, currentId, page);
 			const selected = await ctx.ui.select(
-				"Personal — pick a session",
+				title,
 				options.map((option) => option.label),
 			);
 			if (selected === undefined) return false; // cancelled — start nothing
@@ -2942,7 +2947,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				page = pick.page;
 				continue;
 			}
-			await armConnectIntent("connect", ctx.cwd);
+			await armConnectIntent(mode, ctx.cwd);
 			if (pick.kind === "new") {
 				await ctx.newSession();
 			} else {
@@ -2960,7 +2965,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (!(await installationIsComplete(ctx))) return;
 		// Only the explicit TUI command offers the picker; a re-arm and a phone-driven
 		// /switch both start the current session straight away.
-		if (opts.pick && ctx.hasUI && !(await runSessionPicker(ctx))) return;
+		if (opts.pick && ctx.hasUI && !(await runSessionPicker(ctx, "connect")))
+			return;
 		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
@@ -3053,11 +3059,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the same manager runtime alongside the owner's coding thread in one session.
 	const startManager = async (
 		ctx: ExtensionCommandContext,
-		options: { mixed?: boolean } = {},
+		options: { mixed?: boolean; pick?: boolean } = {},
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
 		if (!(await installationIsComplete(ctx))) return;
+		// Mixed bridges the personal session too, so /telegram-mixed offers the same
+		// session picker as /telegram-personal (re-arming into mixed, not connect). Pure
+		// manager has no session to pick — its context is built fresh per chat.
+		if (
+			mixed &&
+			options.pick &&
+			ctx.hasUI &&
+			!(await runSessionPicker(ctx, "mixed"))
+		)
+			return;
 		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
@@ -3503,7 +3519,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.mixed, {
 		description: "Run coding and Telegram moderation together.",
 		handler: async (_args, ctx) => {
-			await startManager(ctx, { mixed: true });
+			await startManager(ctx, { mixed: true, pick: true });
 		},
 	});
 	// Stop whichever Telegram mode is currently active.
