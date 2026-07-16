@@ -114,6 +114,17 @@ export interface ConnectControllerDeps {
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
 	/**
+	 * Resolve what a replayed session-history card stood for, keyed by the id of the card
+	 * the owner replied to: the text it showed and any images that message carried. The
+	 * cards are display-only bot posts, so a reply to one otherwise carries an empty quote
+	 * (`which said: ""`) and no picture; this hands back the real text (for the quote) and
+	 * the pictures (re-delivered inline) so the model can answer about it. Undefined for a
+	 * message that is not one of our anchored history cards.
+	 */
+	resolveHistoryAnchor?: (
+		messageId: number,
+	) => { text: string; images: InboundImage[] } | undefined;
+	/**
 	 * The owner's `personal` topic, resolved per send (it appears once the router has
 	 * created it, and vanishes again on a fallback to the plain DM). EVERYTHING of this
 	 * conversation goes there — prompts, replies, and the tool calls the model made for
@@ -196,6 +207,10 @@ export const MIRROR_URL =
 /** Static help shown for `/help`, mirroring the Telegram command menu. */
 const HELP_TEXT = card("🧭", "Pi Telegram bridge", [
 	bullet("/switch", "change mode — manager / personal / mixed"),
+	bullet(
+		"/resume",
+		"pick which session personal runs in — current / new / resume",
+	),
 	bullet("/stop", "stop the bot entirely"),
 	bullet("/esc", "cancel the current turn"),
 	bullet("/clear", "clear the conversation history"),
@@ -361,12 +376,20 @@ export class ConnectController {
 		// images ride along inline via loadImages.
 		const intake = await this.saveAttachments(event.message);
 		const input = messageToTurnInput(event.message, this.deps.maxBytes);
+		// A reply to a replayed history card carries an empty quote and no picture (the
+		// cards are display-only). Fill the quote with what that message actually said,
+		// and its images are re-delivered inline below, so the model answers about the
+		// real thing rather than about "".
+		const anchor = this.historyAnchorFor(event.message);
+		const withReply = anchor
+			? { ...input, reply: { text: anchor.text } }
+			: input;
 		const turn = buildPromptTurn({
-			...input,
+			...withReply,
 			text:
-				forward && input.text
-					? limitForwardText(input.text, this.forwardPolicy.maxChars)
-					: input.text,
+				forward && withReply.text
+					? limitForwardText(withReply.text, this.forwardPolicy.maxChars)
+					: withReply.text,
 			receivedAt: formatClock(this.now(), this.deps.timezone),
 			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
 			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
@@ -379,7 +402,13 @@ export class ConnectController {
 			return true; // still queued — rewrote it in place, no new dispatch
 		}
 
-		const images = await this.loadImages(event.message);
+		const ownImages = await this.loadImages(event.message);
+		// Re-deliver the pictures of an anchored history card the owner replied to, so
+		// "how many people are in this photo?" about a replayed image actually works.
+		const images =
+			anchor && anchor.images.length > 0
+				? [...ownImages, ...anchor.images]
+				: ownImages;
 
 		// An ALBUM is not one message: Telegram splits it into one message per photo
 		// (sharing a media_group_id), with your caption only on the first. Enqueued as
@@ -499,10 +528,38 @@ export class ConnectController {
 		return false;
 	}
 
-	/** Download image attachments for a message, swallowing per-file failures. */
+	/**
+	 * What the replayed history card a message replied to stood for — its real text and
+	 * images — keyed by the id the owner replied to. Undefined when the reply is not to
+	 * one of our anchored cards, so ordinary reply handling is untouched.
+	 */
+	private historyAnchorFor(
+		message: Message,
+	): { text: string; images: InboundImage[] } | undefined {
+		const repliedId = message.reply_to_message?.message_id;
+		if (repliedId === undefined || !this.deps.resolveHistoryAnchor)
+			return undefined;
+		return this.deps.resolveHistoryAnchor(repliedId);
+	}
+
+	/**
+	 * Download a message's inline images — and, when it REPLIES to one, the replied-to
+	 * picture too. Replying to a photo is how a person says "look at this one" (including
+	 * a photo the bot itself sent), exactly as {@link saveAttachments} does for files.
+	 * Without this the model got no picture on a reply and confabulated one from the
+	 * caption. The topic's root message is not something the owner "replied to" — Telegram
+	 * attaches it to every message in the topic — so it is skipped. Per-file failures are
+	 * swallowed; the text header still notes the attachment.
+	 */
 	private async loadImages(message: Message): Promise<InboundImage[]> {
 		if (!this.deps.loadImages) return [];
-		return this.deps.loadImages(message).catch(() => []);
+		const own = await this.deps.loadImages(message).catch(() => []);
+		const repliedTo = message.reply_to_message;
+		if (!repliedTo || isTopicAnchor(message, repliedTo)) return own;
+		const quoted = await this.deps
+			.loadImages(repliedTo as Message)
+			.catch(() => []);
+		return quoted.length > 0 ? [...own, ...quoted] : own;
 	}
 
 	/**
@@ -657,8 +714,8 @@ export class ConnectController {
 	 * is sent as plain text. Model prose is not sent through here (see
 	 * {@link deliverAssistant}) and keeps its own rendering.
 	 */
-	async sendToChat(markdown: string): Promise<void> {
-		await this.deps.outbound.sendMarkdown(this.target, markdown, {
+	async sendToChat(markdown: string): Promise<number[]> {
+		return await this.deps.outbound.sendMarkdown(this.target, markdown, {
 			detectEntities: true,
 		});
 	}

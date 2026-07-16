@@ -277,6 +277,171 @@ describe("ConnectController", () => {
 		expect(sendFollowUp.mock.calls[0][0]).toContain("/work/bash-1.log");
 	});
 
+	it("loads the IMAGE of a message the owner REPLIED to — replying to a photo points at it", async () => {
+		// Mirrors the file case: replying to a photo (including one the bot sent) is how a
+		// person says "look at this one". Without re-loading it the model gets no picture
+		// on the reply and confabulates one from the caption.
+		const loadImages = vi.fn(async (message: { photo?: unknown }) =>
+			message.photo ? [{ data: "REPLIED64", mimeType: "image/jpeg" }] : [],
+		);
+		const { controller, sendFollowUp } = setup({
+			loadImages: loadImages as never,
+		});
+		const event = classifyUpdate({
+			update_id: 11,
+			message: {
+				message_id: 11,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "what is in this pic?",
+				reply_to_message: {
+					message_id: 8,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					photo: [{ file_id: "P1", file_unique_id: "U1" }],
+				},
+			},
+		} as Update);
+
+		await controller.onEvent(event);
+		// Both the message (no photo) and the one it replies to (a photo) are consulted.
+		expect(loadImages).toHaveBeenCalledTimes(2);
+		const content = sendFollowUp.mock.calls[0][0];
+		expect(content).toEqual([
+			{ type: "image", data: "REPLIED64", mimeType: "image/jpeg" },
+			{ type: "text", text: expect.stringContaining("what is in this pic?") },
+		]);
+	});
+
+	it("does not read a topic's root message as a reply worth an image", async () => {
+		const loadImages = vi.fn(async () => []);
+		const { controller } = setup({ loadImages });
+		const event = classifyUpdate({
+			update_id: 12,
+			message: {
+				message_id: 12,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "hi",
+				message_thread_id: 4,
+				is_topic_message: true,
+				reply_to_message: {
+					message_id: 4,
+					message_thread_id: 4,
+					is_topic_message: true,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		expect(loadImages).toHaveBeenCalledTimes(1);
+	});
+
+	it("fills a reply to a replayed history card with the card's real text, not an empty quote", async () => {
+		// The history cards are display-only bot posts, so a reply to one otherwise
+		// reaches the model as `which said: ""`. The anchor hands back what it said.
+		const resolveHistoryAnchor = vi.fn((id: number) =>
+			id === 77
+				? { text: "the earlier thing I asked about", images: [] }
+				: undefined,
+		);
+		const { controller, sendFollowUp } = setup({ resolveHistoryAnchor });
+		const event = classifyUpdate({
+			update_id: 20,
+			message: {
+				message_id: 20,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "how long was that?",
+				reply_to_message: {
+					message_id: 77,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					text: "", // the card's own text is irrelevant — the anchor overrides
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		expect(resolveHistoryAnchor).toHaveBeenCalledWith(77);
+		const content = sendFollowUp.mock.calls[0][0] as string;
+		expect(content).toContain("answering an earlier message");
+		expect(content).toContain("the earlier thing I asked about");
+	});
+
+	it("re-delivers the image of a replayed history card the owner replied to", async () => {
+		// The card is a display-only text post, so its own message has no photo — the
+		// picture comes from the anchor and must ride inline so the model can see it.
+		const resolveHistoryAnchor = vi.fn((id: number) =>
+			id === 88
+				? {
+						text: "the pic I sent earlier",
+						images: [{ data: "HIST64", mimeType: "image/jpeg" }],
+					}
+				: undefined,
+		);
+		const { controller, sendFollowUp } = setup({
+			resolveHistoryAnchor,
+			loadImages: async () => [], // the reply message itself carries no photo
+		});
+		const event = classifyUpdate({
+			update_id: 22,
+			message: {
+				message_id: 22,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "how many people are in it?",
+				reply_to_message: {
+					message_id: 88,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					text: "",
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		const content = sendFollowUp.mock.calls[0][0];
+		expect(content).toEqual([
+			{ type: "image", data: "HIST64", mimeType: "image/jpeg" },
+			{
+				type: "text",
+				text: expect.stringContaining("how many people are in it?"),
+			},
+		]);
+	});
+
+	it("leaves an ordinary reply untouched when it is not an anchored card", async () => {
+		const resolveHistoryAnchor = vi.fn(() => undefined);
+		const { controller, sendFollowUp } = setup({ resolveHistoryAnchor });
+		const event = classifyUpdate({
+			update_id: 21,
+			message: {
+				message_id: 21,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "yes that",
+				reply_to_message: {
+					message_id: 5,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+					text: "the blue one?",
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		const content = sendFollowUp.mock.calls[0][0] as string;
+		expect(content).toContain("the blue one?");
+	});
+
 	it("does not treat a topic's root message as a reply worth reading", async () => {
 		const saveAttachments = vi.fn(async () => ({ savedFiles: [], errors: [] }));
 		const { controller } = setup({ saveAttachments });

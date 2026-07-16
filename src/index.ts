@@ -156,8 +156,19 @@ import {
 import { formatManagerReplyHtmlChunks } from "./modes/manager/reply-format";
 import { managerToolGate } from "./modes/manager/tool-gate";
 import { resolveTelegramPaths } from "./pi/agent-dir";
-import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
+import { commandContextFromBase } from "./pi/command-ctx";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+} from "./pi/sdk";
 import { compact } from "./pi/sdk";
+import {
+	buildSessionPickerOptions,
+	listSessions,
+	resolveSessionPick,
+} from "./pi/session-list";
+import { extractSessionTail, type TailSourceMessage } from "./pi/session-tail";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
 	CONSOLIDATION_DONE_END_TURN_HINT,
@@ -182,6 +193,11 @@ import {
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
+import {
+	createConnectIntentStore,
+	intentApplies,
+	type ReArmMode,
+} from "./storage/connect-intent";
 import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
@@ -202,6 +218,12 @@ import {
 } from "./telegram/media";
 import { type OutboundApi, OutboundSender } from "./telegram/outbound";
 import { extractProfileFromUser } from "./telegram/profile";
+import {
+	buildResumeKeyboard,
+	isResumeCommand,
+	parseResumeCallback,
+	resumePanelText,
+} from "./telegram/resume-panel";
 import {
 	buildSwitchKeyboard,
 	isStopCommand,
@@ -346,7 +368,7 @@ const REPLY_RIGHT_NOTICE = [
 	"⛔ This bot is connected to your account but is NOT allowed to reply.",
 	"It can read your chats and answer nothing.",
 	"",
-	"Fix it in Telegram: Settings → Business / Secretary → Chatbots →",
+	"Fix it in Telegram: Settings → Account → Chat automation →",
 	"this bot → allow it to reply to messages.",
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
@@ -363,7 +385,7 @@ const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
 		"⛔ The Secretary connection to this bot was just switched OFF.",
 		"It no longer receives your chats and cannot answer them.",
 		"",
-		"Turn it back on: Telegram → Settings → Business / Secretary → Chatbots.",
+		"Turn it back on: Telegram → Settings → Account → Chat automation.",
 	].join("\n"),
 	enabled:
 		"✅ The Secretary connection is back on — the manager is listening again.",
@@ -371,7 +393,7 @@ const CONNECTION_ALERT_NOTICES: Record<ConnectionAlert, string> = {
 		"⛔ This bot just LOST the right to reply on your behalf.",
 		"It still reads every managed chat and can answer none of them.",
 		"",
-		"Restore it: Telegram → Settings → Business / Secretary → Chatbots →",
+		"Restore it: Telegram → Settings → Account → Chat automation →",
 		"this bot → allow it to reply to messages.",
 	].join("\n"),
 	reply_right_restored:
@@ -390,8 +412,8 @@ const NOT_CONNECTED_NOTICE = [
 	"since this mode started. If the bot IS already connected, ignore this: it",
 	"clears itself as soon as any message arrives in a managed chat.",
 	"",
-	"If it is not connected: Telegram → Settings → Business / Secretary →",
-	"Chatbots → add this bot and pick which chats it may access (and let it reply).",
+	"If it is not connected: Telegram → Settings → Account → Chat automation",
+	"→ add this bot and pick which chats it may access (and let it reply).",
 	"",
 	`Setup steps: ${SETUP_GUIDE_URL}`,
 ].join("\n");
@@ -487,6 +509,7 @@ const MANAGER_HELP_TEXT = [
 	"🧭 Pi Telegram bridge",
 	"",
 	"/switch — change mode (manager / personal / mixed)",
+	"/resume — pick which session personal runs in (current / new / resume)",
 	"/status — model, context, working directory, queue",
 	"/context — what I am carrying, and what filled it up",
 	"/esc — cancel whatever the agent is doing right now",
@@ -510,6 +533,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const fs = createNodeFs();
 	const paths = resolveTelegramPaths();
 	const singletonStore = createSingletonStore(fs, paths.singletonPath);
+	const connectIntent = createConnectIntentStore(fs, paths.connectIntentPath);
 	const contactStore = createContactStore(fs, paths);
 	const lifecycle = createLifecycleController({
 		store: singletonStore,
@@ -2064,11 +2088,60 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			)
 			.catch(() => {});
 	});
-	pi.on("session_shutdown", async () => {
-		// No goodbye card: the pinned mode line is the one place that says whether the
-		// bridge is up, and it now flips to "Stopped" here. A card said the same thing
-		// once, then stayed in the chat saying it forever.
-		if (connect || manager) await updateModePin("stop");
+	// How long a re-arm note stays valid after the picker writes it — a switch fires the
+	// next session_start within milliseconds, so this only has to outlast that, while
+	// being short enough that a note orphaned by a crash cannot auto-connect a later launch.
+	const CONNECT_INTENT_MAX_AGE_MS = 60_000;
+
+	pi.on("session_shutdown", async (event, ctx) => {
+		if (!(connect || manager)) return;
+		// A session switch (new/resume/fork) re-arms the bridge in the next instance, so
+		// leave the pin for it to set; only a real stop flips it to "Stopped" here. (No
+		// goodbye card: a card said the same thing once, then stayed in the chat forever.)
+		const reArming =
+			event.reason === "new" ||
+			event.reason === "resume" ||
+			event.reason === "fork";
+		if (!reArming) await updateModePin("stop");
+		// Tear the bridge FULLY down before this instance is disposed. Otherwise the
+		// orphaned Telegram client keeps polling in the dead closure and the re-armed one
+		// collides with it (getUpdates 409), and the lapsed heartbeat holds the lock on
+		// this same pid. Use the shutdown context (still valid pre-dispose) via the adapter.
+		const commandCtx = commandContextFromBase(ctx);
+		if (manager) await stopManager();
+		if (connect) await stopConnect(commandCtx);
+	});
+
+	// The other half of a session switch: the freshly-loaded instance finds the note the
+	// picker left and brings the bridge back up in the new session (see connect-intent.ts
+	// and the Part 3 spike). session_start hands a BASE context; the adapter makes it do.
+	pi.on("session_start", async (event, ctx) => {
+		const intent = await connectIntent.load();
+		if (!intent) return;
+		const now = Date.now();
+		if (
+			intentApplies(intent, {
+				cwd: ctx.cwd,
+				reason: event.reason,
+				now,
+				maxAgeMs: CONNECT_INTENT_MAX_AGE_MS,
+			})
+		) {
+			await connectIntent.clear();
+			const commandCtx = commandContextFromBase(ctx);
+			if (intent.mode === "mixed") {
+				await startManager(commandCtx, { mixed: true });
+			} else {
+				await startConnect(commandCtx);
+			}
+			// The tail is mirrored inside startConnect/startManager when the topic is fresh
+			// (see renderSessionTail), so a re-armed resume shows its history through the
+			// same path as a direct /telegram-personal — nothing extra to do here.
+		} else if (now - intent.armedAt > CONNECT_INTENT_MAX_AGE_MS) {
+			// A note nobody consumed (a crash between arming and the switch): clean it up so
+			// it can never fire on a later launch.
+			await connectIntent.clear();
+		}
 	});
 
 	// Both mode launchers load settings, surface any warnings, and need the bot
@@ -2158,14 +2231,145 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	};
 
 	/**
-	 * Start this session in a brand-new `personal` topic (see TopicRouter.startSession
-	 * for what we measured and why). Only where the conversation actually lives: personal
-	 * and mixed. The manager never talks in `personal` — it only pins the mode line there
-	 * — so rotating on its start would burn topics for nothing.
+	 * Rotate the `personal` topic when — and only when — the session behind it changed,
+	 * so the visible topic keeps mirroring the model's actual memory (see
+	 * TopicRouter.startSession for the gate). Pass the current Pi session id; a mode
+	 * switch that keeps the session keeps the topic, and `{ force: true }` (a `/clear`)
+	 * rotates it even within the same session. Only where the conversation actually
+	 * lives: personal and mixed. The manager never talks in `personal` — it only pins the
+	 * mode line there — so it never rotates.
 	 */
-	const rotatePersonalTopic = async (): Promise<void> => {
-		if (!topics?.active) return;
-		await topics.startSession();
+	const rotatePersonalTopic = async (
+		sessionId?: string,
+		opts?: { force?: boolean },
+	): Promise<{ ageRefreshed: boolean; topicFresh: boolean }> => {
+		if (!topics?.active) return { ageRefreshed: false, topicFresh: false };
+		return await topics.startSession(sessionId, opts);
+	};
+
+	/**
+	 * The one rotation the owner is told about: the topic was refreshed only because it
+	 * outlived Telegram's id staleness, so the session actually continues in it. Sent
+	 * after the runtime exists (the startup rotation runs before `connect` is built).
+	 */
+	const noticeIfAgeRefreshed = async (rotation: {
+		ageRefreshed: boolean;
+	}): Promise<void> => {
+		if (!rotation.ageRefreshed) return;
+		await connect?.sendToChat(
+			card("↻", "Topic refreshed", [
+				"This session continues — the topic was rotated to keep Telegram in sync.",
+			]),
+		);
+	};
+
+	/** How many of the resumed session's last messages to replay into the topic. */
+	const RESUME_TAIL_MAX = 10;
+	/** A small gap between replayed posts, so a burst of them clears Telegram's limiter. */
+	const RESUME_TAIL_POST_DELAY_MS = 350;
+	/** How many replayed-card → text anchors to retain before evicting the oldest. */
+	const HISTORY_ANCHOR_MAX = 200;
+
+	/**
+	 * Message id of a replayed history card → what it stood for: the text it showed and
+	 * any images that message carried (verbatim base64). The cards are display-only, so a
+	 * reply to one otherwise reaches the model with an empty quote and no picture; this
+	 * lets the controller fill the quote AND re-deliver the photo. Bounded, evicting
+	 * oldest, so a long-lived session cannot grow it without limit.
+	 */
+	const historyAnchors = new Map<
+		number,
+		{ text: string; images: { data: string; mimeType: string }[] }
+	>();
+	const anchorHistoryCard = (
+		ids: readonly number[],
+		anchor: { text: string; images: { data: string; mimeType: string }[] },
+	): void => {
+		for (const id of ids) {
+			historyAnchors.set(id, anchor);
+			if (historyAnchors.size > HISTORY_ANCHOR_MAX) {
+				const oldest = historyAnchors.keys().next().value;
+				if (oldest !== undefined) historyAnchors.delete(oldest);
+			}
+		}
+	};
+
+	/**
+	 * When a FRESH personal topic binds to a session that already has history — resuming a
+	 * different session, or just running `/telegram-personal` on a terminal session you had
+	 * been working in without Telegram — mirror its last few messages into the topic as
+	 * display-only cards, so the phone shows what the session is about rather than a blank
+	 * topic. These are outgoing bot posts: never fed back to the agent, never echoed to the
+	 * terminal (Pi already shows the full transcript there), and ordinary forwarding works
+	 * exactly as before afterwards. Skipped when the topic already mirrors this session (a
+	 * mode switch keeps it) — only a fresh topic gets the replay, so it never repeats.
+	 * Best-effort throughout; a null `connect` (no personal bridge) simply renders nothing.
+	 */
+	const renderSessionTail = async (ctx: ExtensionContext): Promise<void> => {
+		if (!connect) return;
+		try {
+			const messages: TailSourceMessage[] = [];
+			for (const entry of ctx.sessionManager.buildContextEntries()) {
+				if (entry.type === "message") messages.push(entry.message);
+			}
+			const tail = extractSessionTail(messages, RESUME_TAIL_MAX);
+			if (tail.length === 0) return;
+			await connect.sendToChat(
+				card("↻", "Session history", [
+					"The recent messages below are from this session, shown for reference " +
+						"only — they were not sent to the agent.",
+				]),
+			);
+			for (const message of tail) {
+				const ids = await connect.sendToChat(
+					card(
+						message.role === "user" ? "💬" : "🤖",
+						message.role === "user" ? "You" : "Assistant",
+						[message.text],
+					),
+				);
+				// Anchor the card so a reply to it can quote the real text — and re-deliver
+				// any picture it carried — instead of an empty "" and no image.
+				anchorHistoryCard(ids, { text: message.text, images: message.images });
+				await new Promise((resolve) =>
+					setTimeout(resolve, RESUME_TAIL_POST_DELAY_MS),
+				);
+			}
+		} catch {
+			// The transcript preview is a courtesy; never let it fail the resume.
+		}
+	};
+
+	/**
+	 * The `/clear` operation, shared by the typed command and the Telegram Clear button.
+	 * A soft reset: it drops a boundary so the model stops seeing the prior conversation
+	 * (same session, same file — the terminal's shared view clears too) and force-rotates
+	 * the personal topic to mirror the now-empty memory. Refused mid-turn, since clearing
+	 * then could orphan a tool_use/tool_result pair. Returns whether it actually cleared.
+	 */
+	const clearPersonalHistory = async (): Promise<boolean> => {
+		if (busy) {
+			await connect?.sendToChat(
+				card("⏳", "Busy right now", [
+					note("Send /clear again once I finish."),
+				]),
+			);
+			return false;
+		}
+		contextReset.clear(Date.now());
+		// Force a fresh topic: the id gate would keep the old one (same session), but the
+		// visible thread must match the empty memory. Rotate BEFORE the card, so the card
+		// is the new topic's first line.
+		await rotatePersonalTopic(activeCtx?.sessionManager.getSessionId(), {
+			force: true,
+		});
+		await connect?.sendToChat(
+			card("🧹", "History cleared", [
+				"Starting fresh.",
+				note("Shared session: the terminal sees the cleared context too."),
+			]),
+		);
+		return true;
 	};
 
 	/** Anything said in `personal` — so the next session archives it instead of dropping it. */
@@ -2636,24 +2840,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			loadImages,
 			saveAttachments,
 			uploadFile,
+			resolveHistoryAnchor: (id) => historyAnchors.get(id),
 			onClear: async () => {
-				// Clearing mid-turn could orphan a tool_use/tool_result pair, so
-				// only reset while the agent is idle.
-				if (busy) {
-					await connect?.sendToChat(
-						card("⏳", "Busy right now", [
-							note("Send /clear again once I finish."),
-						]),
-					);
-					return;
-				}
-				contextReset.clear(Date.now());
-				await connect?.sendToChat(
-					card("🧹", "History cleared", [
-						"Starting fresh.",
-						note("Shared session: the terminal sees the cleared context too."),
-					]),
-				);
+				await clearPersonalHistory();
 			},
 			onCompact: compactContext,
 			onStatus: buildStatus,
@@ -2724,9 +2913,68 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+	/** Leave a note for the next instance to re-arm this bridge after a session switch. */
+	const armConnectIntent = async (
+		mode: ReArmMode,
+		cwd: string,
+	): Promise<void> => {
+		await connectIntent.arm({ mode, cwd, armedAt: Date.now() });
+	};
+
+	/**
+	 * Ask the owner which session to run in, symmetric with the Telegram `/resume` panel.
+	 * `mode` is what the re-arm brings back up in the chosen session — `connect` for
+	 * personal, `mixed` for mixed — so the same picker drives both `/telegram-personal`
+	 * and `/telegram-mixed`. Returns whether to start the bridge in the CURRENT session now
+	 * (true), or to stand down (false) because either the owner cancelled or we switched to
+	 * another session — in which case the connect-intent steers the reloaded instance's
+	 * `session_start` to start the bridge there. TUI/RPC only; without a dialog the caller
+	 * simply keeps the current session.
+	 */
+	const runSessionPicker = async (
+		ctx: ExtensionCommandContext,
+		mode: ReArmMode,
+	): Promise<boolean> => {
+		const currentId = ctx.sessionManager.getSessionId();
+		const sessions = await listSessions(ctx.cwd).catch(() => []);
+		const title =
+			mode === "mixed" ? "Mixed — pick a session" : "Personal — pick a session";
+		// Loop so a busy project stays navigable: the SDK's flat select has no scrollback,
+		// so an "Older/Newer" pick just re-opens the picker on that page instead of choosing.
+		let page = 0;
+		for (;;) {
+			const options = buildSessionPickerOptions(sessions, currentId, page);
+			const selected = await ctx.ui.select(
+				title,
+				options.map((option) => option.label),
+			);
+			if (selected === undefined) return false; // cancelled — start nothing
+			const pick = resolveSessionPick(options, selected);
+			if (!pick || pick.kind === "current") return true; // stay in this session
+			if (pick.kind === "page") {
+				page = pick.page;
+				continue;
+			}
+			await armConnectIntent(mode, ctx.cwd);
+			if (pick.kind === "new") {
+				await ctx.newSession();
+			} else {
+				await ctx.switchSession(pick.path);
+			}
+			return false; // the switch re-arms the bridge in the chosen session
+		}
+	};
+
+	const startConnect = async (
+		ctx: ExtensionCommandContext,
+		opts: { pick?: boolean } = {},
+	): Promise<void> => {
 		activeCtx = ctx;
 		if (!(await installationIsComplete(ctx))) return;
+		// Only the explicit TUI command offers the picker; a re-arm and a phone-driven
+		// /switch both start the current session straight away.
+		if (opts.pick && ctx.hasUI && !(await runSessionPicker(ctx, "connect")))
+			return;
 		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
@@ -2765,8 +3013,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
 		await setupTopics(client.api, allowedUserId, settings, ctx);
-		await rotatePersonalTopic();
+		const rotation = await rotatePersonalTopic(
+			ctx.sessionManager.getSessionId(),
+		);
 		await startConnectRuntime(client, token, settings, ctx, allowedUserId);
+		await noticeIfAgeRefreshed(rotation);
+		// A fresh topic on a session that already has history (a resume, or /telegram-personal
+		// on a terminal session) gets that history mirrored in, for reference only.
+		if (rotation.topicFresh) await renderSessionTail(ctx);
 		void client.start();
 		// Publish the tappable command menus (no manual setup needed by the user).
 		// Two scopes, deliberately: the control commands are refused to everyone but
@@ -2813,11 +3067,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the same manager runtime alongside the owner's coding thread in one session.
 	const startManager = async (
 		ctx: ExtensionCommandContext,
-		options: { mixed?: boolean } = {},
+		options: { mixed?: boolean; pick?: boolean } = {},
 	): Promise<void> => {
 		const mixed = options.mixed === true;
 		activeCtx = ctx;
 		if (!(await installationIsComplete(ctx))) return;
+		// Mixed bridges the personal session too, so /telegram-mixed offers the same
+		// session picker as /telegram-personal (re-arming into mixed, not connect). Pure
+		// manager has no session to pick — its context is built fresh per chat.
+		if (
+			mixed &&
+			options.pick &&
+			ctx.hasUI &&
+			!(await runSessionPicker(ctx, "mixed"))
+		)
+			return;
 		const wanted: PanelMode = mixed ? "mixed" : "manager";
 		if (!(await takeOverFrom(ctx, wanted))) return;
 		const loaded = await loadSettingsAndToken(ctx);
@@ -2969,7 +3233,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// for the very same session — a message there is exactly a prompt typed at
 			// the terminal (and terminal prompts mirror back into it).
 			if (mixed) {
-				await rotatePersonalTopic();
+				const rotation = await rotatePersonalTopic(
+					ctx.sessionManager.getSessionId(),
+				);
 				await startConnectRuntime(
 					managerClient,
 					token,
@@ -2977,6 +3243,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 					ctx,
 					settings.allowedUserId,
 				);
+				await noticeIfAgeRefreshed(rotation);
+				if (rotation.topicFresh) await renderSessionTail(ctx);
 			}
 		}
 		// Download an interlocutor message's inline images so the model can scan
@@ -3246,7 +3514,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.personal, {
 		description:
 			"Bind this terminal session to a Telegram chat (personal mode).",
-		handler: (_args, ctx) => startConnect(ctx),
+		handler: (_args, ctx) => startConnect(ctx, { pick: true }),
 	});
 	// Business manager: answer other people on the owner's behalf.
 	pi.registerCommand(COMMANDS.manager, {
@@ -3259,7 +3527,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.mixed, {
 		description: "Run coding and Telegram moderation together.",
 		handler: async (_args, ctx) => {
-			await startManager(ctx, { mixed: true });
+			await startManager(ctx, { mixed: true, pick: true });
 		},
 	});
 	// Stop whichever Telegram mode is currently active.
@@ -3374,6 +3642,86 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				reply_markup: buildSwitchKeyboard(active),
 			})
 			.catch(() => {});
+	};
+
+	/** Post the `/resume` session picker — the in-chat twin of the TUI picker. */
+	const sendResumePanel = async (
+		api: ControlApi,
+		threadId = personalThread(),
+	): Promise<void> => {
+		if (ownerUserId === null || !activeCtx) return;
+		const currentId = activeCtx.sessionManager.getSessionId();
+		const sessions = await listSessions(activeCtx.cwd).catch(() => []);
+		await api
+			.sendMessage({
+				chat_id: ownerUserId,
+				message_thread_id: threadId,
+				text: resumePanelText(),
+				reply_markup: buildResumeKeyboard(sessions, currentId, 0),
+			})
+			.catch(() => {});
+	};
+
+	/**
+	 * Act on a `/resume` button press. Paging just repaints the keyboard; Current stays put;
+	 * New/Resume arm the connect-intent and switch the session, exactly as the TUI picker
+	 * does — the reloaded instance's session_start then brings the bridge up in the chosen
+	 * session. The captured `api` keeps working for the ack even as the client is torn down.
+	 */
+	const handleResumeCallback = async (
+		api: ControlApi,
+		event: Extract<TelegramEvent, { kind: "callback_query" }>,
+		action: ReturnType<typeof parseResumeCallback> & object,
+	): Promise<void> => {
+		const ctx = activeCtx;
+		const ack = (text?: string) =>
+			api
+				.answerCallbackQuery({ callback_query_id: event.query.id, text })
+				.catch(() => {});
+		if (!ctx) {
+			await ack("No active session.");
+			return;
+		}
+		if (action.kind === "page") {
+			const sessions = await listSessions(ctx.cwd).catch(() => []);
+			const chatId = event.chatId;
+			const messageId = event.query.message?.message_id;
+			if (chatId !== undefined && messageId !== undefined) {
+				await api
+					.editMessageReplyMarkup({
+						chat_id: chatId,
+						message_id: messageId,
+						reply_markup: buildResumeKeyboard(
+							sessions,
+							ctx.sessionManager.getSessionId(),
+							action.page,
+						),
+					})
+					.catch(() => {});
+			}
+			await ack();
+			return;
+		}
+		if (action.kind === "current") {
+			await ack("Staying in the current session.");
+			return;
+		}
+		// Starting a genuinely new session needs a Pi command context Telegram lacks, so
+		// the phone offers a soft clear of the current session instead (see ResumeAction).
+		if (action.kind === "clear") {
+			await ack("Clearing history…");
+			await clearPersonalHistory();
+			return;
+		}
+		const sessions = await listSessions(ctx.cwd).catch(() => []);
+		const targetPath = sessions.find((s) => s.id === action.id)?.path ?? null;
+		if (!targetPath) {
+			await ack("That session is gone.");
+			return;
+		}
+		await ack("Resuming…");
+		await armConnectIntent(mixedActive ? "mixed" : "connect", ctx.cwd);
+		await ctx.switchSession(targetPath);
 	};
 
 	// Keep a pinned message at the top of the owner's DM showing the active mode, so
@@ -3530,6 +3878,22 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				await sendSwitchPanel(api, threadOf(event) ?? personalThread());
 				return true;
 			}
+			// /resume picks which session personal runs in — only meaningful while a
+			// session-bound bridge (personal/mixed) is live.
+			if (isResumeCommand(text)) {
+				if (connect) {
+					await sendResumePanel(api, threadOf(event) ?? personalThread());
+				} else {
+					await api
+						.sendMessage({
+							chat_id: ownerUserId,
+							message_thread_id: threadOf(event) ?? personalThread(),
+							text: "/resume works in personal or mixed mode. Start one with /switch first.",
+						})
+						.catch(() => {});
+				}
+				return true;
+			}
 			// Stopping is a command, never a button: the Secretary connection is the
 			// whole point of the bot, and a mistap while switching modes must not end it.
 			if (isStopCommand(text)) {
@@ -3631,6 +3995,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		if (event.kind === "callback_query") {
 			if (event.fromId !== ownerUserId) return false;
+			const resume = parseResumeCallback(event.data);
+			if (resume) {
+				await handleResumeCallback(api, event, resume);
+				return true;
+			}
 			const target = parseSwitchData(event.data);
 			if (!target) return false;
 			const already = activeTarget() === target;

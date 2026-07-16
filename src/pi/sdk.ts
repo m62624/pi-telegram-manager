@@ -17,6 +17,7 @@ export type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	SessionBeforeCompactEvent,
+	SessionInfo,
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SlashCommandInfo,
@@ -35,4 +36,5 @@ export {
 	compact,
 	defineTool,
 	getAgentDir,
+	SessionManager,
 } from "@earendil-works/pi-coding-agent";

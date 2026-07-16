@@ -82,6 +82,11 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 			command: "switch",
 			description: "Switch bot mode (manager / personal / mixed)",
 		},
+		{
+			command: "resume",
+			description:
+				"Pick which session personal runs in (current / new / resume)",
+		},
 		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },
 	];

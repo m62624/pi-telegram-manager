@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDmState } from "../../src/storage/dm-state";
 import {
+	PERSONAL_TOPIC_MAX_AGE_MS,
 	placeOfOwnerMessage,
 	TopicRouter,
 	type TopicsApi,
@@ -37,7 +38,12 @@ function fakeApi(overrides: Partial<TopicsApi> = {}, firstThread = 100) {
 	} satisfies TopicsApi & Record<string, unknown>;
 }
 
-function router(api: TopicsApi, fs = new FakeFs(), onFallback = vi.fn()) {
+function router(
+	api: TopicsApi,
+	fs = new FakeFs(),
+	onFallback = vi.fn(),
+	now?: () => number,
+) {
 	return {
 		fs,
 		onFallback,
@@ -52,6 +58,7 @@ function router(api: TopicsApi, fs = new FakeFs(), onFallback = vi.fn()) {
 				logName: "log",
 			},
 			onFallback,
+			...(now ? { now } : {}),
 		}),
 	};
 }
@@ -525,6 +532,123 @@ describe("TopicRouter: a fresh personal topic every session", () => {
 		expect(api.editForumTopic).not.toHaveBeenCalledWith(
 			expect.objectContaining({ name: "personal (archive)" }),
 		);
+	});
+});
+
+// The topic mirrors ONE session's memory. It rotates when that session changes — the
+// owner resumed a different one on the computer — not on every mode switch, which
+// keeps the same session and so must keep the same topic (no ghosts on a switch).
+describe("TopicRouter: rotation follows the session, not the mode switch", () => {
+	it("keeps the topic when the session id is unchanged (a mode switch)", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1"); // fresh topic 100, stamped with session-1
+
+		// A later start in the SAME session (personal → mixed → personal, etc.): adopt
+		// 100, recognise the session, leave the topic alone. That the stamp survived to
+		// disk is exactly what this asserts — otherwise 100 would be rotated away here.
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		const result = await b.startSession("session-1");
+
+		expect(second.createForumTopic).not.toHaveBeenCalled();
+		expect(second.deleteForumTopic).not.toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(100);
+		// The topic already mirrors this session — not fresh, so no history is re-mirrored.
+		expect(result.topicFresh).toBe(false);
+	});
+
+	it("rotates when the session id changed (the owner resumed a different session)", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1"); // topic 100 ↔ session-1
+
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		const rotated = await b.startSession("session-2"); // different session → a fresh topic
+		expect(b.thread("personal")).toBe(200);
+		expect(rotated.topicFresh).toBe(true); // fresh topic → history is mirrored in
+
+		// session-2 is now the topic's session: a restart in it does NOT rotate again,
+		// which proves the new id was persisted by the rotation.
+		const third = fakeApi({}, 300);
+		const c = router(third, fs).router;
+		await c.ensure();
+		await c.startSession("session-2");
+		expect(third.createForumTopic).not.toHaveBeenCalled();
+		expect(c.thread("personal")).toBe(200);
+	});
+
+	it("force-rotates within the same session — a /clear wipes the memory the topic mirrors", async () => {
+		const fs = new FakeFs();
+		const first = fakeApi({}, 100);
+		const a = router(first, fs).router;
+		await a.ensure();
+		await a.startSession("session-1");
+
+		// Same session id, but the context was just cleared: the topic no longer matches
+		// the (empty) memory, so force a fresh one despite the id being unchanged.
+		const second = fakeApi({}, 200);
+		const b = router(second, fs).router;
+		await b.ensure();
+		await b.startSession("session-1", { force: true });
+		expect(second.createForumTopic).toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(200);
+	});
+});
+
+// The age net is the secondary safety: Telegram's own topic ids go stale after a few
+// days, so a single session kept alive that long gets a fresh topic anyway — and,
+// unlike a session change, the owner is told the context still continues.
+describe("TopicRouter: the age net refreshes a stale topic in a live session", () => {
+	const T0 = 1_000_000_000_000;
+
+	it("keeps a young topic in the same session", async () => {
+		const fs = new FakeFs();
+		let clock = T0;
+		const first = fakeApi({}, 100);
+		const a = router(first, fs, vi.fn(), () => clock).router;
+		await a.ensure();
+		const firstStart = await a.startSession("session-1"); // topic 100, created at T0
+		expect(firstStart.topicFresh).toBe(true); // a brand-new topic mirrors history in
+
+		clock = T0 + 60 * 60 * 1000; // one hour later — well within the max age
+		const second = fakeApi({}, 200);
+		const b = router(second, fs, vi.fn(), () => clock).router;
+		await b.ensure();
+		const result = await b.startSession("session-1");
+
+		expect(result.ageRefreshed).toBe(false);
+		expect(result.topicFresh).toBe(false); // young topic kept — no re-mirror
+
+		expect(second.createForumTopic).not.toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(100);
+	});
+
+	it("refreshes a topic older than the max age, measured from its creation across re-adopts", async () => {
+		const fs = new FakeFs();
+		let clock = T0;
+		const first = fakeApi({}, 100);
+		const a = router(first, fs, vi.fn(), () => clock).router;
+		await a.ensure();
+		await a.startSession("session-1"); // created at T0, and its age travels with it
+
+		clock = T0 + PERSONAL_TOPIC_MAX_AGE_MS + 1; // just past the threshold
+		const second = fakeApi({}, 200);
+		const b = router(second, fs, vi.fn(), () => clock).router;
+		await b.ensure(); // re-adopts 100, carrying its T0 creation time
+		const result = await b.startSession("session-1"); // same session, but stale
+
+		expect(result.ageRefreshed).toBe(true);
+		expect(result.topicFresh).toBe(true); // a rotated topic is fresh
+		expect(second.createForumTopic).toHaveBeenCalled();
+		expect(b.thread("personal")).toBe(200);
 	});
 });
 
