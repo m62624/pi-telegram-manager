@@ -2267,6 +2267,25 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const RESUME_TAIL_MAX = 10;
 	/** A small gap between replayed posts, so a burst of them clears Telegram's limiter. */
 	const RESUME_TAIL_POST_DELAY_MS = 350;
+	/** How many replayed-card → text anchors to retain before evicting the oldest. */
+	const HISTORY_ANCHOR_MAX = 200;
+
+	/**
+	 * Message id of a replayed history card → the text it showed. The cards are
+	 * display-only, so a reply to one otherwise reaches the model with an empty quote;
+	 * this lets the controller fill the quote with what the card actually said. Bounded,
+	 * evicting oldest, so a long-lived session cannot grow it without limit.
+	 */
+	const historyAnchors = new Map<number, string>();
+	const anchorHistoryCard = (ids: readonly number[], text: string): void => {
+		for (const id of ids) {
+			historyAnchors.set(id, text);
+			if (historyAnchors.size > HISTORY_ANCHOR_MAX) {
+				const oldest = historyAnchors.keys().next().value;
+				if (oldest !== undefined) historyAnchors.delete(oldest);
+			}
+		}
+	};
 
 	/**
 	 * When a FRESH personal topic binds to a session that already has history — resuming a
@@ -2295,13 +2314,15 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				]),
 			);
 			for (const message of tail) {
-				await connect.sendToChat(
+				const ids = await connect.sendToChat(
 					card(
 						message.role === "user" ? "💬" : "🤖",
 						message.role === "user" ? "You" : "Assistant",
 						[message.text],
 					),
 				);
+				// Anchor the card so a reply to it can quote the real text, not "".
+				anchorHistoryCard(ids, message.text);
 				await new Promise((resolve) =>
 					setTimeout(resolve, RESUME_TAIL_POST_DELAY_MS),
 				);
@@ -2811,6 +2832,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			loadImages,
 			saveAttachments,
 			uploadFile,
+			resolveHistoryAnchor: (id) => historyAnchors.get(id),
 			onClear: async () => {
 				await clearPersonalHistory();
 			},

@@ -24,7 +24,11 @@ import {
 } from "../../core/forwards";
 import { TERMINAL_ORIGIN_MARKER } from "../../core/prompt-origin";
 import { MessageQueue, type QueueItem } from "../../core/queue";
-import { buildPromptTurn, type TurnSavedFile } from "../../core/turns";
+import {
+	buildPromptTurn,
+	type TurnReplyContext,
+	type TurnSavedFile,
+} from "../../core/turns";
 import { buildRichMarkdownMessage } from "../../telegram/markdown";
 import { isTopicAnchor } from "../../telegram/message-context";
 import type { OutboundSender, OutboundTarget } from "../../telegram/outbound";
@@ -113,6 +117,14 @@ export interface ConnectControllerDeps {
 	onContextReport?: () => string;
 	/** Record/refresh the sender's profile in the contact store (best-effort). */
 	onContact?: (user: User) => Promise<void>;
+	/**
+	 * Resolve the real text behind a replayed session-history card, keyed by the id of
+	 * the card the owner replied to. The cards are display-only bot posts, so a reply to
+	 * one otherwise carries an empty quote (`which said: ""`); this hands back what that
+	 * historical message actually said so the model can answer about it. Undefined for a
+	 * message that is not one of our anchored history cards.
+	 */
+	resolveHistoryAnchor?: (messageId: number) => string | undefined;
 	/**
 	 * The owner's `personal` topic, resolved per send (it appears once the router has
 	 * created it, and vanishes again on a fallback to the plain DM). EVERYTHING of this
@@ -365,12 +377,19 @@ export class ConnectController {
 		// images ride along inline via loadImages.
 		const intake = await this.saveAttachments(event.message);
 		const input = messageToTurnInput(event.message, this.deps.maxBytes);
+		// A reply to a replayed history card carries an empty quote (the cards are
+		// display-only). Fill it with what that message actually said, so the model
+		// answers about it rather than about "".
+		const anchoredReply = this.anchoredReplyContext(event.message);
+		const withReply = anchoredReply
+			? { ...input, reply: anchoredReply }
+			: input;
 		const turn = buildPromptTurn({
-			...input,
+			...withReply,
 			text:
-				forward && input.text
-					? limitForwardText(input.text, this.forwardPolicy.maxChars)
-					: input.text,
+				forward && withReply.text
+					? limitForwardText(withReply.text, this.forwardPolicy.maxChars)
+					: withReply.text,
 			receivedAt: formatClock(this.now(), this.deps.timezone),
 			savedFiles: intake.savedFiles.length > 0 ? intake.savedFiles : undefined,
 			attachmentErrors: intake.errors.length > 0 ? intake.errors : undefined,
@@ -501,6 +520,20 @@ export class ConnectController {
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * The reply context for a message that answers a replayed history card: the card's
+	 * real text, keyed by the id the owner replied to. No author — it stands for "an
+	 * earlier message in this session", not a person speaking now. Undefined when the
+	 * reply is not to one of our anchored cards, so ordinary reply handling is untouched.
+	 */
+	private anchoredReplyContext(message: Message): TurnReplyContext | undefined {
+		const repliedId = message.reply_to_message?.message_id;
+		if (repliedId === undefined || !this.deps.resolveHistoryAnchor)
+			return undefined;
+		const text = this.deps.resolveHistoryAnchor(repliedId);
+		return text ? { text } : undefined;
 	}
 
 	/**
@@ -675,8 +708,8 @@ export class ConnectController {
 	 * is sent as plain text. Model prose is not sent through here (see
 	 * {@link deliverAssistant}) and keeps its own rendering.
 	 */
-	async sendToChat(markdown: string): Promise<void> {
-		await this.deps.outbound.sendMarkdown(this.target, markdown, {
+	async sendToChat(markdown: string): Promise<number[]> {
+		return await this.deps.outbound.sendMarkdown(this.target, markdown, {
 			detectEntities: true,
 		});
 	}

@@ -341,6 +341,62 @@ describe("ConnectController", () => {
 		expect(loadImages).toHaveBeenCalledTimes(1);
 	});
 
+	it("fills a reply to a replayed history card with the card's real text, not an empty quote", async () => {
+		// The history cards are display-only bot posts, so a reply to one otherwise
+		// reaches the model as `which said: ""`. The anchor hands back what it said.
+		const resolveHistoryAnchor = vi.fn((id: number) =>
+			id === 77 ? "the earlier thing I asked about" : undefined,
+		);
+		const { controller, sendFollowUp } = setup({ resolveHistoryAnchor });
+		const event = classifyUpdate({
+			update_id: 20,
+			message: {
+				message_id: 20,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "how long was that?",
+				reply_to_message: {
+					message_id: 77,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: 5, is_bot: true, first_name: "Bot" },
+					text: "", // the card's own text is irrelevant — the anchor overrides
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		expect(resolveHistoryAnchor).toHaveBeenCalledWith(77);
+		const content = sendFollowUp.mock.calls[0][0] as string;
+		expect(content).toContain("answering an earlier message");
+		expect(content).toContain("the earlier thing I asked about");
+	});
+
+	it("leaves an ordinary reply untouched when it is not an anchored card", async () => {
+		const resolveHistoryAnchor = vi.fn(() => undefined);
+		const { controller, sendFollowUp } = setup({ resolveHistoryAnchor });
+		const event = classifyUpdate({
+			update_id: 21,
+			message: {
+				message_id: 21,
+				date: 0,
+				chat: { id: ALLOWED, type: "private", first_name: "A" },
+				from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+				text: "yes that",
+				reply_to_message: {
+					message_id: 5,
+					date: 0,
+					chat: { id: ALLOWED, type: "private", first_name: "A" },
+					from: { id: ALLOWED, is_bot: false, first_name: "Ada" },
+					text: "the blue one?",
+				},
+			},
+		} as Update);
+		await controller.onEvent(event);
+		const content = sendFollowUp.mock.calls[0][0] as string;
+		expect(content).toContain("the blue one?");
+	});
+
 	it("does not treat a topic's root message as a reply worth reading", async () => {
 		const saveAttachments = vi.fn(async () => ({ savedFiles: [], errors: [] }));
 		const { controller } = setup({ saveAttachments });
