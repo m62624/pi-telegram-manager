@@ -4,7 +4,9 @@ import {
 	buildSessionPickerOptions,
 	isSessionEmpty,
 	resolveSessionPick,
+	SESSION_PICKER_PAGE_SIZE,
 	sessionLabel,
+	sessionPickerPageCount,
 	sortSessionsByRecency,
 } from "../../src/pi/session-list";
 
@@ -163,5 +165,63 @@ describe("buildSessionPickerOptions / resolveSessionPick", () => {
 		const labels = options.slice(2).map((o) => o.label);
 		expect(new Set(labels).size).toBe(2);
 		expect(labels[0]).toContain("03-04 10:06");
+	});
+});
+
+describe("session picker pagination", () => {
+	/** `count` resumable sessions plus a distinct current one, newest first by index. */
+	function roster(count: number): SessionInfo[] {
+		return Array.from({ length: count }, (_, i) =>
+			info({
+				id: `s${i}`,
+				path: `/s/${i}.jsonl`,
+				firstMessage: `chat ${i}`,
+				// Higher index = newer, so sort order is s(count-1) … s0.
+				modified: new Date(2026, 0, 1, 0, i),
+			}),
+		);
+	}
+
+	it("counts pages over the resumable sessions (current excluded)", () => {
+		const sessions = [
+			...roster(SESSION_PICKER_PAGE_SIZE + 1),
+			info({ id: "cur" }),
+		];
+		expect(sessionPickerPageCount(sessions, "cur")).toBe(2);
+		expect(sessionPickerPageCount([info({ id: "cur" })], "cur")).toBe(1);
+	});
+
+	it("caps a page's resume rows and offers Older when more remain", () => {
+		const sessions = roster(SESSION_PICKER_PAGE_SIZE + 3);
+		const options = buildSessionPickerOptions(sessions, "cur", 0);
+		const resumeRows = options.filter((o) => o.pick.kind === "resume");
+		expect(resumeRows).toHaveLength(SESSION_PICKER_PAGE_SIZE);
+		expect(options.some((o) => o.label === "▽  Older sessions")).toBe(true);
+		expect(options.some((o) => o.label === "△  Newer sessions")).toBe(false);
+	});
+
+	it("shows Newer on a later page and resolves a nav row to its page", () => {
+		const sessions = roster(SESSION_PICKER_PAGE_SIZE + 3);
+		const options = buildSessionPickerOptions(sessions, "cur", 1);
+		expect(options.filter((o) => o.pick.kind === "resume")).toHaveLength(3);
+		expect(options.some((o) => o.label === "▽  Older sessions")).toBe(false);
+		expect(resolveSessionPick(options, "△  Newer sessions")).toEqual({
+			kind: "page",
+			page: 0,
+		});
+	});
+
+	it("clamps an out-of-range page to the last one", () => {
+		const sessions = roster(SESSION_PICKER_PAGE_SIZE + 1);
+		const options = buildSessionPickerOptions(sessions, "cur", 99);
+		// Last page holds the single overflow row; only a Newer nav, no Older.
+		expect(options.filter((o) => o.pick.kind === "resume")).toHaveLength(1);
+		expect(options.some((o) => o.label === "△  Newer sessions")).toBe(true);
+		expect(options.some((o) => o.label === "▽  Older sessions")).toBe(false);
+	});
+
+	it("adds no nav rows when everything fits on one page", () => {
+		const options = buildSessionPickerOptions(roster(2), "cur", 0);
+		expect(options.some((o) => o.pick.kind === "page")).toBe(false);
 	});
 });

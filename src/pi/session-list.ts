@@ -71,7 +71,8 @@ function truncate(value: string, maxLen: number): string {
 export type SessionPick =
 	| { kind: "current" }
 	| { kind: "new" }
-	| { kind: "resume"; path: string };
+	| { kind: "resume"; path: string }
+	| { kind: "page"; page: number };
 
 /** One picker row: the text shown, and the choice it stands for. */
 export interface SessionPickerOption {
@@ -81,27 +82,73 @@ export interface SessionPickerOption {
 
 const CURRENT_LABEL = "● Current session";
 const NEW_LABEL = "＋ New session";
+const OLDER_LABEL = "▽  Older sessions";
+const NEWER_LABEL = "△  Newer sessions";
 
 /**
- * The rows for the personal session picker: keep the current session, start a new one,
- * or resume one of the project's others (newest first, the current one skipped since it
- * is already the first row). Each resume row carries a last-modified stamp — a friendly
- * cue AND what keeps two rows with the same preview apart, so a selection resolves back
- * to exactly one session.
+ * How many resume rows one page of the TUI picker shows, below the fixed Current/New
+ * rows. The SDK's `ui.select` renders a flat list with no scrollback, so an unbounded
+ * roster of a busy project scrolls its own top off-screen; paging keeps every page short
+ * enough to read whole. The Telegram panel pages separately (see resume-panel.ts).
+ */
+export const SESSION_PICKER_PAGE_SIZE = 8;
+
+/** How many pages the resumable sessions span (at least one, even when empty). */
+export function sessionPickerPageCount(
+	sessions: readonly SessionInfo[],
+	currentSessionId: string,
+): number {
+	const count = sessions.filter((s) => s.id !== currentSessionId).length;
+	return Math.max(1, Math.ceil(count / SESSION_PICKER_PAGE_SIZE));
+}
+
+/**
+ * The rows for one page of the personal session picker: keep the current session, start a
+ * new one, or resume one of the project's others (newest first, the current one skipped
+ * since it is already the first row). Each resume row carries a last-modified stamp — a
+ * friendly cue AND what keeps two rows with the same preview apart, so a selection
+ * resolves back to exactly one session. When the roster spans more than one page, a
+ * `▽ Older` / `△ Newer` row is added; selecting it re-opens the picker on that page rather
+ * than choosing a session, so a long history stays navigable in a scrollback-less select.
  */
 export function buildSessionPickerOptions(
 	sessions: readonly SessionInfo[],
 	currentSessionId: string,
+	page = 0,
 ): SessionPickerOption[] {
+	const resumable = sortSessionsByRecency(sessions).filter(
+		(session) => session.id !== currentSessionId,
+	);
+	const pageCount = Math.max(
+		1,
+		Math.ceil(resumable.length / SESSION_PICKER_PAGE_SIZE),
+	);
+	const current = Math.min(Math.max(page, 0), pageCount - 1);
+	const start = current * SESSION_PICKER_PAGE_SIZE;
+
 	const options: SessionPickerOption[] = [
 		{ label: CURRENT_LABEL, pick: { kind: "current" } },
 		{ label: NEW_LABEL, pick: { kind: "new" } },
 	];
-	for (const session of sortSessionsByRecency(sessions)) {
-		if (session.id === currentSessionId) continue;
+	for (const session of resumable.slice(
+		start,
+		start + SESSION_PICKER_PAGE_SIZE,
+	)) {
 		options.push({
 			label: `${sessionLabel(session, 44)}  ·  ${formatSessionTime(session.modified)}`,
 			pick: { kind: "resume", path: session.path },
+		});
+	}
+	if (current > 0) {
+		options.push({
+			label: NEWER_LABEL,
+			pick: { kind: "page", page: current - 1 },
+		});
+	}
+	if (current < pageCount - 1) {
+		options.push({
+			label: OLDER_LABEL,
+			pick: { kind: "page", page: current + 1 },
 		});
 	}
 	return options;

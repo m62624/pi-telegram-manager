@@ -2893,21 +2893,30 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	): Promise<boolean> => {
 		const currentId = ctx.sessionManager.getSessionId();
 		const sessions = await listSessions(ctx.cwd).catch(() => []);
-		const options = buildSessionPickerOptions(sessions, currentId);
-		const selected = await ctx.ui.select(
-			"Personal — pick a session",
-			options.map((option) => option.label),
-		);
-		if (selected === undefined) return false; // cancelled — start nothing
-		const pick = resolveSessionPick(options, selected);
-		if (!pick || pick.kind === "current") return true; // stay in this session
-		await armConnectIntent("connect", ctx.cwd);
-		if (pick.kind === "new") {
-			await ctx.newSession();
-		} else {
-			await ctx.switchSession(pick.path);
+		// Loop so a busy project stays navigable: the SDK's flat select has no scrollback,
+		// so an "Older/Newer" pick just re-opens the picker on that page instead of choosing.
+		let page = 0;
+		for (;;) {
+			const options = buildSessionPickerOptions(sessions, currentId, page);
+			const selected = await ctx.ui.select(
+				"Personal — pick a session",
+				options.map((option) => option.label),
+			);
+			if (selected === undefined) return false; // cancelled — start nothing
+			const pick = resolveSessionPick(options, selected);
+			if (!pick || pick.kind === "current") return true; // stay in this session
+			if (pick.kind === "page") {
+				page = pick.page;
+				continue;
+			}
+			await armConnectIntent("connect", ctx.cwd);
+			if (pick.kind === "new") {
+				await ctx.newSession();
+			} else {
+				await ctx.switchSession(pick.path);
+			}
+			return false; // the switch re-arms the bridge in the chosen session
 		}
-		return false; // the switch re-arms the bridge in the chosen session
 	};
 
 	const startConnect = async (
