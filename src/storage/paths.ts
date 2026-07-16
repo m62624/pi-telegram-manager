@@ -32,6 +32,11 @@ export interface TelegramPaths {
 	 */
 	dmStatePath: string;
 	/**
+	 * A one-shot note the session picker leaves for the next extension instance to
+	 * re-arm the bridge after a session switch (see `connect-intent.ts`).
+	 */
+	connectIntentPath: string;
+	/**
 	 * Files an earlier layout wrote, and only the migration runner may read.
 	 *
 	 * They are named here rather than spelled out inside the migration because a path
@@ -88,6 +93,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		chatStatePath: join(extensionDir, "chat-state.json"),
 		schemaVersionPath: join(extensionDir, "schema-version.json"),
 		dmStatePath: join(extensionDir, "dm-state.json"),
+		connectIntentPath: join(extensionDir, "connect-intent.json"),
 		legacy: {
 			sentRegistryPath: join(extensionDir, "sent-registry.json"),
 			consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),
