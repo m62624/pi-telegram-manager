@@ -66,3 +66,56 @@ function truncate(value: string, maxLen: number): string {
 	if (value.length <= maxLen) return value;
 	return `${value.slice(0, Math.max(0, maxLen - 1))}…`;
 }
+
+/** What the owner chose in the session picker. */
+export type SessionPick =
+	| { kind: "current" }
+	| { kind: "new" }
+	| { kind: "resume"; path: string };
+
+/** One picker row: the text shown, and the choice it stands for. */
+export interface SessionPickerOption {
+	label: string;
+	pick: SessionPick;
+}
+
+const CURRENT_LABEL = "● Current session";
+const NEW_LABEL = "＋ New session";
+
+/**
+ * The rows for the personal session picker: keep the current session, start a new one,
+ * or resume one of the project's others (newest first, the current one skipped since it
+ * is already the first row). Each resume row carries a last-modified stamp — a friendly
+ * cue AND what keeps two rows with the same preview apart, so a selection resolves back
+ * to exactly one session.
+ */
+export function buildSessionPickerOptions(
+	sessions: readonly SessionInfo[],
+	currentSessionId: string,
+): SessionPickerOption[] {
+	const options: SessionPickerOption[] = [
+		{ label: CURRENT_LABEL, pick: { kind: "current" } },
+		{ label: NEW_LABEL, pick: { kind: "new" } },
+	];
+	for (const session of sortSessionsByRecency(sessions)) {
+		if (session.id === currentSessionId) continue;
+		options.push({
+			label: `${sessionLabel(session, 44)}  ·  ${formatSessionTime(session.modified)}`,
+			pick: { kind: "resume", path: session.path },
+		});
+	}
+	return options;
+}
+
+/** Map the label the selector returned back to its choice (null if it matches none). */
+export function resolveSessionPick(
+	options: readonly SessionPickerOption[],
+	selectedLabel: string,
+): SessionPick | null {
+	return options.find((o) => o.label === selectedLabel)?.pick ?? null;
+}
+
+/** A compact, deterministic "MM-DD HH:mm" (UTC) stamp for a picker row. */
+function formatSessionTime(date: Date): string {
+	return date.toISOString().slice(5, 16).replace("T", " ");
+}

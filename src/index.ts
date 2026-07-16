@@ -159,6 +159,11 @@ import { resolveTelegramPaths } from "./pi/agent-dir";
 import { commandContextFromBase } from "./pi/command-ctx";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi/sdk";
 import { compact } from "./pi/sdk";
+import {
+	buildSessionPickerOptions,
+	listSessions,
+	resolveSessionPick,
+} from "./pi/session-list";
 import { createToolMatcher, type ToolMatcher } from "./pi/tool-allow";
 import {
 	CONSOLIDATION_DONE_END_TURN_HINT,
@@ -186,6 +191,7 @@ import {
 import {
 	createConnectIntentStore,
 	intentApplies,
+	type ReArmMode,
 } from "./storage/connect-intent";
 import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
@@ -2804,9 +2810,53 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		}
 	};
 
-	const startConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+	/** Leave a note for the next instance to re-arm this bridge after a session switch. */
+	const armConnectIntent = async (
+		mode: ReArmMode,
+		cwd: string,
+	): Promise<void> => {
+		await connectIntent.arm({ mode, cwd, armedAt: Date.now() });
+	};
+
+	/**
+	 * Ask the owner which session personal should run in, symmetric with the Telegram
+	 * `/resume` panel. Returns whether to start the bridge in the CURRENT session now
+	 * (true), or to stand down (false) because either the owner cancelled or we switched
+	 * to another session — in which case the note above steers the reloaded instance's
+	 * `session_start` to start the bridge there. TUI/RPC only; without a dialog the caller
+	 * simply keeps the current session.
+	 */
+	const runSessionPicker = async (
+		ctx: ExtensionCommandContext,
+	): Promise<boolean> => {
+		const currentId = ctx.sessionManager.getSessionId();
+		const sessions = await listSessions(ctx.cwd).catch(() => []);
+		const options = buildSessionPickerOptions(sessions, currentId);
+		const selected = await ctx.ui.select(
+			"Personal — pick a session",
+			options.map((option) => option.label),
+		);
+		if (selected === undefined) return false; // cancelled — start nothing
+		const pick = resolveSessionPick(options, selected);
+		if (!pick || pick.kind === "current") return true; // stay in this session
+		await armConnectIntent("connect", ctx.cwd);
+		if (pick.kind === "new") {
+			await ctx.newSession();
+		} else {
+			await ctx.switchSession(pick.path);
+		}
+		return false; // the switch re-arms the bridge in the chosen session
+	};
+
+	const startConnect = async (
+		ctx: ExtensionCommandContext,
+		opts: { pick?: boolean } = {},
+	): Promise<void> => {
 		activeCtx = ctx;
 		if (!(await installationIsComplete(ctx))) return;
+		// Only the explicit TUI command offers the picker; a re-arm and a phone-driven
+		// /switch both start the current session straight away.
+		if (opts.pick && ctx.hasUI && !(await runSessionPicker(ctx))) return;
 		if (!(await takeOverFrom(ctx, "personal"))) return;
 		const loaded = await loadSettingsAndToken(ctx);
 		if (!loaded) return;
@@ -3332,7 +3382,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.personal, {
 		description:
 			"Bind this terminal session to a Telegram chat (personal mode).",
-		handler: (_args, ctx) => startConnect(ctx),
+		handler: (_args, ctx) => startConnect(ctx, { pick: true }),
 	});
 	// Business manager: answer other people on the owner's behalf.
 	pi.registerCommand(COMMANDS.manager, {
