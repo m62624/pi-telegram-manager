@@ -184,8 +184,10 @@ export function proseResolveDirective(draft: string): string {
 	return (
 		"[HELD-DRAFT TURN. Your previous turn was plain text, which is NEVER delivered " +
 		`to Telegram: «${draft}». That was almost certainly your reply, written the ` +
-		"wrong way — the interlocutor has NOT seen it. It is not lost: it is held as a " +
-		"draft, and this turn decides what happens to it.\n" +
+		"wrong way — it has NOT been sent to the chat. It is not lost: it is held as a " +
+		"draft, and this turn decides what happens to it. It is a reply to the active " +
+		"chat — do not re-analyse who it is for or open a fresh decision; this turn is " +
+		"only send / refine / drop.\n" +
 		"manager_reply and manager_silent are DISABLED this turn — calling either fails " +
 		"and wastes the turn. The ONE tool that ends this turn is manager_resolve_draft " +
 		"(it IS available, whatever you assume about your tool list):\n" +
@@ -1268,17 +1270,43 @@ export class ManagerController {
 		// so a composed answer is never silently lost. A sent draft reads as a considered
 		// reply (category question) and bypasses the chatter guard below.
 		const prose = finalText?.trim();
-		if (decisionKind === "none" && prose && !this.pendingReply.has(active)) {
-			this.pendingReply.set(active, { text: prose, fromProse: true });
-			await this.triggerTurn();
-			return { ...contact, outcome: "corrected", text: prose };
-		}
-		// New interlocutor message(s) arrived while this turn was generating: don't
-		// send the now-stale draft blind. Hold it, keep the chat unserved, and let the
-		// model reconsider next turn against the newer messages (revise or resend) —
-		// but only up to reviseThreshold times, so a rapid sender cannot defer the
-		// reply forever; past the cap the draft is sent as-is.
+		// New message(s) arrived while this turn was generating: a draft must be
+		// reconsidered against them, not sent blind.
 		const arrivedMidTurn = this.dirtyDuringTurn.delete(active);
+		// Which side pulled the bot into this turn — read before the cleanup below clears
+		// `ownerSummoned`. It scopes the over-reply guard and the reply's thread target,
+		// and it gates the prose fast-path just below.
+		const triggerSide: TriggerSide = this.ownerSummoned.has(active)
+			? "owner"
+			: "interlocutor";
+		// The model ended in plain text without a tool call — plain text is never
+		// delivered to Telegram, so the composed answer would be lost.
+		//
+		// When the OWNER summoned this turn, a reply is already expected — they asked
+		// outright — so a prose answer with nothing new since IS that reply: send it
+		// directly, no resolve-draft hop and no confused spiral over who it is for. This
+		// is deliberately owner-only: it must never nudge a reply where the silence
+		// hierarchy did not already call for one. For every other prose the behaviour is
+		// unchanged — it is held and routed through the resolve gate, where the model can
+		// still drop it (it may have been only its own reasoning, or a message it meant
+		// to let pass in silence).
+		if (decisionKind === "none" && prose && !this.pendingReply.has(active)) {
+			if (triggerSide === "owner" && !arrivedMidTurn) {
+				text = prose;
+				decisionKind = "reply";
+				category = "question";
+				needsReply = true;
+			} else {
+				this.pendingReply.set(active, { text: prose, fromProse: true });
+				await this.triggerTurn();
+				return { ...contact, outcome: "corrected", text: prose };
+			}
+		}
+		// A tool-call reply held because newer messages arrived: don't send the now-
+		// stale draft blind. Hold it, keep the chat unserved, and let the model
+		// reconsider next turn (revise or resend) — but only up to reviseThreshold
+		// times, so a rapid sender cannot defer the reply forever; past the cap it is
+		// sent as-is.
 		if (text && arrivedMidTurn) {
 			const cycles = this.reviseCount.get(active) ?? 0;
 			if (cycles < this.deps.reviseThreshold) {
@@ -1288,12 +1316,6 @@ export class ManagerController {
 				return { ...contact, outcome: "held", text, category };
 			}
 		}
-		// Which side pulled the bot into this turn — captured before the cleanup below
-		// clears `ownerSummoned`. It scopes both the over-reply guard and the reply's
-		// thread target to the right party (owner summons vs. an interlocutor's ask).
-		const triggerSide: TriggerSide = this.ownerSummoned.has(active)
-			? "owner"
-			: "interlocutor";
 		// The turn settled — this chat is served, whatever the model decided.
 		this.unserved.delete(active);
 		this.ownerSummoned.delete(active);

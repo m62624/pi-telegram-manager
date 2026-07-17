@@ -397,6 +397,42 @@ describe("ManagerController", () => {
 		expect(sendReply.mock.calls[0][0].text).toContain("once per order");
 	});
 
+	it("sends an owner-summoned prose reply directly, without a resolve-draft hop", async () => {
+		const { controller, sendReply, clock } = await setup(["qwen"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("qwen, what do you see?", 100),
+		});
+		clock.advance(1);
+		await controller.onTick();
+		// The owner asked outright, so a prose answer IS the reply: delivered this
+		// turn (no held draft, no revise turn), threaded to the owner's question.
+		await controller.onAgentEnd("It's a meme about open-source models.");
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].text).toContain("It's a meme");
+		expect(sendReply.mock.calls[0][0].replyToMessageId).toBe(100);
+		expect(controller.isReviseTurn()).toBe(false);
+	});
+
+	it("still holds an INTERLOCUTOR prose reply through the resolve gate (no direct send)", async () => {
+		const { controller, sendReply, clock } = await setup(["qwen"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("are you there?", 5, 1),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		// Not an owner summons: the prose is held, not sent — the model can still drop
+		// it on the resolve turn if it was only reasoning.
+		await controller.onAgentEnd("Yes, here.");
+		expect(sendReply).not.toHaveBeenCalled();
+		expect(controller.isReviseTurn()).toBe(true);
+	});
+
 	it("returns a turn log describing the decision (for the owner debug feed)", async () => {
 		const { controller, clock } = await setup();
 		await controller.onBusinessMessage({
