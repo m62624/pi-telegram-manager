@@ -102,7 +102,11 @@ describe("TelegramClient update de-duplication", () => {
 	it("dispatches a fresh update but skips a redelivery after a restart", async () => {
 		const seen = new Set<number>();
 		const { client, events } = clientWith({
-			claim: async (id) => (seen.has(id) ? false : (seen.add(id), true)),
+			claim: async (id) => {
+				if (seen.has(id)) return false;
+				seen.add(id);
+				return true;
+			},
 		});
 		const update = { update_id: 7, message } as Update;
 		await client.bot.handleUpdate(update);
