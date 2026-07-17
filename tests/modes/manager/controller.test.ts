@@ -5,9 +5,12 @@ import { buildIsolatedMessages } from "../../../src/modes/manager/context-isolat
 import {
 	ManagerController,
 	type ManagerControllerDeps,
+	triggerHint,
+	triggerMessage,
 } from "../../../src/modes/manager/controller";
 import { createBusinessStore } from "../../../src/storage/business-store";
 import { createChatState } from "../../../src/storage/chat-state";
+import type { ChatMessageRecord } from "../../../src/storage/chat-store";
 import { createChatStore, ownWords } from "../../../src/storage/chat-store";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
@@ -179,6 +182,55 @@ describe("ManagerController", () => {
 		});
 		await controller.onAgentEnd();
 		expect(sendReply.mock.calls[1][0].replyToMessageId).toBe(11);
+	});
+
+	it("an owner-summoned reply threads to the OWNER's message, not a trailing interlocutor line", async () => {
+		const { controller, sendReply } = await setup(["qwen"]);
+		// The owner summons the bot to look at something (their message #100)...
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("qwen, what do you see?", 100),
+		});
+		// ...then a bystander drops a laugh (#200) before the turn runs.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("🤣🤣🤣", 5, 200),
+		});
+		await controller.onTick();
+		// The owner pulled the bot in, so the reply threads to the owner's question,
+		// never to the interlocutor's trailing sticker.
+		controller.decisionSink().record({ kind: "reply", text: "It's a meme." });
+		await controller.onAgentEnd();
+		expect(sendReply).toHaveBeenCalledTimes(1);
+		expect(sendReply.mock.calls[0][0].replyToMessageId).toBe(100);
+	});
+
+	it("ignores a reply_to that points at the other party — it threads to the trigger's side", async () => {
+		const { controller, sendReply } = await setup(["qwen"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("qwen, look at this", 100),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("😂", 5, 200),
+		});
+		await controller.onTick();
+		// Owner-summoned turn, but the model wrongly asks to thread to the bystander's
+		// message #200 — it is rejected and the reply threads to the owner's #100.
+		controller
+			.decisionSink()
+			.record({ kind: "reply", text: "A meme.", replyTo: 200 });
+		await controller.onAgentEnd();
+		expect(sendReply.mock.calls[0][0].replyToMessageId).toBe(100);
 	});
 
 	it("does not skip a message that arrives mid-turn — holds the draft and reconsiders", async () => {
@@ -2319,5 +2371,62 @@ describe("a memory pass is not a conversation", () => {
 
 		expect(controller.isConsolidating()).toBe(false);
 		expect(controller.decisionSink().current().kind).toBe("none");
+	});
+});
+
+function record(
+	author: ChatMessageRecord["author"],
+	text: string,
+	messageId: number,
+	senderName?: string,
+): ChatMessageRecord {
+	return { author, text, messageId, senderName, timestamp: 0 };
+}
+
+describe("triggerMessage", () => {
+	const records = [
+		record("owner", "qwen, look", 100),
+		record("interlocutor", "haha", 200, "Ada"),
+		record("bot", "on it", 300),
+	];
+
+	it("finds the latest message from the given side, skipping the other party", () => {
+		expect(triggerMessage(records, "owner")?.messageId).toBe(100);
+		expect(triggerMessage(records, "interlocutor")?.messageId).toBe(200);
+	});
+
+	it("returns undefined when that side never spoke", () => {
+		expect(triggerMessage([record("bot", "hi", 1)], "owner")).toBeUndefined();
+	});
+});
+
+describe("triggerHint", () => {
+	const owner = record("owner", "qwen, what is this?", 100);
+	const asking = record("interlocutor", "qwen are you there?", 200, "Ada");
+	const waiting = record("interlocutor", "when does it open?", 200, "Ada");
+
+	it("tells the model an owner summons is addressed to it, anchored to the owner's id", () => {
+		const hint = triggerHint([owner], "owner", ["qwen"]);
+		expect(hint).toContain("Owner");
+		expect(hint).toContain("[#100]");
+		expect(hint).toContain("YOU");
+	});
+
+	it("flags an interlocutor wake-word as very likely a direct question", () => {
+		const hint = triggerHint([asking], "interlocutor", ["qwen"]);
+		expect(hint).toContain("Ada");
+		expect(hint).toContain("wake-word");
+		expect(hint).toContain("[#200]");
+	});
+
+	it("nudges toward the waiting interlocutor without over-forcing a reply", () => {
+		const hint = triggerHint([waiting], "interlocutor", ["qwen"]);
+		expect(hint).toContain("Ada");
+		expect(hint.toLowerCase()).toContain("if a reply is warranted");
+		expect(hint).toContain("[#200]");
+	});
+
+	it("is empty when there is nothing from the trigger side to point at", () => {
+		expect(triggerHint([record("bot", "hi", 1)], "owner", [])).toBe("");
 	});
 });

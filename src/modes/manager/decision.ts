@@ -271,7 +271,7 @@ export function createManagerTools(
 				reply_to: {
 					type: "number",
 					description:
-						"Optional: the message id (the number in the [#id] tag) this reply answers, so the chat shows which message you replied to. Omit to reply to their latest message.",
+						"Optional: the message id (the number in the [#id] tag) this reply answers, so the chat shows which message you replied to — pick the message from the party who addressed you (the one the turn directive names). Omit to thread to their latest message.",
 				},
 			},
 			required: ["category", "needs_reply", "text"],
