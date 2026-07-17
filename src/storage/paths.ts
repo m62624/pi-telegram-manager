@@ -37,6 +37,12 @@ export interface TelegramPaths {
 	 */
 	connectIntentPath: string;
 	/**
+	 * The high-water mark of Telegram `update_id`s already taken in, so a message
+	 * whose handler killed the process (a `shutdown`) is not redelivered and re-run
+	 * on the next start — see `update-cursor.ts`.
+	 */
+	updateCursorPath: string;
+	/**
 	 * Files an earlier layout wrote, and only the migration runner may read.
 	 *
 	 * They are named here rather than spelled out inside the migration because a path
@@ -94,6 +100,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		schemaVersionPath: join(extensionDir, "schema-version.json"),
 		dmStatePath: join(extensionDir, "dm-state.json"),
 		connectIntentPath: join(extensionDir, "connect-intent.json"),
+		updateCursorPath: join(extensionDir, "update-cursor.json"),
 		legacy: {
 			sentRegistryPath: join(extensionDir, "sent-registry.json"),
 			consolidationQueuePath: join(extensionDir, "consolidation-queue.json"),

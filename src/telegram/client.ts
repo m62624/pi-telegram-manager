@@ -12,6 +12,7 @@
  * tested; the grammY `Bot` wiring itself is glue.
  */
 import { Bot, InputFile, type PollingOptions, type RawApi } from "grammy";
+import type { UpdateCursor } from "../storage/update-cursor";
 import { classifyUpdate, type TelegramEvent } from "./updates";
 
 /** A classified event handler; may be async. Thrown errors go to `onError`. */
@@ -65,6 +66,13 @@ export interface TelegramClientOptions {
 	allowedUpdates?: PollingOptions["allowed_updates"];
 	/** Drop updates that piled up while the bot was offline (default true). */
 	dropPendingUpdates?: boolean;
+	/**
+	 * De-duplicate redelivered updates across restarts. Needed only when
+	 * `dropPendingUpdates` is false (the backlog is kept): without it, an update
+	 * whose handler killed the process — a `shutdown` — is redelivered and re-run
+	 * on the next start. See `update-cursor.ts`.
+	 */
+	updateCursor?: UpdateCursor;
 }
 
 export class TelegramClient {
@@ -74,7 +82,18 @@ export class TelegramClient {
 	constructor(options: TelegramClientOptions) {
 		this.options = options;
 		this.bot = new Bot(options.token);
-		this.bot.use((ctx) => dispatchUpdate(ctx.update, options.onEvent));
+		this.bot.use(async (ctx) => {
+			// Claim the update before dispatching it: a redelivery after a restart
+			// (an id at or below the mark) is acknowledged but not re-run, so a
+			// handler that killed the process cannot re-fire on boot.
+			if (
+				options.updateCursor &&
+				!(await options.updateCursor.claim(ctx.update.update_id))
+			) {
+				return;
+			}
+			await dispatchUpdate(ctx.update, options.onEvent);
+		});
 		this.bot.catch((error) => {
 			options.onError?.(error.error);
 		});

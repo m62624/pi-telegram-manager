@@ -203,6 +203,7 @@ import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
 import { migrateStorage } from "./storage/migrations";
 import { createSingletonStore } from "./storage/singleton-store";
+import { createUpdateCursor } from "./storage/update-cursor";
 import {
 	fetchBytesFromUrl,
 	fileBaseUrl,
@@ -3212,6 +3213,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// are redelivered on start, so the bot can catch up on what it missed
 			// (mode 1 keeps the default drop — stale terminal commands are unwanted).
 			dropPendingUpdates: false,
+			// ...but de-dupe that backlog by update id, so a message whose handler
+			// killed the process (a `shutdown`) is not redelivered and re-run on boot.
+			updateCursor: createUpdateCursor(fs, paths.updateCursorPath),
 		});
 		if (settings.allowedUserId) {
 			await setupTopics(
