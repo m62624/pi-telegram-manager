@@ -64,6 +64,62 @@ describe("dispatchUpdate", () => {
 	});
 });
 
+describe("TelegramClient update de-duplication", () => {
+	const message = {
+		message_id: 1,
+		date: 0,
+		chat: { id: 42, type: "private", first_name: "A" },
+		from: { id: 7, is_bot: false, first_name: "A" },
+		text: "hi",
+	};
+
+	function clientWith(updateCursor?: {
+		claim: (id: number) => Promise<boolean>;
+	}) {
+		const events: TelegramEvent[] = [];
+		const client = new TelegramClient({
+			token: "123:ABC",
+			onEvent: (event) => {
+				events.push(event);
+			},
+			updateCursor,
+		});
+		// Avoid a getMe network call: handleUpdate builds a Context from botInfo.
+		client.bot.botInfo = {
+			id: 1,
+			is_bot: true,
+			first_name: "Bot",
+			username: "bot",
+			can_join_groups: true,
+			can_read_all_group_messages: false,
+			supports_inline_queries: false,
+			can_connect_to_business: true,
+			has_main_web_app: false,
+		};
+		return { client, events };
+	}
+
+	it("dispatches a fresh update but skips a redelivery after a restart", async () => {
+		const seen = new Set<number>();
+		const { client, events } = clientWith({
+			claim: async (id) => (seen.has(id) ? false : (seen.add(id), true)),
+		});
+		const update = { update_id: 7, message } as Update;
+		await client.bot.handleUpdate(update);
+		// The same update, redelivered because its handler never let the offset
+		// advance (a shutdown). It must not reach the handler a second time.
+		await client.bot.handleUpdate(update);
+		expect(events).toHaveLength(1);
+	});
+
+	it("dispatches every update when no cursor is configured", async () => {
+		const { client, events } = clientWith();
+		await client.bot.handleUpdate({ update_id: 7, message } as Update);
+		await client.bot.handleUpdate({ update_id: 7, message } as Update);
+		expect(events).toHaveLength(2);
+	});
+});
+
 describe("TelegramClient.sendDocument", () => {
 	function clientWithSpy() {
 		const client = new TelegramClient({
