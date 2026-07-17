@@ -199,16 +199,6 @@ export function proseResolveDirective(draft: string): string {
 	);
 }
 
-/**
- * Nudge added when the latest interlocutor message contains a configured
- * wake-word: it fast-tracked the message here, but only a genuine question to the
- * bot warrants a reply — a word used in passing does not.
- */
-export const MENTION_HINT =
-	"[A wake-word for you appears in the latest message. Reply ONLY if it is a " +
-	"direct question or request addressed to you; if the word is just mentioned in " +
-	"passing (describing something, not asking you), stay silent.]";
-
 /** System block for an idle memory-consolidation turn (no reply is sent). */
 export const CONSOLIDATION_INSTRUCTIONS =
 	"You are reviewing a finished Telegram conversation to update your private " +
@@ -433,28 +423,92 @@ function messageContext(message: Message): string | undefined {
 }
 
 /**
- * Pick the message a reply threads to (Telegram `reply_parameters.message_id`):
- * the model's requested `[#id]` when it is a real inbound message in this chat,
- * otherwise the latest interlocutor message — so a reply is always visibly
- * attached to what it answers. Undefined when there is nothing to thread to.
+ * Which side pulled the bot into the current turn — and therefore whom a reply
+ * answers. The owner summons with a wake-word; an interlocutor asks a question.
+ * Both are `role: "user"` to the model (only the bot is `assistant`), so the
+ * distinction lives in the stored {@link ChatAuthor}, never in the LLM role.
+ */
+export type TriggerSide = "owner" | "interlocutor";
+
+/**
+ * The message the current turn answers: the latest one from the trigger's own
+ * side. When the owner summoned the bot, that is the owner's most recent line
+ * (their wake-word/question), NOT some bystander's trailing sticker; when an
+ * interlocutor asked, it is their latest line.
+ */
+export function triggerMessage(
+	records: readonly ChatMessageRecord[],
+	side: TriggerSide,
+): ChatMessageRecord | undefined {
+	for (let i = records.length - 1; i >= 0; i -= 1) {
+		if (records[i].author === side) return records[i];
+	}
+	return undefined;
+}
+
+/**
+ * Pick the message a reply threads to (Telegram `reply_parameters.message_id`),
+ * SCOPED to the side that triggered the turn. The model's requested `[#id]` is
+ * honoured only when it is a real inbound message FROM THAT SIDE; otherwise the
+ * reply threads to the latest message from that side. A reply therefore never
+ * attaches to the other party — an owner-summoned answer cannot land on a
+ * bystander's laugh, and an interlocutor's answer cannot land on the owner's
+ * aside. Undefined when there is nothing on that side to thread to.
  */
 function resolveReplyTarget(
 	records: readonly ChatMessageRecord[],
 	requested: number | undefined,
+	side: TriggerSide,
 ): number | undefined {
 	if (
 		requested !== undefined &&
-		records.some((r) => r.messageId === requested && r.author !== "bot")
+		records.some((r) => r.messageId === requested && r.author === side)
 	) {
 		return requested;
 	}
-	for (let i = records.length - 1; i >= 0; i -= 1) {
-		const record = records[i];
-		if (record.author === "interlocutor" && record.messageId !== undefined) {
-			return record.messageId;
-		}
+	return triggerMessage(records, side)?.messageId;
+}
+
+/**
+ * The trailing nudge that names WHO pulled the bot into this turn and which
+ * message to thread the reply to — the same "here is who you answer" contract
+ * the draft-resolution directive uses. It rides in the volatile trailing block,
+ * never the cached head. A wake-word on the trigger message raises the pull
+ * toward replying; without one, the bot still weighs whether an answer is owed.
+ * Empty when there is no message from the trigger side to point at.
+ */
+export function triggerHint(
+	records: readonly ChatMessageRecord[],
+	side: TriggerSide,
+	mentionWords: readonly string[],
+): string {
+	const message = triggerMessage(records, side);
+	if (!message) return "";
+	const anchor =
+		message.messageId !== undefined ? `[#${message.messageId}]` : "";
+	const at = anchor ? ` ${anchor}` : "";
+	if (side === "owner") {
+		return (
+			`[The Owner pulled you into this turn — their message${at} is addressed ` +
+			`to YOU. Answer the Owner and thread your reply to${at}, not to anyone ` +
+			`else in the chat. Only stay silent if the wake-word was used in passing, ` +
+			`asking nothing of you.]`
+		);
 	}
-	return undefined;
+	const who = message.senderName
+		? `Interlocutor (${message.senderName})`
+		: "The interlocutor";
+	if (matchesMention(message.text, mentionWords)) {
+		return (
+			`[${who} used a wake-word for you in message${at} — very likely a direct ` +
+			`question to you. Reply and thread it to${at}, unless the word is only ` +
+			`mentioned in passing (describing something, not asking you), then stay silent.]`
+		);
+	}
+	return (
+		`[${who} is waiting on message${at}. If a reply is warranted, thread it ` +
+		`to${at} — reply to THEM, not to anyone else in the chat.]`
+	);
 }
 
 /** A short human-readable state line injected so the model decides deliberately. */
@@ -1234,6 +1288,12 @@ export class ManagerController {
 				return { ...contact, outcome: "held", text, category };
 			}
 		}
+		// Which side pulled the bot into this turn — captured before the cleanup below
+		// clears `ownerSummoned`. It scopes both the over-reply guard and the reply's
+		// thread target to the right party (owner summons vs. an interlocutor's ask).
+		const triggerSide: TriggerSide = this.ownerSummoned.has(active)
+			? "owner"
+			: "interlocutor";
 		// The turn settled — this chat is served, whatever the model decided.
 		this.unserved.delete(active);
 		this.ownerSummoned.delete(active);
@@ -1256,18 +1316,17 @@ export class ManagerController {
 						this.deps.rememberMessages,
 					)
 				: [];
-			// Strict guard against a weak model over-replying to banter: unless the
-			// interlocutor addressed the bot directly (by category or a wake-word),
-			// drop a reply the model itself tagged as chatter/acknowledgement or as
-			// not needing an answer.
+			// Strict guard against a weak model over-replying to banter: unless the bot
+			// was addressed directly — by category, an owner summons, or a wake-word on
+			// the trigger's own message — drop a reply the model itself tagged as
+			// chatter/acknowledgement or as not needing an answer.
 			if (this.deps.strictReplyGuard && decisionKind === "reply") {
-				const lastInterlocutor = [...records]
-					.reverse()
-					.find((record) => record.author === "interlocutor");
+				const trigger = triggerMessage(records, triggerSide);
 				const addressed =
 					category === "addressed_to_bot" ||
-					(lastInterlocutor !== undefined &&
-						matchesMention(lastInterlocutor.text, this.deps.mentionWords));
+					triggerSide === "owner" ||
+					(trigger !== undefined &&
+						matchesMention(trigger.text, this.deps.mentionWords));
 				const lowValue =
 					category === "chatter" ||
 					category === "acknowledgement" ||
@@ -1278,7 +1337,11 @@ export class ManagerController {
 				}
 			}
 			if (text && meta) {
-				deliveredReplyTo = resolveReplyTarget(records, requestedReplyTo);
+				deliveredReplyTo = resolveReplyTarget(
+					records,
+					requestedReplyTo,
+					triggerSide,
+				);
 				// Pass the raw reply text; the send layer applies the labeler, the bot
 				// marker, and the business-safe classic-HTML formatting.
 				const ids = await this.deps.sendReply({
@@ -1410,15 +1473,18 @@ export class ManagerController {
 					? proseResolveDirective(pending.text)
 					: reviseDirective(pending.text)
 				: MANAGER_ACTION_TRIGGER;
-		// Flag a wake-word in the latest interlocutor line so the model weighs whether
-		// it is really addressed vs. the word just being mentioned.
-		const lastInterlocutor = [...records]
-			.reverse()
-			.find((record) => record.author === "interlocutor");
-		const mentionHint =
-			lastInterlocutor &&
-			matchesMention(lastInterlocutor.text, this.deps.mentionWords)
-				? `\n\n${MENTION_HINT}`
+		// Name who pulled the bot into this turn — the owner (a summons) or the
+		// interlocutor (a waiting message) — and which message to thread a reply to,
+		// so the answer attaches to the right party, not a bystander's trailing line.
+		// Only on an action turn (not a done/revise directive) and only when there is
+		// actually something owed: a summons open, or the interlocutor left waiting.
+		const triggerSide: TriggerSide = this.ownerSummoned.has(active)
+			? "owner"
+			: "interlocutor";
+		const owed = this.ownerSummoned.has(active) || state.interlocutorWaiting;
+		const hint =
+			directive === MANAGER_ACTION_TRIGGER && owed
+				? triggerHint(records, triggerSide, this.deps.mentionWords)
 				: "";
 		return [
 			{ role: "user", content: system },
@@ -1429,7 +1495,7 @@ export class ManagerController {
 					this.nowLine(),
 					opener,
 					known,
-					`${stateSummary(state)}${mentionHint}`,
+					`${stateSummary(state)}${hint ? `\n\n${hint}` : ""}`,
 					directive,
 				]
 					.filter((part) => part.trim())
