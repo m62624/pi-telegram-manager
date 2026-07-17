@@ -39,7 +39,7 @@
 	"license": "MIT",
 	"scripts": {
 		"build": "tsc",
-		"check": "biome check .",
+		"check": "biome check --error-on-warnings .",
 		"ci": "npm run check && npm run build && npm test && npm pack --dry-run",
 		"format": "biome format --write .",
 		"test": "vitest run",
