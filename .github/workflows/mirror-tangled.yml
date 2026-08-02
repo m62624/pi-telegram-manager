@@ -23,6 +23,13 @@ jobs:
   mirror:
     name: Push main to Tangled
     runs-on: ubuntu-latest
+    # The Tangled mirror is a secondary copy, not the source of truth (GitHub is).
+    # Tangled's knot can be briefly unavailable — e.g. read-only during one of
+    # their migrations — which is out of our control, so a failed mirror must NOT
+    # fail the whole workflow run. It retries in-step (below) to ride over a short
+    # blip, and `continue-on-error` keeps a longer Tangled outage from turning the
+    # run red; the next push (or the manual dispatch button) re-drives the mirror.
+    continue-on-error: true
     # Skip on forks: only this owner's repo holds the Tangled credentials.
     # Match on owner (not the full name) so renaming the repo can't silently
     # turn this condition false and skip the job again.
@@ -66,5 +73,24 @@ jobs:
           # Only main is mirrored (feature branches stay on GitHub). Force so the
           # mirror is always a faithful copy of GitHub's main, even after a
           # history rewrite; tags follow so releases show up on Tangled.
-          git push --force tangled main
-          git push --force tangled --tags
+          #
+          # Retry to ride over a transient knot hiccup (network blip, or the knot
+          # briefly read-only mid-migration). A push is idempotent — re-running
+          # after a partial success just re-syncs, so a plain retry is safe. If
+          # Tangled stays down past the attempts, the job's `continue-on-error`
+          # keeps the run green and the next push re-drives the mirror.
+          push_mirror() {
+            git push --force tangled main &&
+              git push --force tangled --tags
+          }
+          max=5
+          attempt=1
+          until push_mirror; do
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::warning::Tangled mirror still failing after ${max} attempts — likely a knot-side outage (see https://docs.tangled.org). Leaving the run green; the next push will re-drive it."
+              exit 1
+            fi
+            echo "mirror attempt ${attempt}/${max} failed — retrying in $((attempt * 10))s"
+            sleep "$((attempt * 10))"
+            attempt="$((attempt + 1))"
+          done
