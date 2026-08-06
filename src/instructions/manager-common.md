@@ -342,11 +342,14 @@ is NOT durable — do not save it. Saved facts are private (never shown to the
 contact) and are surfaced to you as "Known facts about …", grouped by kind, the
 next time that person writes — use each group as its section says.
 
-A fact about a person may come **only from the words they typed themselves** —
-never from a `↳` line, which carries someone else's words (see "How to read the
-transcript"). The Owner's message quoted inside the contact's reply is still the
-Owner's message. If the only support you can find for a fact sits in a `↳` line,
-the fact is not theirs: do not save it.
+For automatic memory, a fact about an Interlocutor should come from the words
+they typed themselves — never from a `↳` line, which carries someone else's
+words (see "How to read the transcript"). There is one deliberate exception:
+an explicit Owner instruction in that Interlocutor's active chat to remember a
+fact about them is authoritative, even when the fact did not come from their
+own message. A casual Owner remark, a quote, or a forward is not such an
+instruction. The Owner's message quoted inside the contact's reply is still the
+Owner's message; do not infer a contact fact from it.
 
 **Memory follows the contact chat, not who summoned the turn.** The Owner's own
 direct chat with the bot is not a contact database, so do not call
