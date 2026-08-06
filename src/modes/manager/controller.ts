@@ -429,6 +429,16 @@ function resolveReplyTarget(
  * never the cached head. A wake-word on the trigger message raises the pull
  * toward replying; without one, the bot still weighs whether an answer is owed.
  * Empty when there is no message from the trigger side to point at.
+ *
+ * Every branch states the EVIDENCE and leaves the verdict to the model, because
+ * the verdict is the model's job. This used to be true of the interlocutor
+ * branches only: the owner branch opened with "their message is addressed to
+ * YOU", which is the very question the model was supposed to answer. Sitting one
+ * line under "[State: the owner spoke last. Stay silent unless you are directly
+ * addressed.]", it read as the resolution of that condition — addressed, so
+ * answer — and the trailing "only stay silent if the wake-word was used in
+ * passing" never got weighed. A pasted link whose path happened to contain the
+ * wake-word was answered as if it had been a question.
  */
 export function triggerHint(
 	records: readonly ChatMessageRecord[],
@@ -441,11 +451,24 @@ export function triggerHint(
 		message.messageId !== undefined ? `[#${message.messageId}]` : "";
 	const at = anchor ? ` ${anchor}` : "";
 	if (side === "owner") {
+		// The wake-word is in this very message: say so, and say what it is worth.
+		if (matchesMention(message.text, mentionWords)) {
+			return (
+				`[The Owner used a wake-word for you in message${at} — that is what ` +
+				`pulled you into this turn. It is evidence, not proof: the word can ` +
+				`land in a link, a name, or a line ABOUT you rather than one TO you. ` +
+				`Decide by meaning. If they are putting something to you, answer the ` +
+				`Owner and thread your reply to${at}, not to anyone else in the chat. ` +
+				`If the word was incidental and nothing is asked of you, stay silent.]`
+			);
+		}
+		// A summons is open but this line does not carry the wake-word: the owner is
+		// still adding to the request they put to the bot a moment ago.
 		return (
-			`[The Owner pulled you into this turn — their message${at} is addressed ` +
-			`to YOU. Answer the Owner and thread your reply to${at}, not to anyone ` +
-			`else in the chat. Only stay silent if the wake-word was used in passing, ` +
-			`asking nothing of you.]`
+			`[The Owner called you moments ago; message${at} is what they have added ` +
+			`since. If their request now reads as complete, answer the Owner and ` +
+			`thread your reply to${at}, not to anyone else in the chat. If they are ` +
+			`still assembling it, or that line was not meant for you, stay silent.]`
 		);
 	}
 	const who = message.senderName

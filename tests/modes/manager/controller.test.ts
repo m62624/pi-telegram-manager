@@ -2376,11 +2376,24 @@ describe("triggerHint", () => {
 	const asking = record("interlocutor", "qwen are you there?", 200, "Ada");
 	const waiting = record("interlocutor", "when does it open?", 200, "Ada");
 
-	it("tells the model an owner summons is addressed to it, anchored to the owner's id", () => {
+	it("reports an owner wake-word as evidence, leaving the verdict to the model", () => {
 		const hint = triggerHint([owner], "owner", ["qwen"]);
 		expect(hint).toContain("Owner");
 		expect(hint).toContain("[#100]");
-		expect(hint).toContain("YOU");
+		expect(hint).toContain("wake-word");
+		// It must not settle the question the model is there to settle: a
+		// wake-word can land in a link or a name without asking anything.
+		expect(hint).toContain("evidence, not proof");
+		expect(hint).toContain("stay silent");
+		expect(hint).not.toContain("is addressed to YOU");
+	});
+
+	it("frames a follow-up to an open summons as still-assembling, not a new demand", () => {
+		const followUp = record("owner", "https://example.com/x", 120);
+		const hint = triggerHint([owner, followUp], "owner", ["qwen"]);
+		expect(hint).toContain("[#120]");
+		expect(hint).toContain("added");
+		expect(hint).toContain("stay silent");
 	});
 
 	it("flags an interlocutor wake-word as very likely a direct question", () => {
