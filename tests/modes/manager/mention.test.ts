@@ -33,6 +33,32 @@ describe("matchesMention", () => {
 		expect(matchesMention("bro mini", ["mini bro"])).toBe(false);
 	});
 
+	it("ignores a wake-word that only occurs inside a link", () => {
+		const words = ["llm", "manager"];
+		// A link to this very project: every path segment normalizes to a bare
+		// token, so "manager" used to read as a summons.
+		expect(
+			matchesMention(
+				"https://github.com/m62624/pi-telegram-manager/pull/47",
+				words,
+			),
+		).toBe(false);
+		expect(matchesMention("www.example.com/llm/docs", words)).toBe(false);
+		expect(matchesMention("tg://resolve?domain=manager", words)).toBe(false);
+		// Bare punctuation still splits tokens: only links are exempt.
+		expect(matchesMention("pi-telegram-manager", words)).toBe(true);
+	});
+
+	it("still matches a wake-word spoken alongside a link", () => {
+		const words = ["llm", "manager"];
+		expect(
+			matchesMention(
+				"manager, глянь https://github.com/m62624/pi-telegram-manager/pull/47",
+				words,
+			),
+		).toBe(true);
+	});
+
 	it("returns false for empty text or an empty word list", () => {
 		expect(matchesMention("", ["llm"])).toBe(false);
 		expect(matchesMention("hello llm", [])).toBe(false);
