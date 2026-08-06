@@ -15,22 +15,22 @@
  *
  * So the tool set is a function of the turn, with one rule and no overlap:
  *
- *  - **consolidation** — the three interrogation probes, and nothing else. No reply, no
- *    silence, no memory tool, no computer. There is nobody to talk to on this turn. Once
- *    the pass has answered its last step: no tools at all, so the only way left to end the
- *    run is the word the context asks for.
+ *  - **consolidation** — the memory verbs, and nothing else. No reply, no silence, no
+ *    computer: there is nobody to talk to on this turn. Once the pass has said it is
+ *    finished: no tools at all, so the only way left to end the run is the word the
+ *    context asks for.
  *  - **revise** — `manager_resolve_draft` alone: a reply of the model's own is held, and
  *    resolving it is the only way the turn can end.
  *  - **ordinary** — the owner's sandbox allowlist, minus the tools that belong to the two
- *    turns above. A turn where those existed would be a turn the model could mistake for
- *    one of them.
+ *    turns above (except `manager_remember`, which belongs to both: see below). A turn
+ *    where the others existed would be a turn the model could mistake for a pass.
  *
  * Pure, and separate from the composition root precisely so that it can be tested: the
  * bug this file exists to prevent was invisible in code review for exactly as long as the
  * rule lived inline in a wiring expression.
  */
 import { MANAGER_RESOLVE_TOOL_NAME } from "./decision";
-import { INTERROGATION_TOOL_NAMES } from "./interrogation";
+import { MEMORY_REPLY_TOOL_NAME, MEMORY_TOOL_NAMES } from "./memory-tools";
 
 /** Matches a tool by name (structurally the runtime's `ToolMatcher`). */
 export interface ToolNameMatcher {
@@ -42,13 +42,13 @@ export interface ManagerTurnKind {
 	/** A background memory pass is running (`isConsolidating`). */
 	consolidating: boolean;
 	/**
-	 * The memory pass has answered every step and is only waiting for the run to end
-	 * (`isConsolidationDone`). There is no probe left to call, so there is no tool left
-	 * to offer: the context says so in words, and the tool list must say the same thing.
+	 * The memory pass is over and only waiting for the run to end
+	 * (`isConsolidationDone`). There is nothing left to do, so there is no tool left to
+	 * offer: the context says so in words, and the tool list must say the same thing.
 	 *
 	 * It did not, and the model did what a model does when a finished instruction is
-	 * contradicted by a live tool: it called the tool. Step one, again — on a pass whose
-	 * every step was answered — and the runtime aborted the run to stop it. "Operation
+	 * contradicted by a live tool: it called the tool. Again — on a pass it had just
+	 * declared finished — and the runtime aborted the run to stop it. "Operation
 	 * aborted" in the owner's feed, once per memory pass.
 	 */
 	consolidationDone?: boolean;
@@ -56,11 +56,24 @@ export interface ManagerTurnKind {
 	revising: boolean;
 }
 
-const PROBES: readonly string[] = INTERROGATION_TOOL_NAMES;
+const MEMORY_TOOLS: readonly string[] = MEMORY_TOOL_NAMES;
 
-/** Whether `name` is one of the consolidation interrogation probes. */
-export function isProbeTool(name: string): boolean {
-	return PROBES.includes(name);
+/** Whether `name` is one of the memory verbs. */
+export function isMemoryTool(name: string): boolean {
+	return MEMORY_TOOLS.includes(name);
+}
+
+/**
+ * Whether `name` is a memory verb that only a consolidation pass may call.
+ *
+ * `manager_remember` is the exception, and deliberately so: learning something while
+ * talking to somebody is the moment it is worth writing down, and making the model
+ * wait for a background pass to record it is how a fact gets lost. Looking things up,
+ * rewriting them and dropping them are a pass's work — on a reply turn they are three
+ * more ways to spend an inference on something other than the answer.
+ */
+function isPassOnlyMemoryTool(name: string): boolean {
+	return isMemoryTool(name) && name !== MEMORY_REPLY_TOOL_NAME;
 }
 
 /**
@@ -79,12 +92,12 @@ export function managerToolGate(
 		matches: (name: string): boolean => {
 			if (turn.consolidating) {
 				if (turn.consolidationDone) return false;
-				return isProbeTool(name);
+				return isMemoryTool(name);
 			}
 			if (turn.revising) return name === MANAGER_RESOLVE_TOOL_NAME;
 			return (
 				name !== MANAGER_RESOLVE_TOOL_NAME &&
-				!isProbeTool(name) &&
+				!isPassOnlyMemoryTool(name) &&
 				base.matches(name)
 			);
 		},

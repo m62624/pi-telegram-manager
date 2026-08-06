@@ -106,7 +106,6 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- continuation window: ${humanMs(s.manager.continueWindowMs)}`,
 			`- strict reply guard: ${onOff(s.manager.strictReplyGuard)}`,
 			`- messages remembered per chat: ${s.manager.rememberMessages}`,
-			`- facts remembered per person: ${s.manager.factsLimit}`,
 			`- extra tools allowed in the sandbox: ${
 				s.manager.allowedTools.length > 0
 					? s.manager.allowedTools.join(", ")
@@ -115,7 +114,7 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- catch-up window on start: ${humanMs(s.manager.catchUpWindowMs)}`,
 			`- live-freshness guard: ${humanMs(s.manager.liveFreshnessMs)}`,
 			`- re-greet after silence: ${humanMs(s.manager.reopenAfterMs)}`,
-			`- facts consolidated after a chat is quiet for: ${humanMs(s.manager.factConsolidationQuietMs)}`,
+			`- memory reviewed after a chat is quiet for: ${humanMs(s.manager.factConsolidationQuietMs)}`,
 			`- draft revisions allowed: ${s.manager.reviseThreshold}`,
 			`- context caps: ${s.manager.maxCharsPerMessage} chars/message, ${humanCount(s.manager.maxContextChars)} chars total`,
 			`- wake words: ${s.manager.mentionWords.length > 0 ? s.manager.mentionWords.join(", ") : "(none beyond the bot's name)"}`,
@@ -124,6 +123,21 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- documents from interlocutors: ${s.manager.media.documents ? "acknowledged by name" : "not accepted"} — never opened either way (no file tools in this mode)`,
 			`- delivered replies to the owner's DM: ${onOff(s.manager.replies)}`,
 			`- diagnostics log to the owner's DM: ${onOff(s.manager.log)}`,
+			"",
+			"## Memory",
+			"- one database per contact, no size limit",
+			`- recall budget per turn: ${s.memory.recallTokenBudget} tokens${
+				s.memory.recallK > 0 ? `, at most ${s.memory.recallK} facts` : ""
+			}`,
+			`- episodes (messages and turn outcomes) recorded: ${onOff(s.memory.episodes)}`,
+			`- memory pass: up to ${s.memory.consolidationMaxSteps} tool calls, ${s.memory.consolidationMaxNudges} re-prompts`,
+			`- embedder: ${
+				s.memory.embedder.kind === "none"
+					? "none (keyword, entity-graph and time recall still work)"
+					: `${s.memory.embedder.kind} — ${s.memory.embedder.model ?? "(no model)"} at ${
+							s.memory.embedder.url ?? "(no url)"
+						}, ${s.memory.embedder.dim} dimensions`
+			}`,
 			"",
 		);
 	}

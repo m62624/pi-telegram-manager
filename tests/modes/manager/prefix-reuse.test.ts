@@ -11,6 +11,7 @@ import { createChatStore } from "../../../src/storage/chat-store";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
 import { FakeFs } from "../../helpers/fake-fs";
+import { FakeMemoryWorkspace } from "../../helpers/fake-memory";
 import { PrefixCache, serializePrompt } from "../../helpers/prefix-cache";
 
 /**
@@ -56,6 +57,7 @@ async function setup() {
 	const paths = createTelegramPaths("/agent");
 	const clock = new ManualClock(0);
 	const chatState = createChatState(fs, paths.chatStatePath);
+	const memory = new FakeMemoryWorkspace();
 	const businessStore = createBusinessStore(fs, paths.businessPath);
 	await businessStore.upsert({
 		id: CONN,
@@ -79,9 +81,11 @@ async function setup() {
 		maxContextChars: 40000,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
-		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
-		verifyLimit: 8,
+		recallTokenBudget: 512,
+		recallK: 0,
+		consolidationLimits: { maxSteps: 12, maxNudges: 2 },
+		episodes: true,
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
@@ -91,6 +95,7 @@ async function setup() {
 		clock,
 		chatStore: createChatStore(fs, paths),
 		contactStore: createContactStore(fs, paths),
+		memory,
 		consolidationQueue: chatState.consolidationQueue,
 		chatCursors: chatState.cursors,
 		sentRegistry: chatState.sentRegistry,
@@ -103,6 +108,7 @@ async function setup() {
 	const controller = new ManagerController(deps);
 	return {
 		controller,
+		memory,
 		clock,
 		setIdle: (v: boolean) => {
 			idle = v;
@@ -229,13 +235,10 @@ describe("prompt prefix reuse", () => {
 		// The model remembers something about this person, and the turn ends.
 		await arrive(env, 42, 5, messageId++, `${BODY} (remembering)`);
 		cache.serve(await readContext(env));
-		env.controller.factSink().record([
-			{
-				text: "Works night shifts, so mornings are bad",
-				subject: "interlocutor",
-				kind: "profile",
-			},
-		]);
+		await env.memory.of("5").remember({
+			text: "Works night shifts, so mornings are bad",
+			tags: ["fact", "context"],
+		});
 		env.controller.decisionSink().record({ kind: "reply", text: "noted" });
 		await env.controller.onAgentEnd();
 
@@ -258,11 +261,10 @@ describe("prompt prefix reuse", () => {
 		const env = await setup();
 		await arrive(env, 42, 5, 1, `${BODY} from Alice`);
 		const first = (await env.controller.buildContextForActive())?.[0].content;
-		env.controller
-			.factSink()
-			.record([
-				{ text: "Likes green tea", subject: "interlocutor", kind: "profile" },
-			]);
+		await env.memory.of("5").remember({
+			text: "Likes green tea",
+			tags: ["fact", "preference"],
+		});
 		env.controller.decisionSink().record({ kind: "reply", text: "hi" });
 		await env.controller.onAgentEnd();
 
@@ -342,13 +344,10 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
 		}
 		await arrive(env, 42, 5, messageId++, `${LONG} (remember)`);
 		cache.serve(await readContext(env));
-		env.controller.factSink().record([
-			{
-				text: "Works night shifts",
-				subject: "interlocutor",
-				kind: "profile",
-			},
-		]);
+		await env.memory.of("5").remember({
+			text: "Works night shifts",
+			tags: ["fact", "context"],
+		});
 		env.controller.decisionSink().record({ kind: "reply", text: "noted" });
 		await env.controller.onAgentEnd();
 
@@ -384,7 +383,7 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
  *    steps is the directive, and the directive is the LAST thing in the prompt.
  */
 describe("what a memory pass re-reads", () => {
-	it("re-reads only its own question, step to step", async () => {
+	it("re-reads only its own directive, step to step", async () => {
 		const env = await setup();
 		let messageId = 1;
 		// A conversation happens, and the bot learns something about them.
@@ -395,69 +394,49 @@ describe("what a memory pass re-reads", () => {
 			messageId++,
 			"I moved to the night shift last month",
 		);
-		env.controller.factSink().record([
-			{
-				text: "Works night shifts",
-				subject: "interlocutor",
-				kind: "profile",
-			},
-		]);
+		await env.memory.of("5").remember({
+			text: "Works night shifts",
+			tags: ["fact", "context"],
+		});
 		env.controller.decisionSink().record({ kind: "reply", text: "noted" });
 		await env.controller.onAgentEnd();
 
 		// It goes quiet, and an idle tick starts the memory pass.
 		env.clock.advance(1_800_001);
 		await env.controller.onTick();
+		expect(env.controller.isConsolidating()).toBe(true);
 
 		const cache = new PrefixCache();
 		const reread: number[] = [];
-		const step = async (answer: () => void): Promise<void> => {
+		const ledger = env.controller.memoryToolContext().ledger();
+		const step = async (summary: string): Promise<void> => {
 			reread.push(
 				cache.serve(
 					serializePrompt(await env.controller.buildContextForActive()),
 				).reread,
 			);
-			answer();
+			ledger.record({ tool: "manager_recall", argsKey: summary, summary });
 			await env.controller.stepConsolidation();
 		};
 
-		await step(() =>
-			env.controller.probeSink().record({
-				tool: "identify",
-				sameAsOwner: false,
-				interlocutorName: "Someone",
-			}),
-		);
-		// Step 2 — the review: it is asked about the fact it already holds.
-		await step(() =>
-			env.controller.probeSink().record({ tool: "forget", items: [] }),
-		);
-		await step(() =>
-			env.controller.probeSink().record({
-				tool: "candidates",
-				items: [
-					{ text: "Works nights", subject: "interlocutor", durable: true },
-				],
-			}),
-		);
-		await step(() =>
-			env.controller
-				.probeSink()
-				.record({ tool: "verify", keep: true, evidenceQuote: "night shift" }),
-		);
+		await step("recalled what they do");
+		await step("recalled what we agreed");
+		await step("remembered 1 fact(s): works nights");
+		await step("recalled anything stale");
 
 		const opening = reread[0];
 		const steps = reread.slice(1);
 		console.log(
 			`\n  memory pass: opens by reading ${opening} chars, then ${steps.join(", ")} per step\n`,
 		);
-		// The opening read is the whole pass — and the whole pass is small: a consolidation
-		// carries its OWN system block (it is remembering, not answering, so the ~21 KB
-		// rulebook of a reply turn is not in it at all) plus the transcript. Every step after
-		// that re-reads its question and nothing else: not the instructions, not the
-		// conversation above it, four steps running. That is what a tool set that does not
-		// move mid-pass buys.
+		// The opening read is the whole pass — and the whole pass is small: it carries its
+		// OWN system block (it is remembering, not answering, so the ~21 KB rulebook of a
+		// reply turn is not in it at all) plus the transcript. Every step after that
+		// re-reads its directive and nothing else: not the instructions, not the
+		// conversation above it. That is what a tool set that does not move mid-pass buys
+		// — and it still holds now that the model, rather than an automaton, decides what
+		// the next step is.
 		for (const cost of steps) expect(cost).toBeLessThan(1_500);
-		expect(Math.max(...steps)).toBeLessThan(opening);
+		expect(opening).toBeGreaterThan(Math.max(...steps));
 	});
 });

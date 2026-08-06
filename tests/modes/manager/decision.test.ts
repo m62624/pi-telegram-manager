@@ -4,14 +4,12 @@ import {
 	createManagerTools,
 	DecisionState,
 	DraftResolutionState,
-	FactState,
 	MANAGER_TOOL_NAMES,
 	resolveDecision,
 } from "../../../src/modes/manager/decision";
 
-function toolMap(sink: DecisionState, facts: FactState = new FactState()) {
-	const tools = createManagerTools(sink, facts);
-	return new Map(tools.map((t) => [t.name, t]));
+function toolMap(sink: DecisionState) {
+	return new Map(createManagerTools(sink).map((t) => [t.name, t]));
 }
 
 describe("DecisionState + resolveDecision", () => {
@@ -76,39 +74,10 @@ describe("DecisionState + resolveDecision", () => {
 });
 
 describe("manager tools", () => {
-	it("exposes the manager tool names incl. memory tools", () => {
-		expect(MANAGER_TOOL_NAMES).toEqual([
-			"manager_reply",
-			"manager_silent",
-			"manager_remember",
-			"manager_skip",
-		]);
-	});
-
-	it("manager_remember records de-duplicated facts tagged with subject/kind", async () => {
-		const facts = new FactState();
-		const tools = toolMap(new DecisionState(), facts);
-		await tools.get("manager_remember")?.execute("t1", {
-			facts: [
-				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
-				{ text: "  ", subject: "interlocutor" },
-				{ text: "lives in Almaty", subject: "interlocutor" },
-			],
-		});
-		expect(facts.current()).toEqual([
-			{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
-		]);
-	});
-
-	it("manager_remember defaults an unknown subject to 'other' (so it is dropped)", async () => {
-		const facts = new FactState();
-		const tools = toolMap(new DecisionState(), facts);
-		await tools.get("manager_remember")?.execute("t1", {
-			facts: [{ text: "the owner ships code", subject: "bogus" }],
-		});
-		expect(facts.current()).toEqual([
-			{ text: "the owner ships code", subject: "other", kind: undefined },
-		]);
+	it("exposes exactly the two tools that can end a turn", () => {
+		// The memory verbs used to be in this list. They live in `memory-tools.ts` now:
+		// a turn still has to end in reply or silence, and remembering is not either.
+		expect(MANAGER_TOOL_NAMES).toEqual(["manager_reply", "manager_silent"]);
 	});
 
 	it("manager_resolve_draft records send / refine / drop", async () => {
@@ -144,17 +113,6 @@ describe("manager tools", () => {
 		const tool = createDraftResolveTool(state);
 		await tool.execute("t1", { action: "bogus" });
 		expect(state.current()).toEqual({ action: "send" });
-	});
-
-	it("manager_skip fires the onSkip signal so the runtime can end the turn", async () => {
-		let skipped = false;
-		const tools = new Map(
-			createManagerTools(new DecisionState(), new FactState(), () => {
-				skipped = true;
-			}).map((t) => [t.name, t]),
-		);
-		await tools.get("manager_skip")?.execute("t1", {});
-		expect(skipped).toBe(true);
 	});
 
 	it("manager_reply records the text with its category and self-check", async () => {

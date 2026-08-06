@@ -17,7 +17,6 @@
  */
 
 import { defineTool, type ToolDefinition } from "../../pi/sdk";
-import { FACT_KINDS, type FactKind } from "../../storage/contact-store";
 
 /**
  * How the model classified the latest interlocutor message before acting. It is
@@ -67,12 +66,7 @@ function asCategory(value: unknown): MessageCategory {
 }
 
 /** Names of the tools defined here — fed to the visibility gate. */
-export const MANAGER_TOOL_NAMES = [
-	"manager_reply",
-	"manager_silent",
-	"manager_remember",
-	"manager_skip",
-] as const;
+export const MANAGER_TOOL_NAMES = ["manager_reply", "manager_silent"] as const;
 
 /** A per-turn holder the tools write their decision into. */
 export interface DecisionSink {
@@ -91,54 +85,6 @@ export const FACT_RELATIONS: readonly FactRelation[] = [
 	"owner",
 	"other",
 ];
-
-/** A durable fact captured this turn, tagged with its subject relation and kind. */
-export interface RememberedFact {
-	text: string;
-	subject: FactRelation;
-	kind?: FactKind;
-}
-
-/** A per-turn holder the memory tools write recorded facts into. */
-export interface FactSink {
-	record(facts: RememberedFact[]): void;
-}
-
-/** Coerce an untrusted string into a known relation, defaulting to "other". */
-function asRelation(value: unknown): FactRelation {
-	return FACT_RELATIONS.includes(value as FactRelation)
-		? (value as FactRelation)
-		: "other";
-}
-
-/** Coerce an untrusted string into a known fact kind, or undefined. */
-function asKind(value: unknown): FactKind | undefined {
-	return FACT_KINDS.includes(value as FactKind)
-		? (value as FactKind)
-		: undefined;
-}
-
-/** Collects durable facts recorded this turn via `manager_remember`. */
-export class FactState implements FactSink {
-	private facts: RememberedFact[] = [];
-
-	reset(): void {
-		this.facts = [];
-	}
-
-	record(facts: RememberedFact[]): void {
-		for (const fact of facts) {
-			const text = fact.text.trim();
-			if (!text) continue;
-			if (this.facts.some((existing) => existing.text === text)) continue;
-			this.facts.push({ ...fact, text });
-		}
-	}
-
-	current(): RememberedFact[] {
-		return [...this.facts];
-	}
-}
 
 /** A mutable decision holder: reset each turn, read on turn end. */
 export class DecisionState implements DecisionSink {
@@ -231,17 +177,16 @@ function fail(text: string) {
 }
 
 /**
- * Build the manager tools. `sink` receives the terminal reply/silent decision;
- * `factSink` receives durable facts from `manager_remember`. `onSkip` (optional)
- * fires when `manager_skip` runs, so the runtime can treat it as the terminal
- * action of a consolidation turn (which otherwise records nothing observable).
- * Register each with `pi.registerTool`.
+ * Build the manager's two terminal tools. `sink` receives the reply/silent
+ * decision. Register each with `pi.registerTool`.
+ *
+ * The memory verbs used to live here too. They moved to `memory-tools.ts` when the
+ * store became a database the model can query: they are no longer one tool that
+ * appends to a list, and grouping them with the reply decision made a turn's tool
+ * list read as if remembering were part of answering. It is not — a fact is stored
+ * the moment it is learned, and the turn still has to end in reply or silence.
  */
-export function createManagerTools(
-	sink: DecisionSink,
-	factSink: FactSink,
-	onSkip?: () => void,
-): ToolDefinition[] {
+export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 	const categoryParam = {
 		type: "string",
 		enum: MESSAGE_CATEGORIES,
@@ -332,86 +277,7 @@ export function createManagerTools(
 		},
 	});
 
-	const managerRemember = defineTool({
-		name: "manager_remember",
-		label: "Manager Remember",
-		description:
-			"Save durable, useful facts to private long-term memory. For EACH fact set subject — 'interlocutor' (about the person you are chatting with), 'owner' (about your operator), or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored; never file the owner's own details under a contact. Save stable facts (name, city, role, preferences, agreements), not passing chatter/mood/location. On a normal turn you may call this in addition to manager_reply/manager_silent.",
-		parameters: {
-			type: "object",
-			properties: {
-				facts: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							text: {
-								type: "string",
-								description: "One short durable fact.",
-							},
-							subject: {
-								type: "string",
-								enum: FACT_RELATIONS,
-								description:
-									"Who the fact is about: 'interlocutor' (stored), 'owner' or 'other' (dropped).",
-							},
-							kind: {
-								type: "string",
-								enum: FACT_KINDS,
-								description:
-									"identity (who they are) | preference (tastes/style) | agreement (commitments) | context (ongoing situation).",
-							},
-						},
-						required: ["text", "subject"],
-						additionalProperties: false,
-					},
-					description: "Durable facts, each tagged with subject and kind.",
-				},
-			},
-			required: ["facts"],
-			additionalProperties: false,
-		} as never,
-		async execute(
-			_toolCallId,
-			params: {
-				facts?: Array<{ text?: string; subject?: string; kind?: string }>;
-			},
-		) {
-			const raw = Array.isArray(params.facts) ? params.facts : [];
-			const facts: RememberedFact[] = raw
-				.filter((item) => item?.text?.trim())
-				.map((item) => ({
-					text: (item.text as string).trim(),
-					subject: asRelation(item.subject),
-					kind: asKind(item.kind),
-				}));
-			factSink.record(facts);
-			return ok(`Remembered ${facts.length} fact(s).`);
-		},
-	});
-
-	const managerSkip = defineTool({
-		name: "manager_skip",
-		label: "Manager Skip",
-		description:
-			"End a memory-consolidation turn without saving anything (nothing durable is worth remembering).",
-		parameters: {
-			type: "object",
-			properties: {
-				reason: {
-					type: "string",
-					description: "Optional short reason for saving nothing.",
-				},
-			},
-			additionalProperties: false,
-		} as never,
-		async execute() {
-			onSkip?.();
-			return ok("Nothing saved.");
-		},
-	});
-
-	return [managerReply, managerSilent, managerRemember, managerSkip];
+	return [managerReply, managerSilent];
 }
 
 /**

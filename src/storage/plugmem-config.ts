@@ -1,0 +1,153 @@
+/**
+ * The `config.toml` handed to plugmem, built from the owner's settings.
+ *
+ * plugmem configures itself from a TOML file — that is its interface, and this file
+ * does not try to have another one. The `memory.embedder.*` keys are its
+ * `[embedder]` section under different capitalisation, plus `dim`, which lives in
+ * plugmem's `[engine]`. We translate and pass through; we do not interpret. The
+ * single source of truth for what an embedder means stays inside plugmem.
+ *
+ * The validation below is a DELIBERATE duplicate of plugmem's own
+ * (`plugmem-host/src/settings.rs`, `EmbedderCfg::build`), and the duplication earns
+ * its keep by moving the error in time: plugmem rejects a bad `[embedder]` when it
+ * opens a database, which here would be somewhere in the middle of the first turn
+ * the manager takes for somebody. Checked at settings load, the owner is told while
+ * they are still looking at the settings file.
+ *
+ * Pure: strings in, a string out. `index.ts` writes it next to the workspace.
+ */
+
+/**
+ * Embedder providers plugmem accepts.
+ *
+ * Taken from the match arm in `EmbedderCfg::build`, not from plugmem's SETTINGS.md —
+ * the doc omits `openai-compat`, which the code accepts. All of them build the same
+ * OpenAI-compatible HTTP client, so this is a label for the provider rather than a
+ * switch between behaviours; what matters is that the string reaches plugmem intact.
+ */
+export const EMBEDDER_KINDS = [
+	"none",
+	"ollama",
+	"openai",
+	"openai-compat",
+	"lmstudio",
+	"vllm",
+	"llamacpp",
+] as const;
+
+export type EmbedderKind = (typeof EMBEDDER_KINDS)[number];
+
+export interface EmbedderSettings {
+	/** `none` (the default) leaves the vector source off; everything else needs a URL. */
+	kind: EmbedderKind;
+	/** OpenAI-compatible `/v1/embeddings` endpoint. */
+	url?: string;
+	/** Embedding model name. */
+	model?: string;
+	/** Name of the environment variable holding the bearer token, if one is needed. */
+	apiKeyEnv?: string;
+	/**
+	 * Embedding width. `0` — the default — means no vectors at all.
+	 *
+	 * It is written INTO the database, and plugmem refuses to open a database whose
+	 * stored width disagrees with the configured one. So this is the one memory
+	 * setting that cannot be changed in place on a memory that already has facts in
+	 * it; see the note in SETTINGS.md.
+	 */
+	dim: number;
+}
+
+/** Whether an embedder is actually configured (as opposed to declared and off). */
+export function embedderActive(embedder: EmbedderSettings): boolean {
+	return embedder.kind !== "none";
+}
+
+/**
+ * Reject an embedder plugmem would reject, at settings-load time.
+ *
+ * Throws {@link TypeError} with the path of the offending key, the way every other
+ * check in `settings/schema.ts` does.
+ */
+export function validateEmbedder(
+	embedder: EmbedderSettings,
+	path = "memory.embedder",
+): void {
+	if (!embedderActive(embedder)) {
+		if (embedder.dim !== 0) {
+			throw new TypeError(
+				`${path}.dim must be 0 when ${path}.kind is "none" (vectors are off)`,
+			);
+		}
+		return;
+	}
+	if (!embedder.url?.trim()) {
+		throw new TypeError(
+			`${path}.url is required when ${path}.kind is not "none"`,
+		);
+	}
+	if (!embedder.model?.trim()) {
+		throw new TypeError(
+			`${path}.model is required when ${path}.kind is not "none"`,
+		);
+	}
+	if (embedder.dim <= 0) {
+		throw new TypeError(
+			`${path}.dim must be greater than 0 when ${path}.kind is not "none"`,
+		);
+	}
+}
+
+/**
+ * A TOML basic string.
+ *
+ * These values are a URL, a model name and an environment variable name — none of
+ * which should contain a quote or a backslash, and all of which come from a file the
+ * owner edits by hand. Escaped rather than trusted, because the failure mode of not
+ * escaping is a config file plugmem cannot parse, reported as a memory that will not
+ * open.
+ */
+function tomlString(value: string): string {
+	const escaped = value
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t");
+	return `"${escaped}"`;
+}
+
+/**
+ * Render the `config.toml` for the memory workspace.
+ *
+ * Only two sections are written. `[engine].dim` because the width has to be declared
+ * before a database is created, and `[embedder]` because that is the whole point of
+ * the file. Everything else — recall weights, index thresholds, maintenance triggers
+ * — is left at plugmem's tuned defaults: its own settings doc says to reach for them
+ * when a specific memory answers badly, and a knob this project exposes is a knob it
+ * has to explain.
+ *
+ * One default is chosen rather than inherited: `maintain_every_forgets` stays OFF.
+ * The model may forget freely, and `forget` only tombstones — the bytes survive until
+ * a maintenance pass purges them. Leaving that pass manual is what gives the owner a
+ * window to look at what was dropped, and to put it back.
+ */
+export function buildPlugmemConfig(embedder: EmbedderSettings): string {
+	const lines = [
+		"# Generated by pi-telegram-manager from settings.json (memory.*).",
+		"# Edits here are overwritten every time a mode starts.",
+		"",
+		"[engine]",
+		`dim = ${embedderActive(embedder) ? embedder.dim : 0}`,
+		"",
+		"[embedder]",
+		`kind = ${tomlString(embedder.kind)}`,
+	];
+	if (embedderActive(embedder)) {
+		lines.push(`url = ${tomlString(embedder.url ?? "")}`);
+		lines.push(`model = ${tomlString(embedder.model ?? "")}`);
+		if (embedder.apiKeyEnv?.trim()) {
+			lines.push(`api_key_env = ${tomlString(embedder.apiKeyEnv.trim())}`);
+		}
+	}
+	return `${lines.join("\n")}\n`;
+}

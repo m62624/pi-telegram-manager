@@ -39,9 +39,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "rememberMessages": 20,
     "maxCharsPerMessage": 4000,
     "maxContextChars": 40000,
-    "factsLimit": 20,
     "factConsolidationQuietMs": 1800000,
-    "verifyLimit": 8,
     "liveFreshnessMs": 600000,
     "reopenAfterMs": 86400000,
     "reviseThreshold": 2,
@@ -53,6 +51,17 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "labelerRule": "────────────",
     "mentionWords": ["llm", "manager"],
     "instructionFiles": []
+  },
+  "memory": {
+    "episodes": true,
+    "recallTokenBudget": 512,
+    "recallK": 0,
+    "consolidationMaxSteps": 12,
+    "consolidationMaxNudges": 2,
+    "embedder": {
+      "kind": "none",
+      "dim": 0
+    }
   },
   "mixed": {
     "returnToTelegramMs": 480000
@@ -180,9 +189,7 @@ The thread ids are remembered on disk (`dm-state.json`); a topic you delete whil
 | `manager.rememberMessages` | `20` | replaces | How many of a chat's newest messages the model reads each turn — a floor, not an exact count: the window holds between this many and this many plus seven, and only lets go of a whole block at a time. A window that keeps *exactly* the last N moves its first line whenever anyone speaks, and every backend then re-reads the transcript from the top (measured: 9,328 characters per turn, almost none of it new). Also bounds the transcript kept on disk (old messages are pruned to ~2× this). |
 | `manager.maxCharsPerMessage` | `4000` | replaces | Character cap on a single message in the window the model reads — a longer one is truncated with a `…[+N chars]` marker, so one huge paste can't dominate a small local context. `0` disables. Disk transcripts are never trimmed. |
 | `manager.maxContextChars` | `40000` | replaces | Character budget for the whole last-N window: the oldest messages are dropped until the kept text fits (the newest is always kept). Bounds the window by size, not just count, so 20 long messages still fit a small model. `0` disables. |
-| `manager.factsLimit` | `20` | replaces | Last-N durable facts kept and injected per contact. |
-| `manager.factConsolidationQuietMs` | `1800000` (30 min) | replaces | Quiet period after a chat's last activity before an idle memory-consolidation pass may run on it. |
-| `manager.verifyLimit` | `8` | replaces | Max candidate facts individually verified in one consolidation pass. |
+| `manager.factConsolidationQuietMs` | `1800000` (30 min) | replaces | Quiet period after a chat's last activity before an idle memory pass may run on it. |
 | `manager.reviseThreshold` | `2` | replaces | How many times a drafted reply may be reconsidered when new messages keep arriving mid-turn before it is sent as-is. `0` sends immediately. |
 | `manager.strictReplyGuard` | `true` | replaces | Drop a reply the model itself tagged as chatter/acknowledgement (or "no reply needed") unless it was directly addressed. Curbs a weak model over-replying to banter. |
 | `manager.mentionWords` | `["llm", "manager"]` | **replaces list** (+ labeler) | Wake-words — see [Wake-words](#wake-words) below. |
@@ -220,6 +227,119 @@ will not go into (`manager.instructionFiles`).
 - **Labeler is added automatically.** On top of your list, the bot's own label (`manager.labeler`, normalized) is added as a phrase, so a message that addresses the bot by the name it signs replies with also wakes it. This is automatic and additive — your `mentionWords` stays authoritative, and the labeler is never written into your file. (An empty or emoji-only labeler adds nothing.)
 - **Matching.** Case-insensitive and **whole-word** (Unicode-aware): `"llm"` matches "Hey LLM!" but not "llms". Surrounding punctuation is ignored (`"llm!?"`, `"(qwen)"` match). A multi-word entry is matched as whole words **in order** with any punctuation between them — `"mini bro"` matches "Mini, bro!" but not "minibro" or "bro mini". Misspellings are not matched; the model can still infer intent from the message itself.
 - **Priority in mixed.** In mixed mode, a wake-word does **not** interrupt your terminal work — it only marks the chat ready and is served after the return timer (`mixed.returnToTelegramMs`) hands the brain back to Telegram. In the standalone manager it takes effect on the next tick.
+
+## `memory` (the manager's long-term memory)
+
+The manager keeps a **separate database per contact**, under
+`<agent>/extensions/pi-telegram-manager/memory/`, using
+[plugmem](https://github.com/m62624/plugmem) — an embedded engine, like SQLite: no
+server, no daemon, nothing to install beyond the package.
+
+Two things about it are worth knowing before the table.
+
+**There is no size limit.** The old `manager.factsLimit` capped how much could be
+*remembered*, so learning a new fact meant evicting an old one — and what got evicted
+was decided by a table of ranks rather than by whether it mattered. Nothing is capped
+now. What is capped is how much of the memory may be **said in one turn**
+(`memory.recallTokenBudget`): each turn, the memory is queried with the messages
+nobody has answered yet, and only the ranked result goes into the prompt. It rides
+below the transcript, so it costs its own tokens and never causes the conversation
+above it to be read again.
+
+**Which database is open is decided by code**, from the chat being served, and one is
+open at a time. The model's memory tools have no argument that could name a different
+one — a contact's facts are not filtered out of a shared store, they are in a file
+that is not open.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `memory.recallTokenBudget` | `512` | replaces | How many tokens one recall may put into a turn's prompt. The only cap on memory there is. |
+| `memory.recallK` | `0` | replaces | Max facts one recall may select. `0` = plugmem's own default. |
+| `memory.episodes` | `true` | replaces | Record each inbound message and each finished turn (including a decision to stay silent, and why) alongside the durable facts. The transcript on disk is pruned to twice the reading window; this is what still answers "what did they say last month" afterwards. |
+| `memory.consolidationMaxSteps` | `12` | replaces | How many memory tool calls one idle pass may make before it is told to wrap up. It runs only while nothing is waiting and yields instantly to a live message, so this bounds a confused model, not a busy one. |
+| `memory.consolidationMaxNudges` | `2` | replaces | How many times a pass may be re-prompted after the model answers without calling any tool, before the pass is abandoned (and picked up another time). |
+
+### The embedder — optional, and off by default
+
+**Everything works without one.** Three of plugmem's four recall sources need no model,
+no API key and no network:
+
+| Source | What it finds | Needs an embedder |
+| --- | --- | --- |
+| Keyword (BM25) | exact terms, word overlap | no |
+| Entity graph | what is known *around* this person | no |
+| Time | "what was true then", recent windows | no |
+| Semantic (vectors) | meaning, paraphrase | **yes** |
+
+So with `kind: "none"` (the default), a fact reading *"prefers to be called in the
+evening"* answers a question containing "evening", but not a question phrased *"when
+should I reach them?"*. Add an embedder and it does.
+
+These keys are passed to plugmem **verbatim** — they are its own `[embedder]` section
+plus `dim`, and this project does not interpret them. Any OpenAI-compatible
+`/v1/embeddings` endpoint works; all the provider names build the same HTTP client, so
+`kind` is a label for what you are pointing at.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `memory.embedder.kind` | `"none"` | replaces | `none`, `ollama`, `openai`, `openai-compat`, `lmstudio`, `vllm` or `llamacpp`. |
+| `memory.embedder.url` | unset | replaces | The `/v1/embeddings` endpoint. Required once `kind` is not `none`. |
+| `memory.embedder.model` | unset | replaces | Embedding model name. Required once `kind` is not `none`. |
+| `memory.embedder.apiKeyEnv` | unset | replaces | Name of the **environment variable** holding the bearer token — never the token itself. |
+| `memory.embedder.dim` | `0` | replaces | Embedding width. Must be `0` when `kind` is `none`, and greater than `0` otherwise. |
+
+A local example, with [Ollama](https://ollama.com) already running:
+
+```jsonc
+"memory": {
+  "embedder": {
+    "kind": "ollama",
+    "url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text",
+    "dim": 768
+  }
+}
+```
+
+Settings that do not add up are refused **when the settings are read**, not at the
+first recall: an active `kind` without a `url`, a `model` or a `dim` fails the mode
+start with the offending key named.
+
+> ⚠️ **`dim` cannot be changed on a memory that already has facts in it.** plugmem
+> writes the embedding width into each database at creation and refuses to open one
+> whose stored width disagrees — which is the right call, but it means *turning an
+> embedder on later* leaves your existing memories unopenable. The bot keeps answering
+> people and tells you so in the **log** topic. To move the data across, with the bot
+> stopped:
+>
+> ```console
+> $ WS=~/.pi/agent/extensions/pi-telegram-manager/memory
+> $ plugmem-cli --workspace $WS --db u123456789 export > u123456789.jsonl
+> $ # then, with the new settings in place and the old database moved aside:
+> $ plugmem-cli --workspace $WS --db u123456789 import u123456789.jsonl
+> ```
+>
+> Vectors are recomputed on import; closed revisions do not survive it. Decide before
+> the memories are worth keeping, or accept losing the history.
+
+### Reading your own memory
+
+While the bot runs it holds one database open, and an open database holds that file's
+lock. It lets go after a minute of that contact being idle, so `plugmem-cli` can read
+it without stopping anything:
+
+```console
+$ WS=~/.pi/agent/extensions/pi-telegram-manager/memory
+$ plugmem-cli --workspace $WS workspace list
+$ plugmem-cli --workspace $WS --db u123456789 recall --entity "Alice"
+$ plugmem-cli --workspace $WS --db u123456789 recall --entity "Alice" --tag episode
+$ plugmem-cli --workspace $WS --db u123456789 stats
+```
+
+The database name is `u` followed by the contact's numeric Telegram user id, and the
+entity is the contact's display name. Tags **filter** a recall rather than being
+something it can rank by, so a query made only of tags has nothing to search on and
+comes back empty — always give it an entity, a query, or both.
 
 ## `forwards` (forwarded messages, all modes)
 

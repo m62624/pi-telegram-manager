@@ -15,6 +15,7 @@ import { createChatStore, ownWords } from "../../../src/storage/chat-store";
 import { createContactStore } from "../../../src/storage/contact-store";
 import { createTelegramPaths } from "../../../src/storage/paths";
 import { FakeFs } from "../../helpers/fake-fs";
+import { FakeMemoryWorkspace } from "../../helpers/fake-memory";
 
 const OWNER_ID = 999;
 const CONN = "conn-1";
@@ -43,6 +44,7 @@ async function setup(mentionWords: string[] = []) {
 	const fs = new FakeFs();
 	const paths = createTelegramPaths("/agent");
 	const clock = new ManualClock(0);
+	const memory = new FakeMemoryWorkspace();
 	const chatState = createChatState(fs, paths.chatStatePath);
 	const businessStore = createBusinessStore(fs, paths.businessPath);
 	await businessStore.upsert({
@@ -70,9 +72,11 @@ async function setup(mentionWords: string[] = []) {
 		maxContextChars: 40000,
 		continueWindowMs: 90_000,
 		ownerReplyWindowMs: 300_000,
-		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
-		verifyLimit: 8,
+		recallTokenBudget: 512,
+		recallK: 0,
+		consolidationLimits: { maxSteps: 12, maxNudges: 2 },
+		episodes: true,
 		liveFreshnessMs: 120_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
@@ -82,6 +86,7 @@ async function setup(mentionWords: string[] = []) {
 		clock,
 		chatStore: createChatStore(fs, paths),
 		contactStore: createContactStore(fs, paths),
+		memory,
 		consolidationQueue: chatState.consolidationQueue,
 		chatCursors: chatState.cursors,
 		sentRegistry: chatState.sentRegistry,
@@ -95,6 +100,7 @@ async function setup(mentionWords: string[] = []) {
 	return {
 		controller,
 		deps,
+		memory,
 		triggerAgent,
 		typing,
 		sendReply,
@@ -1087,135 +1093,158 @@ describe("ManagerController", () => {
 		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
-	it("injects known facts and a [Now:] line into the context", async () => {
-		const { controller, deps, clock } = await setup();
+	it("puts what it remembers in the trailing message, never in the head", async () => {
+		const { controller, memory, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
-			message: interlocutorMsg("hi"),
+			message: interlocutorMsg("what tea should I bring?"),
 		});
-		await deps.contactStore.appendFacts(
-			"5",
-			[{ text: "likes green tea", timestamp: 0, source: "manager" }],
-			20,
-		);
+		await memory.of("5").remember({
+			text: "likes green tea",
+			tags: ["fact", "preference"],
+		});
 		clock.advance(300_001);
 		await controller.onTick();
 		const ctx = await controller.buildContextForActive();
-		// Facts live in the trailing message. They are the most volatile thing the model
-		// reads — learning ONE of them used to change the head block and cost a full
-		// re-read of the conversation underneath it (measured: 19,397 characters).
-		expect(ctx?.at(-1)?.content).toContain("Known facts about Alice");
+		// The recall is the most volatile thing the model reads — it is refetched for
+		// every batch. In the head it would re-read the whole conversation under it every
+		// time anybody spoke (measured at 19,397 characters for ONE learned fact).
 		expect(ctx?.at(-1)?.content).toContain("likes green tea");
-		expect(ctx?.[0].content).not.toContain("Known facts about Alice");
+		expect(ctx?.at(-1)?.content).toContain("What you remember about Alice");
+		expect(ctx?.[0].content).not.toContain("likes green tea");
 		// The clock lives there too, not in the cacheable prefix block.
 		expect(ctx?.[0].content).not.toContain("[Now:");
 		expect(ctx?.at(-1)?.content).toContain("[Now:");
 	});
 
-	it("groups known facts into per-kind sections with their directives", async () => {
-		const { controller, deps, clock } = await setup();
+	it("says nothing at all when the memory has nothing to say", async () => {
+		const { controller, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
 			message: interlocutorMsg("hi"),
 		});
-		await deps.contactStore.appendFacts(
-			"5",
-			[
-				{
-					text: "name is Alice",
-					timestamp: 0,
-					source: "manager",
-					kind: "identity",
-				},
-				{
-					text: "prefers Russian",
-					timestamp: 0,
-					source: "manager",
-					kind: "preference",
-				},
-				{
-					text: "promised a quote by Friday",
-					timestamp: 0,
-					source: "manager",
-					kind: "agreement",
-				},
-			],
-			20,
-		);
 		clock.advance(300_001);
 		await controller.onTick();
-		const system =
+		const trailing =
 			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
-		// Each kind is its own section with the behaviour it steers.
-		expect(system).toContain("Who they are");
-		expect(system).toContain("address them correctly");
-		expect(system).toContain("Preferences");
-		expect(system).toContain("Adapt your tone");
-		expect(system).toContain("Agreements");
-		expect(system).toContain("proactively follow up");
+		// An empty heading is a tax charged on every turn of every chat with no memory
+		// yet — and it teaches a small model that the section is usually noise.
+		expect(trailing).not.toContain("What you remember");
 	});
 
-	it("persists facts recorded via manager_remember on turn end", async () => {
-		const { controller, deps, clock } = await setup();
+	it("asks its memory about the unanswered batch, not the whole window", async () => {
+		const { controller, memory, clock, setIdle } = await setup();
+		const database = memory.of("5");
+		const recalls: string[] = [];
+		const realRecall = database.recall.bind(database);
+		database.recall = async (query) => {
+			if (query.query !== undefined) recalls.push(query.query);
+			return realRecall(query);
+		};
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
-			message: interlocutorMsg("hi"),
+			message: interlocutorMsg("first question", 5, 1),
 		});
 		clock.advance(300_001);
 		await controller.onTick();
-		controller
-			.factSink()
-			.record([
-				{ text: "name is Bob", subject: "interlocutor", kind: "identity" },
-			]);
-		controller.decisionSink().record({ kind: "reply", text: "Hello Bob" });
+		setIdle(false);
+		controller.decisionSink().record({ kind: "reply", text: "answered" });
+		setIdle(true);
 		await controller.onAgentEnd();
-		const facts = await deps.contactStore.getFacts("5");
-		expect(facts.map((f) => f.text)).toContain("name is Bob");
-	});
-
-	it("firewall: keeps only interlocutor-tagged facts, stamped with contact + kind", async () => {
-		const { controller, deps, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
-			message: interlocutorMsg("hi"),
+			message: interlocutorMsg("second question", 5, 2),
 		});
 		clock.advance(300_001);
 		await controller.onTick();
-		controller.factSink().record([
-			{ text: "keeps this", subject: "interlocutor", kind: "preference" },
-			{ text: "owner detail", subject: "owner" },
-			{ text: "third party", subject: "other" },
-		]);
-		controller.decisionSink().record({ kind: "silent" });
-		await controller.onAgentEnd();
-		const facts = await deps.contactStore.getFacts("5");
-		expect(facts.map((f) => f.text)).toEqual(["keeps this"]);
-		expect(facts[0]).toMatchObject({ subject: "Alice", kind: "preference" });
+		await controller.buildContextForActive();
+		// Everything before the bot's reply has been dealt with; asking the memory about
+		// it again spends the budget re-fetching what the transcript already shows.
+		expect(recalls.at(-1)).toBe("second question");
+		expect(recalls.at(-1)).not.toContain("first question");
 	});
 
-	it("firewall: never writes facts into the owner's own card (self-test)", async () => {
-		const { controller, deps } = await setup();
-		// A chat keyed by the owner's own id — the owner messaged their own bot.
-		controller.markReady("owner-chat", {
+	it("holds one recall still for a whole turn, however often the context is rebuilt", async () => {
+		const { controller, memory, clock } = await setup();
+		const database = memory.of("5");
+		let calls = 0;
+		const realRecall = database.recall.bind(database);
+		database.recall = async (query) => {
+			if (query.query !== undefined) calls += 1;
+			return realRecall(query);
+		};
+		await controller.onBusinessMessage({
 			connectionId: CONN,
-			contactName: "Owner",
-			userId: String(OWNER_ID),
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("hello there"),
 		});
+		clock.advance(300_001);
+		await controller.onTick();
+		const first = await controller.buildContextForActive();
+		const second = await controller.buildContextForActive();
+		// pi.on("context") runs before EVERY sample of a run. A block that came back
+		// differently the second time would make the backend re-read the trailing
+		// message for nothing.
+		expect(calls).toBe(1);
+		expect(second?.at(-1)?.content).toBe(first?.at(-1)?.content);
+	});
+
+	it("records each inbound message as an episode in that contact's own memory", async () => {
+		const { controller, memory } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("I moved to Berlin"),
+		});
+		// The transcript is pruned to twice the reading window; the memory is not. This
+		// is what makes "what did they say last month" answerable at all.
+		expect(memory.texts("5")).toContain("I moved to Berlin");
+		expect(memory.of("5").facts[0].tags).toEqual(["episode", "message"]);
+	});
+
+	it("records what it decided, including a silence the transcript cannot hold", async () => {
+		const { controller, memory, clock, setIdle } = await setup();
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("haha"),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+		setIdle(false);
 		controller
-			.factSink()
-			.record([{ text: "should not persist", subject: "interlocutor" }]);
-		controller.decisionSink().record({ kind: "silent" });
+			.decisionSink()
+			.record({ kind: "silent", reason: "just banter", category: "chatter" });
+		setIdle(true);
 		await controller.onAgentEnd();
-		expect(await deps.contactStore.getFacts(String(OWNER_ID))).toEqual([]);
+		// A delivered reply is in the transcript; a silence is nowhere. "I decided not to
+		// answer that, and why" is exactly what the owner and the next pass need to find.
+		expect(memory.texts("5")).toContain(
+			"Stayed silent with Alice: just banter",
+		);
+	});
+
+	it("never records an episode against the owner's own card", async () => {
+		const { controller, memory } = await setup();
+		// The owner messaging their own bot: there is no interlocutor to remember.
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "owner-chat",
+			fromId: OWNER_ID,
+			message: ownerMsg("note to self"),
+		});
+		expect(memory.texts(String(OWNER_ID))).toEqual([]);
 	});
 
 	it("gates a revise turn on resolve-draft: manager_silent cannot drop a held answer", async () => {
@@ -1292,272 +1321,208 @@ describe("ManagerController", () => {
 		expect(controller.status().activeChat).not.toBe("42");
 	});
 
-	it("drives the consolidation interrogation probe-by-probe and persists verified facts", async () => {
-		const { controller, deps, clock } = await setup();
+	/** Get a chat past its reply turn and into an eligible memory pass. */
+	async function intoMemoryPass(
+		harness: Awaited<ReturnType<typeof setup>>,
+		said = "i just ordered a laptop for work",
+	): Promise<void> {
+		const { controller, clock } = harness;
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
 			fromId: 5,
-			message: interlocutorMsg("i just ordered a laptop for work"),
-		});
-		clock.advance(300_001);
-		await controller.onTick(); // chat 42 active, reply turn
-		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
-		await controller.onAgentEnd(); // bot replied → 1:30 continuation + queued
-		// Past the continuation window AND the 30-min quiet period.
-		clock.advance(1_800_001);
-		await controller.onTick(); // releases 42, then starts the interrogation
-
-		// Probe 1 — identify.
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 1 of 4");
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
-		});
-		await controller.onAgentEnd();
-
-		// Probe 2 — candidates. Owner-tagged / non-durable ones are dropped by code.
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 3 of 4");
-		controller.probeSink().record({
-			tool: "candidates",
-			items: [
-				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
-				{ text: "owner ships code", subject: "owner", durable: true },
-				{
-					text: "feeling tired today",
-					subject: "interlocutor",
-					durable: false,
-				},
-			],
-		});
-		await controller.onAgentEnd();
-
-		// Probe 3 — per-fact verify (only the one surviving candidate).
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 4 of 4");
-		controller.probeSink().record({
-			tool: "verify",
-			keep: true,
-			evidenceQuote: "ordered a laptop",
-		});
-		await controller.onAgentEnd();
-
-		const facts = await deps.contactStore.getFacts("5");
-		expect(facts.map((f) => f.text)).toEqual(["ordered a laptop"]);
-		expect(facts[0]).toMatchObject({ subject: "Alice" });
-	});
-
-	it("walks the whole interrogation in ONE run via turn_end stepping (no per-probe re-trigger)", async () => {
-		const { controller, deps, triggerAgent, clock } = await setup();
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("i just ordered a laptop for work"),
+			message: interlocutorMsg(said),
 		});
 		clock.advance(300_001);
 		await controller.onTick();
 		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
 		await controller.onAgentEnd();
+		// Past the continuation window AND the 30-minute quiet period.
 		clock.advance(1_800_001);
-		await controller.onTick(); // starts the interrogation (one triggerAgent)
-		const triggersAtStart = triggerAgent.mock.calls.length;
+		await controller.onTick();
+	}
 
-		// identify → step (no abort, no re-trigger): next context shows step 2.
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 1 of 4");
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
+	it("runs a memory pass as a loop the model drives, ending only on manager_done", async () => {
+		const harness = await setup();
+		const { controller, memory } = harness;
+		await intoMemoryPass(harness);
+		expect(controller.isConsolidating()).toBe(true);
+		const ledger = controller.memoryToolContext().ledger();
+
+		// The pass sees its own memory and is told the ids are actionable.
+		const first =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(first).toContain("Memory pass");
+		expect(first).toContain("manager_done");
+
+		// A tool call is not a terminal decision: the loop carries on.
+		ledger.record({
+			tool: "manager_remember",
+			argsKey: "laptop",
+			summary: "remembered 1 fact(s): ordered a laptop",
+		});
+		await memory.of("5").remember({
+			text: "ordered a laptop for work",
+			tags: ["fact", "context"],
 		});
 		expect(await controller.stepConsolidation()).toBe("continue");
 
-		// candidates → step.
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 3 of 4");
-		controller.probeSink().record({
-			tool: "candidates",
-			items: [
-				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
-			],
-		});
+		// Only manager_done ends it.
+		ledger.finish();
+		expect(await controller.stepConsolidation()).toBe("abort");
+		await controller.onAgentEnd();
+		expect(controller.isConsolidating()).toBe(false);
+		expect(memory.texts("5")).toContain("ordered a laptop for work");
+	});
+
+	it("prods a pass that answered with nothing, then abandons it", async () => {
+		const harness = await setup();
+		const { controller } = harness;
+		await intoMemoryPass(harness);
+
+		// A turn with no tool call at all. On a reply turn prose is recoverable — it is
+		// almost certainly the answer, written the wrong way. Here there is nothing to
+		// recover, so the runtime says so and hands back the journal.
 		expect(await controller.stepConsolidation()).toBe("continue");
+		const prodded =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(prodded).toContain("without calling a tool");
 
-		// verify → step reaches done: the run STOPS here. The model is not sampled once
-		// more just to say it has nothing left to do — that call read nothing anybody
-		// used, and it re-read the whole prompt (the tool gate takes the probes away when
-		// the pass is done, and the tools sit at the head of the prompt, which is the
-		// prefix the backend caches).
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 4 of 4");
-		controller.probeSink().record({
-			tool: "verify",
-			keep: true,
-			evidenceQuote: "ordered a laptop",
-		});
+		// maxNudges is 2: the second silence still prods, the third gives up.
+		expect(await controller.stepConsolidation()).toBe("continue");
 		expect(await controller.stepConsolidation()).toBe("abort");
-		expect(controller.isConsolidationDone()).toBe(true);
-		// The "you are finished" directive stays as the backstop for the path that can
-		// still reach a done pass with the run alive (a queued message defers the step
-		// above). Nothing reaches it on the ordinary path any more.
-		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("memory pass for this contact is finished");
-
-		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
-		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
-
-		// The aborted run ends → agent_end persists the verified fact and closes the pass.
 		await controller.onAgentEnd();
-		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
-			"ordered a laptop",
-		]);
 		expect(controller.isConsolidating()).toBe(false);
 	});
 
-	it("pre-empts an in-flight consolidation for a live reply, then resumes from the next step", async () => {
-		const { controller, clock } = await setup();
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("i just ordered a laptop for work"),
-		});
-		clock.advance(300_001);
-		await controller.onTick();
-		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
-		await controller.onAgentEnd();
-		clock.advance(1_800_001);
-		await controller.onTick(); // starts the interrogation (identify)
-		expect(controller.isConsolidating()).toBe(true);
+	it("tells a pass that repeats itself that the answer will not change", async () => {
+		const harness = await setup();
+		const { controller } = harness;
+		await intoMemoryPass(harness);
+		const ledger = controller.memoryToolContext().ledger();
+		const step = {
+			tool: "manager_recall",
+			argsKey: "where they work",
+			summary: "recalled where they work → 0 hit(s)",
+		};
+		ledger.record(step);
+		await controller.stepConsolidation();
+		ledger.record(step);
+		await controller.stepConsolidation();
+		// The context is rebuilt identically for every sample, so nothing in the prompt
+		// would ever tell the model it is looping. Only the runtime knows.
+		const directive =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(directive).toContain("same call twice");
+	});
 
-		// identify recorded; then a FRESH live message lands mid-run (grows unserved).
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
-		});
-		const fresh = {
-			...interlocutorMsg("do you know a good laptop?", 5, 2),
-			date: Math.floor(clock.now() / 1000),
-		} as Message;
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: fresh,
-		});
-		// The step preserves the identify progress, then yields for the live work.
-		expect(await controller.stepConsolidation()).toBe("abort");
-		await controller.onAgentEnd(); // finishConsolidationRun → pause
-		expect(controller.isConsolidating()).toBe(false);
-
-		// Serve the live message so the chat frees up again.
-		clock.advance(300_001); // owner-reply window expires → chat 42 becomes ready
-		await controller.onTick();
-		controller.decisionSink().record({ kind: "silent" });
-		await controller.onAgentEnd();
-
-		// Idle again past the continuation window → the paused pass RESUMES from step 2
-		// (identify was already done before the pause), not restarted at step 1.
-		clock.advance(1_800_001);
-		await controller.onTick();
-		expect(controller.isConsolidating()).toBe(true);
+	it("stops a pass that will not stop itself, one sample past its budget", async () => {
+		const harness = await setup();
+		const { controller } = harness;
+		await intoMemoryPass(harness);
+		const ledger = controller.memoryToolContext().ledger();
+		for (let i = 0; i < 12; i += 1) {
+			ledger.record({
+				tool: "manager_recall",
+				argsKey: `q${i}`,
+				summary: `recalled q${i}`,
+			});
+			expect(await controller.stepConsolidation()).toBe("continue");
+		}
+		// At the budget it is told to wrap up rather than cut off mid-thought.
 		expect(
-			(await controller.buildContextForActive())?.at(-1)?.content,
-		).toContain("Step 3 of 4");
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "",
+		).toContain("used this pass's budget");
+		ledger.record({
+			tool: "manager_recall",
+			argsKey: "q12",
+			summary: "one more",
+		});
+		expect(await controller.stepConsolidation()).toBe("abort");
 	});
 
-	it("writes a fact the moment it is verified, not when the pass finishes", async () => {
-		// The owner's report: "I thought it had already saved fact, fact, fact — and if you
-		// interrupt it, it starts over." It did. A confirmed fact was held in memory until
-		// the whole interrogation finished, so anything that ended a pass early — a live
-		// message pre-empting it, an abort, a restart — dropped every fact it had already
-		// verified, and the next pass asked the same questions from step one.
-		const { controller, deps, clock } = await setup();
+	it("pre-empts an in-flight memory pass for a live reply, then resumes it whole", async () => {
+		const harness = await setup();
+		const { controller, clock, triggerAgent } = harness;
+		await intoMemoryPass(harness);
+		const ledger = controller.memoryToolContext().ledger();
+		ledger.record({
+			tool: "manager_remember",
+			argsKey: "a",
+			summary: "remembered 1 fact(s): a",
+		});
+		await controller.stepConsolidation();
+
+		// Somebody writes: a person waiting outranks a background pass, unconditionally.
 		await controller.onBusinessMessage({
 			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("i just ordered a laptop for work"),
+			chatId: "43",
+			fromId: 7,
+			message: {
+				message_id: 9,
+				date: 0,
+				chat: { id: 43, type: "private", first_name: "Bob" },
+				from: { id: 7, is_bot: false, first_name: "Bob" },
+				text: "are you there?",
+			} as Message,
 		});
 		clock.advance(300_001);
 		await controller.onTick();
-		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
+		expect(await controller.stepConsolidation()).toBe("abort");
+		const before = triggerAgent.mock.calls.length;
+		await controller.onAgentEnd();
+		expect(controller.isConsolidating()).toBe(false);
+		expect(triggerAgent.mock.calls.length).toBeGreaterThan(before);
+
+		// The reply lands, and the pass comes back with its journal intact — the model is
+		// handed what it already did rather than starting over.
+		controller.decisionSink().record({ kind: "reply", text: "here!" });
 		await controller.onAgentEnd();
 		clock.advance(1_800_001);
-		await controller.onTick(); // starts the interrogation
-
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
-		});
-		await controller.stepConsolidation();
-		controller.probeSink().record({
-			tool: "candidates",
-			items: [
-				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
-				{
-					text: "works from an office",
-					subject: "interlocutor",
-					durable: true,
-				},
-			],
-		});
-		await controller.stepConsolidation();
-
-		// One fact verified. It is on disk NOW — the pass has not finished, and the second
-		// fact has not even been asked about yet.
-		controller.probeSink().record({
-			tool: "verify",
-			keep: true,
-			evidenceQuote: "ordered a laptop",
-		});
-		await controller.stepConsolidation();
-		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
-			"ordered a laptop",
-		]);
-
-		// The pass is now interrupted for good (the process could die here). What was
-		// verified survives; only the unasked candidate is lost, and it is cheap to redo.
-		await controller.onAgentEnd();
-		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
-			"ordered a laptop",
-		]);
-	});
-
-	it("aborts the interrogation (saves nothing) when identify flags a self-chat", async () => {
-		const { controller, deps, clock } = await setup();
-		await controller.onBusinessMessage({
-			connectionId: CONN,
-			chatId: "42",
-			fromId: 5,
-			message: interlocutorMsg("hi"),
-		});
-		clock.advance(300_001);
 		await controller.onTick();
-		controller.decisionSink().record({ kind: "reply", text: "Hi!" });
-		await controller.onAgentEnd();
-		clock.advance(1_800_001);
-		await controller.onTick(); // starts the interrogation
-		controller.probeSink().record({ tool: "identify", sameAsOwner: true });
-		await controller.onAgentEnd();
-		expect(await deps.contactStore.getFacts("5")).toEqual([]);
+		expect(controller.isConsolidating()).toBe(true);
+		expect(controller.memoryToolContext().ledger().size()).toBe(1);
 	});
 
-	it("rehydrates a contact's userId from the transcript so facts persist after a restart", async () => {
-		const { controller, deps } = await setup();
+	it("keeps what a pass stored even when the pass is cut off", async () => {
+		const harness = await setup();
+		const { controller, memory } = harness;
+		await intoMemoryPass(harness);
+		// Every memory tool writes on the spot, which is what makes a pass safe to cut
+		// off at any point. The previous design buffered until the pass "finished", and
+		// a single mid-pass message threw the whole interrogation away.
+		await memory.of("5").remember({
+			text: "works in logistics",
+			tags: ["fact", "identity"],
+		});
+		const ledger = controller.memoryToolContext().ledger();
+		ledger.record({
+			tool: "manager_remember",
+			argsKey: "logistics",
+			summary: "remembered 1 fact(s): works in logistics",
+		});
+		// Abandoned without ever calling manager_done.
+		await controller.stepConsolidation();
+		await controller.stepConsolidation();
+		await controller.stepConsolidation();
+		await controller.onAgentEnd();
+		expect(memory.texts("5")).toContain("works in logistics");
+	});
+
+	it("never opens a memory for the owner's own chat, by userId", async () => {
+		const { controller } = await setup();
+		controller.markReady("owner-chat", {
+			connectionId: CONN,
+			contactName: "Owner",
+			userId: String(OWNER_ID),
+		});
+		// The check is in code and by id, so a namesake can never be mistaken for the
+		// owner — and the owner's own details can never be filed under a contact.
+		expect(await controller.memoryToolContext().active()).toBeNull();
+	});
+
+	it("rehydrates a contact's userId from the transcript so its memory is reachable", async () => {
+		const { controller, deps, memory } = await setup();
 		// A transcript already exists on disk from a prior session (senderId recorded),
 		// and the contact record exists — but the in-memory chats map is empty (as it
 		// is right after a restart, before any fresh live message).
@@ -1577,27 +1542,23 @@ describe("ManagerController", () => {
 		controller.markReady("42", { connectionId: CONN, contactName: "Alice" });
 		// Building the turn context rehydrates the userId from the transcript.
 		await controller.buildContextForActive();
-		// A durable fact recorded this turn must land under userId "5".
-		controller
-			.factSink()
-			.record([
-				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
-			]);
-		controller.decisionSink().record({ kind: "reply", text: "noted" });
-		await controller.onAgentEnd();
-		expect(
-			(await deps.contactStore.getFacts("5")).map((f) => f.text),
-		).toContain("lives in Almaty");
+		// Which is what lets the memory tools find a database at all: the in-memory chats
+		// map is empty after a restart, and the userId is the name of the database.
+		expect(await controller.memoryToolContext().active()).not.toBeNull();
+		expect(memory.databases.has("5")).toBe(true);
 	});
 
 	it("turnDecided() gates the loop on the terminal decision, not a bare remember", async () => {
 		const { controller } = await setup();
 		// Fresh normal turn: nothing decided yet.
 		expect(controller.turnDecided()).toBe(false);
-		// A durable-fact record alone is NOT terminal — the model may still reply.
-		controller
-			.factSink()
-			.record([{ text: "name is Bob", subject: "interlocutor" }]);
+		// Storing a fact mid-conversation is NOT terminal — the model may still reply,
+		// and making it choose between remembering and answering is how a fact gets lost.
+		controller.memoryToolContext().ledger().record({
+			tool: "manager_remember",
+			argsKey: "bob",
+			summary: "remembered 1 fact(s): name is Bob",
+		});
 		expect(controller.turnDecided()).toBe(false);
 		// reply/silent ends the turn.
 		controller.decisionSink().record({ kind: "silent" });
@@ -1649,7 +1610,7 @@ describe("ManagerController", () => {
 describe("consolidation pause/resume under live work", () => {
 	const isConsolidation = (call: unknown[]) =>
 		typeof call[0] === "string" &&
-		call[0].includes("Consolidate your long-term memory");
+		call[0].includes("Bring your long-term memory");
 	const isLiveTurn = (call: unknown[]) =>
 		typeof call[0] === "string" &&
 		call[0].includes("Respond to the latest messages");
@@ -1678,13 +1639,12 @@ describe("consolidation pause/resume under live work", () => {
 		await controller.onTick();
 		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
 
-		// Fragment 1 runs (identify). While it runs, a live, addressed message lands.
+		// The pass takes a step. While it runs, a live, addressed message lands.
 		setIdle(false);
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
-			ownerLinesPresent: true,
+		controller.memoryToolContext().ledger().record({
+			tool: "manager_recall",
+			argsKey: "who",
+			summary: "recalled who they are → 0 hit(s)",
 		});
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -1733,23 +1693,20 @@ describe("consolidation pause/resume under live work", () => {
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
 	});
 
-	it("unlearns a remembered fact the person themselves overturned", async () => {
+	it("can supersede a fact without erasing what it used to believe", async () => {
 		// Memory that only ever grows eventually lies. A fact was true when it was learned
-		// and can stop being true — and until now nothing could remove one but a schema
-		// migration wiping every contact at once. So the bot would go on telling people,
-		// with total confidence, something they had corrected to its face weeks earlier.
-		const { controller, deps, clock } = await setup();
-		await deps.contactStore.upsertProfile(
-			{ userId: "5", displayName: "Alice" },
-			0,
-		);
-		await deps.contactStore.addFact("5", {
+		// and can stop being true — and under the old store nothing could remove one but a
+		// schema migration wiping every contact at once. So the bot would go on telling
+		// people, with total confidence, something they had corrected to its face weeks
+		// earlier. Now a pass can replace it, and the earlier state stays answerable.
+		const { controller, memory, clock } = await setup();
+		const database = memory.of("5");
+		const stored = await database.remember({
 			text: "Works at a bank",
-			timestamp: 0,
-			kind: "identity",
+			tags: ["fact", "identity"],
+			validFrom: 0,
 		});
 
-		// They say the thing that overturns it, and the conversation ends.
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -1763,28 +1720,26 @@ describe("consolidation pause/resume under live work", () => {
 			.record({ kind: "silent", reason: "nothing asked" });
 		await controller.onAgentEnd();
 
-		// The idle memory pass reviews what it holds against what was said.
+		// The idle memory pass replaces it, in its own words.
 		clock.advance(1_800_001);
 		await controller.onTick();
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
+		expect(controller.isConsolidating()).toBe(true);
+		await database.revise(stored.id, {
+			text: "Freelances, left the bank",
+			tags: ["fact", "identity"],
+			validFrom: clock.now(),
 		});
-		await controller.stepConsolidation();
+		controller.memoryToolContext().ledger().finish();
+		await controller.onAgentEnd();
 
-		// Step 2 asks about the fact it already holds, by number.
-		const review = (await controller.buildContextForActive())?.at(-1)?.content;
-		expect(review).toContain("1. Works at a bank");
-		controller.probeSink().record({
-			tool: "forget",
-			items: [{ number: 1, evidenceQuote: "i left the bank last month" }],
+		expect(memory.texts("5")).toContain("Freelances, left the bank");
+		expect(memory.texts("5")).not.toContain("Works at a bank");
+		// Superseded, not deleted: the old claim is still on file with its interval closed,
+		// which is what makes "what did you think in March" answerable.
+		expect(await database.get(stored.id)).toMatchObject({
+			text: "Works at a bank",
+			validTo: clock.now(),
 		});
-		await controller.stepConsolidation();
-
-		// It is gone from the store the moment the step is taken — not held in memory until
-		// the pass finishes, where a pre-empt or a restart would lose it.
-		expect(await deps.contactStore.getFacts("5")).toEqual([]);
 	});
 
 	it("writes down a decision to stay silent, which the transcript cannot hold", async () => {
@@ -1836,24 +1791,13 @@ describe("consolidation pause/resume under live work", () => {
 		// An idle gap → the memory pass runs, start to finish.
 		clock.advance(1_800_001);
 		await controller.onTick();
-		controller.probeSink().record({
-			tool: "identify",
-			sameAsOwner: false,
-			interlocutorName: "Alice",
+		controller.memoryToolContext().ledger().record({
+			tool: "manager_remember",
+			argsKey: "laptop",
+			summary: "remembered 1 fact(s): ordered a laptop",
 		});
 		await controller.stepConsolidation();
-		controller.probeSink().record({
-			tool: "candidates",
-			items: [
-				{ text: "ordered a laptop", subject: "interlocutor", durable: true },
-			],
-		});
-		await controller.stepConsolidation();
-		controller.probeSink().record({
-			tool: "verify",
-			keep: true,
-			evidenceQuote: "ordered a laptop",
-		});
+		controller.memoryToolContext().ledger().finish();
 		await controller.stepConsolidation();
 		await controller.onAgentEnd(); // the pass finalizes
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
@@ -2375,20 +2319,15 @@ describe("a memory pass is not a conversation", () => {
 		// decided this turn"). A model reading that, mid-memory-review, decided it had
 		// answered somebody — and wrote a word of prose for a chat it was never in.
 		const { controller } = await untilConsolidating();
-		controller
-			.probeSink()
-			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
-		await controller.onAgentEnd();
-		controller.probeSink().record({ tool: "candidates", items: [] });
 		expect(controller.turnDecided()).toBe(false);
-		await controller.stepConsolidation();
+		controller.memoryToolContext().ledger().finish();
+		expect(controller.turnDecided()).toBe(true);
 
-		// Nothing to verify → the pass is finished, and the directive says so in its own
-		// terms: a memory pass, nobody to answer, no tool to call.
+		// The directive that ends it says what KIND of turn it is ending.
 		const directive =
 			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
 		expect(directive).toContain("memory pass");
-		expect(directive).toContain("not replying to anyone");
+		expect(directive).toContain("nothing to send");
 		expect(directive).not.toContain("already decided this turn");
 	});
 
@@ -2398,11 +2337,7 @@ describe("a memory pass is not a conversation", () => {
 		// and the next turn to read it belongs to somebody else.
 		const { controller } = await untilConsolidating();
 		controller.decisionSink().record({ kind: "silent" });
-		controller
-			.probeSink()
-			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
-		await controller.onAgentEnd();
-		controller.probeSink().record({ tool: "candidates", items: [] });
+		controller.memoryToolContext().ledger().finish();
 		await controller.onAgentEnd();
 
 		expect(controller.isConsolidating()).toBe(false);

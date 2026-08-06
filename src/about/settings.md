@@ -78,13 +78,29 @@ say "done", "changed", or "I've turned that off".
 
 **What you remember**
 
+Your long-term memory is a database of its own for each person you talk to, and there
+is no limit on how much of it you may keep. What is limited is how much of it may be
+said in any one turn.
+
 - `manager.rememberMessages` — how many messages of a conversation are kept.
-- `manager.factsLimit` — how many facts are kept per person.
-- `manager.factConsolidationQuietMs` — how long a chat must be quiet before its facts
-  are consolidated.
-- `manager.verifyLimit` — how many probes the memory interrogation may make.
 - `manager.maxCharsPerMessage`, `manager.maxContextChars` — caps on how much of a
   conversation reaches the model.
+- `manager.factConsolidationQuietMs` — how long a chat must be quiet before you go
+  back over it and bring its memory up to date.
+- `memory.recallTokenBudget` — how much of a turn's prompt one recall may spend. This
+  is the only cap on memory there is.
+- `memory.recallK` — how many facts one recall may select at most (`0` = the engine's
+  own default).
+- `memory.episodes` — whether messages and turn outcomes are recorded alongside the
+  durable facts, so a conversation stays answerable after it has scrolled out of the
+  transcript.
+- `memory.consolidationMaxSteps`, `memory.consolidationMaxNudges` — how long an idle
+  memory pass may go on, and how many times you may be prompted after answering
+  without calling a tool.
+- `memory.embedder.kind`, `memory.embedder.url`, `memory.embedder.model`,
+  `memory.embedder.apiKeyEnv`, `memory.embedder.dim` — an optional embedding service.
+  Without one (`kind: "none"`, the default) recall still works: it matches on words,
+  on the entity graph and on time. With one it also matches on MEANING.
 
 **What you may touch**
 

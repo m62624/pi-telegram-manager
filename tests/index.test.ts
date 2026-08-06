@@ -46,14 +46,13 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"manager_reply",
 			"manager_silent",
 			"manager_remember",
-			"manager_skip",
-			"manager_identify",
-			// Step 2: the memory pass may UNLEARN, and the tool that does it is a probe like
-			// any other — same turn kind, same gate, so the head of the prompt does not move
-			// mid-pass.
+			"manager_recall",
+			"manager_revise",
 			"manager_forget",
-			"manager_candidates",
-			"manager_verify",
+			// The memory verbs, in a fixed order: tool schemas are rendered into the head of
+			// the prompt, so the same tools listed differently are a cache miss on the whole
+			// prompt (`pi/tool-visibility.ts`).
+			"manager_done",
 			"manager_resolve_draft",
 		]);
 		for (const event of [
