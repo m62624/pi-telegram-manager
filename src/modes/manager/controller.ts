@@ -105,10 +105,10 @@ export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
 	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
-	"observing. You may also call manager_remember first to save a durable fact " +
-	"ONLY when this is an interlocutor conversation and the fact is about that " +
-	"interlocutor. An Owner-summoned turn has no contact memory: do not call " +
-	"manager_remember or manager_recall for the Owner. " +
+	"observing. You may call manager_remember first only for a durable fact about " +
+	"the current contact when contact memory is open. The Owner's own chat has " +
+	"none; a summons in a contact chat still uses that contact's memory. Never " +
+	"store Owner facts under a contact. " +
 	"Never write plain text and never write a tool name as text. No draft is held " +
 	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
 	"fails.]";
@@ -463,8 +463,7 @@ export function triggerHint(
 				`Decide by meaning. If they are putting a question or request to you, ` +
 				`you MUST answer the Owner and thread your reply to${at}, not to anyone ` +
 				`else in the chat. Stay silent only when the word was incidental and ` +
-				`nothing is asked of you. This is the Owner's chat: no contact memory is ` +
-				`open, so do not call manager_remember or manager_recall here.]`
+				`nothing is asked of you.]`
 			);
 		}
 		// A summons is open but this line does not carry the wake-word: the owner is
@@ -473,8 +472,7 @@ export function triggerHint(
 			`[The Owner called you moments ago; message${at} is what they have added ` +
 			`since. If their request now reads as complete, you MUST answer the Owner ` +
 			`and thread your reply to${at}, not to anyone else in the chat. If they are ` +
-			`still assembling it, stay silent. This is the Owner's chat: no contact ` +
-			`memory is open, so do not call manager_remember or manager_recall here.]`
+			`still assembling it, stay silent.]`
 		);
 	}
 	const who = message.senderName
@@ -1443,7 +1441,13 @@ export class ManagerController {
 			: this.isReopening(records)
 				? this.deps.instructions.reopen
 				: "";
-		const known = await this.recallBlock(active, records, meta?.contactName);
+		const memory = await this.activeMemory();
+		const known = await this.recallBlock(
+			active,
+			records,
+			meta?.contactName,
+			memory,
+		);
 		// The head message is the same bytes for every chat and every turn of the session.
 		//
 		// That is not a stylistic preference, it is the whole cost model. Every backend
@@ -1701,6 +1705,7 @@ export class ManagerController {
 		chatId: string,
 		records: readonly ChatMessageRecord[],
 		contactName: string | undefined,
+		memory: ContactMemory | null,
 	): Promise<string> {
 		const query = recallQuery(records);
 		// Nothing outstanding means nothing to look up: on a revise turn or a turn the
@@ -1710,7 +1715,6 @@ export class ManagerController {
 		if (cached && cached.chatId === chatId && cached.query === query) {
 			return cached.block;
 		}
-		const memory = await this.activeMemory();
 		if (!memory) return "";
 		const name = contactName ?? chatId;
 		const result = await memory.recall({

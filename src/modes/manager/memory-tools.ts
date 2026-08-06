@@ -252,8 +252,8 @@ export function createMemoryTools(
 				error:
 					"There is no contact memory open for this conversation, so nothing can " +
 					"be stored or looked up. Owner chats deliberately have no personal " +
-					"memory; do not retry the memory tool. Continue with manager_reply or " +
-					"manager_silent.",
+					"memory; an unidentified chat has no contact either. Do not retry the " +
+					"memory tool here. Continue with manager_reply or manager_silent.",
 			};
 		}
 		return run(memory);
@@ -263,7 +263,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Owner-summoned turns have no contact memory: do not call this tool for the Owner or the Owner's own chat. Save what will still be true next month (name, city, role, preferences, commitments), not a passing mood, today's location, or anything the conversation above already says. If a fact is close to one you already hold, you will be told so along with its id, so you can replace it.",
+			"Save a durable fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Save what will still be true next month (name, city, role, preferences, commitments), not a passing mood, today's location, or anything the conversation above already says. If a fact is close to one you already hold, you will be told so along with its id, so you can replace it.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -322,7 +322,8 @@ export function createMemoryTools(
 				return ok(
 					"Nothing stored: owner/other facts are deliberately discarded. This " +
 						"tool stores only durable facts about an interlocutor in that person's " +
-						"contact memory; do not retry it in the Owner's chat.",
+						"contact memory. In a contact chat, retry only with facts about the " +
+						"interlocutor; in the Owner's own chat, do not retry the memory tool.",
 				);
 			}
 			const result = await withMemory(async (memory) => {

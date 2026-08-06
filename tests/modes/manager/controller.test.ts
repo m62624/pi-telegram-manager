@@ -768,6 +768,28 @@ describe("ManagerController", () => {
 		expect(triggerAgent).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps the contact memory when the Owner summons the bot in that contact's chat", async () => {
+		const { controller } = await setup(["llm"]);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("I work remotely"),
+		});
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: OWNER_ID,
+			message: ownerMsg("llm, remember that the contact works remotely"),
+		});
+
+		expect(await controller.memoryToolContext().active()).not.toBeNull();
+		const context = await controller.buildContextForActive();
+		expect(context?.at(-1)?.content).toContain(
+			"a summons in a contact chat still uses that contact's memory",
+		);
+	});
+
 	it("never opens a turn on the owner's own question to the interlocutor", async () => {
 		// The invariant the owner hit live: they wrote "did you buy bread?" to the
 		// interlocutor and the BOT answered "yes" — reading the owner's question as one
@@ -2385,8 +2407,6 @@ describe("triggerHint", () => {
 		// wake-word can land in a link or a name without asking anything.
 		expect(hint).toContain("evidence, not proof");
 		expect(hint).toContain("Stay silent");
-		expect(hint).toContain("no contact memory");
-		expect(hint).toContain("do not call manager_remember");
 		expect(hint).not.toContain("is addressed to YOU");
 	});
 
@@ -2396,7 +2416,6 @@ describe("triggerHint", () => {
 		expect(hint).toContain("[#120]");
 		expect(hint).toContain("added");
 		expect(hint).toContain("stay silent");
-		expect(hint).toContain("no contact memory");
 	});
 
 	it("flags an interlocutor wake-word as very likely a direct question", () => {

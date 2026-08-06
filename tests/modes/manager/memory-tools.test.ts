@@ -111,7 +111,9 @@ describe("manager_remember", () => {
 		expect(text(result)).toContain(
 			"owner/other facts are deliberately discarded",
 		);
-		expect(text(result)).toContain("do not retry it in the Owner's chat");
+		expect(text(result)).toContain(
+			"In a contact chat, retry only with facts about the interlocutor",
+		);
 	});
 });
 
