@@ -2384,7 +2384,9 @@ describe("triggerHint", () => {
 		// It must not settle the question the model is there to settle: a
 		// wake-word can land in a link or a name without asking anything.
 		expect(hint).toContain("evidence, not proof");
-		expect(hint).toContain("stay silent");
+		expect(hint).toContain("Stay silent");
+		expect(hint).toContain("no contact memory");
+		expect(hint).toContain("do not call manager_remember");
 		expect(hint).not.toContain("is addressed to YOU");
 	});
 
@@ -2394,6 +2396,7 @@ describe("triggerHint", () => {
 		expect(hint).toContain("[#120]");
 		expect(hint).toContain("added");
 		expect(hint).toContain("stay silent");
+		expect(hint).toContain("no contact memory");
 	});
 
 	it("flags an interlocutor wake-word as very likely a direct question", () => {

@@ -53,7 +53,10 @@ describe("the memory verbs", () => {
 		const { tools } = harness(null);
 		const result = await tools.get("manager_recall")?.execute("t1", {});
 		expect((result as { isError?: boolean }).isError).toBe(true);
-		expect(text(result)).toContain("no memory open");
+		expect(text(result)).toContain("no contact memory open");
+		expect(text(result)).toContain(
+			"Owner chats deliberately have no personal memory",
+		);
 	});
 });
 
@@ -105,7 +108,10 @@ describe("manager_remember", () => {
 			.get("manager_remember")
 			?.execute("t1", { facts: [{ text: "owner detail", subject: "owner" }] });
 		expect(memory?.texts()).toEqual([]);
-		expect(text(result)).toContain("only facts about the person");
+		expect(text(result)).toContain(
+			"owner/other facts are deliberately discarded",
+		);
+		expect(text(result)).toContain("do not retry it in the Owner's chat");
 	});
 });
 

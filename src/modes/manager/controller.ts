@@ -105,7 +105,10 @@ export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
 	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
-	"observing. You may also call manager_remember first to save a durable fact. " +
+	"observing. You may also call manager_remember first to save a durable fact " +
+	"ONLY when this is an interlocutor conversation and the fact is about that " +
+	"interlocutor. An Owner-summoned turn has no contact memory: do not call " +
+	"manager_remember or manager_recall for the Owner. " +
 	"Never write plain text and never write a tool name as text. No draft is held " +
 	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
 	"fails.]";
@@ -457,18 +460,21 @@ export function triggerHint(
 				`[The Owner used a wake-word for you in message${at} — that is what ` +
 				`pulled you into this turn. It is evidence, not proof: the word can ` +
 				`land in a link, a name, or a line ABOUT you rather than one TO you. ` +
-				`Decide by meaning. If they are putting something to you, answer the ` +
-				`Owner and thread your reply to${at}, not to anyone else in the chat. ` +
-				`If the word was incidental and nothing is asked of you, stay silent.]`
+				`Decide by meaning. If they are putting a question or request to you, ` +
+				`you MUST answer the Owner and thread your reply to${at}, not to anyone ` +
+				`else in the chat. Stay silent only when the word was incidental and ` +
+				`nothing is asked of you. This is the Owner's chat: no contact memory is ` +
+				`open, so do not call manager_remember or manager_recall here.]`
 			);
 		}
 		// A summons is open but this line does not carry the wake-word: the owner is
 		// still adding to the request they put to the bot a moment ago.
 		return (
 			`[The Owner called you moments ago; message${at} is what they have added ` +
-			`since. If their request now reads as complete, answer the Owner and ` +
-			`thread your reply to${at}, not to anyone else in the chat. If they are ` +
-			`still assembling it, or that line was not meant for you, stay silent.]`
+			`since. If their request now reads as complete, you MUST answer the Owner ` +
+			`and thread your reply to${at}, not to anyone else in the chat. If they are ` +
+			`still assembling it, stay silent. This is the Owner's chat: no contact ` +
+			`memory is open, so do not call manager_remember or manager_recall here.]`
 		);
 	}
 	const who = message.senderName
