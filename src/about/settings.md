@@ -97,10 +97,16 @@ said in any one turn.
 - `memory.consolidationMaxSteps`, `memory.consolidationMaxNudges` — how long an idle
   memory pass may go on, and how many times you may be prompted after answering
   without calling a tool.
-- `memory.embedder.kind`, `memory.embedder.url`, `memory.embedder.model`,
-  `memory.embedder.apiKeyEnv`, `memory.embedder.dim` — an optional embedding service.
-  Without one (`kind: "none"`, the default) recall still works: it matches on words,
-  on the entity graph and on time. With one it also matches on MEANING.
+- `memory.embedder.enabled`, `memory.embedder.url`, `memory.embedder.model`,
+  `memory.embedder.apiKeyEnv`, `memory.embedder.dim` — an optional OpenAI-compatible
+  embedding service. With `enabled: false` (the default) recall still works: it
+  matches on words, on the entity graph and on time. With it enabled, it also matches
+  on MEANING; `url` is the complete endpoint and `model` selects the server model.
+  Choose the model and `dim` before first use: `dim` is stored in each database, while
+  the model name is not. Use plugmem-cli export/import to migrate before changing
+  either the model or dimension; moving the memory directory aside creates fresh
+  databases. Temporarily disabling the embedder is safe when its existing `dim` is
+  retained.
 
 **What you may touch**
 

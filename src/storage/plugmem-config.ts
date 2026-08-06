@@ -17,37 +17,17 @@
  * Pure: strings in, a string out. `index.ts` writes it next to the workspace.
  */
 
-/**
- * Embedder providers plugmem accepts.
- *
- * Taken from the match arm in `EmbedderCfg::build`, not from plugmem's SETTINGS.md —
- * the doc omits `openai-compat`, which the code accepts. All of them build the same
- * OpenAI-compatible HTTP client, so this is a label for the provider rather than a
- * switch between behaviours; what matters is that the string reaches plugmem intact.
- */
-export const EMBEDDER_KINDS = [
-	"none",
-	"ollama",
-	"openai",
-	"openai-compat",
-	"lmstudio",
-	"vllm",
-	"llamacpp",
-] as const;
-
-export type EmbedderKind = (typeof EMBEDDER_KINDS)[number];
-
 export interface EmbedderSettings {
-	/** `none` (the default) leaves the vector source off; everything else needs a URL. */
-	kind: EmbedderKind;
-	/** OpenAI-compatible `/v1/embeddings` endpoint. */
+	/** Keep the settings but create and call no embedder when false. */
+	enabled: boolean;
+	/** Complete OpenAI-compatible embeddings endpoint; no path is appended. */
 	url?: string;
 	/** Embedding model name. */
 	model?: string;
 	/** Name of the environment variable holding the bearer token, if one is needed. */
 	apiKeyEnv?: string;
 	/**
-	 * Embedding width. `0` — the default — means no vectors at all.
+	 * Embedding width. `0` — the default — means no vector storage.
 	 *
 	 * It is written INTO the database, and plugmem refuses to open a database whose
 	 * stored width disagrees with the configured one. So this is the one memory
@@ -57,9 +37,9 @@ export interface EmbedderSettings {
 	dim: number;
 }
 
-/** Whether an embedder is actually configured (as opposed to declared and off). */
+/** Whether the configured embedder is enabled. */
 export function embedderActive(embedder: EmbedderSettings): boolean {
-	return embedder.kind !== "none";
+	return embedder.enabled;
 }
 
 /**
@@ -72,27 +52,21 @@ export function validateEmbedder(
 	embedder: EmbedderSettings,
 	path = "memory.embedder",
 ): void {
-	if (!embedderActive(embedder)) {
-		if (embedder.dim !== 0) {
-			throw new TypeError(
-				`${path}.dim must be 0 when ${path}.kind is "none" (vectors are off)`,
-			);
-		}
-		return;
-	}
+	// Disabled settings are deliberately retained, including their dimension. That
+	// lets an owner turn the same provider back on without changing an existing
+	// database's fixed vector width.
+	if (!embedderActive(embedder)) return;
 	if (!embedder.url?.trim()) {
-		throw new TypeError(
-			`${path}.url is required when ${path}.kind is not "none"`,
-		);
+		throw new TypeError(`${path}.url is required when ${path}.enabled is true`);
 	}
 	if (!embedder.model?.trim()) {
 		throw new TypeError(
-			`${path}.model is required when ${path}.kind is not "none"`,
+			`${path}.model is required when ${path}.enabled is true`,
 		);
 	}
 	if (embedder.dim <= 0) {
 		throw new TypeError(
-			`${path}.dim must be greater than 0 when ${path}.kind is not "none"`,
+			`${path}.dim must be greater than 0 when ${path}.enabled is true`,
 		);
 	}
 }
@@ -137,17 +111,19 @@ export function buildPlugmemConfig(embedder: EmbedderSettings): string {
 		"# Edits here are overwritten every time a mode starts.",
 		"",
 		"[engine]",
-		`dim = ${embedderActive(embedder) ? embedder.dim : 0}`,
+		`dim = ${embedder.dim}`,
 		"",
 		"[embedder]",
-		`kind = ${tomlString(embedder.kind)}`,
+		`enabled = ${embedder.enabled}`,
 	];
-	if (embedderActive(embedder)) {
-		lines.push(`url = ${tomlString(embedder.url ?? "")}`);
-		lines.push(`model = ${tomlString(embedder.model ?? "")}`);
-		if (embedder.apiKeyEnv?.trim()) {
-			lines.push(`api_key_env = ${tomlString(embedder.apiKeyEnv.trim())}`);
-		}
+	if (embedder.url !== undefined) {
+		lines.push(`url = ${tomlString(embedder.url)}`);
+	}
+	if (embedder.model !== undefined) {
+		lines.push(`model = ${tomlString(embedder.model)}`);
+	}
+	if (embedder.apiKeyEnv?.trim()) {
+		lines.push(`api_key_env = ${tomlString(embedder.apiKeyEnv.trim())}`);
 	}
 	return `${lines.join("\n")}\n`;
 }

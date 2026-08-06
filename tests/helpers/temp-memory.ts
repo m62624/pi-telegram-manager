@@ -24,7 +24,7 @@ export interface TempMemory {
 export function tempMemory(): TempMemory {
 	const root = mkdtempSync(join(tmpdir(), "ptm-memory-"));
 	const configPath = join(root, "config.toml");
-	writeFileSync(configPath, buildPlugmemConfig({ kind: "none", dim: 0 }));
+	writeFileSync(configPath, buildPlugmemConfig({ enabled: false, dim: 0 }));
 	const workspace = createPlugmemWorkspace(root, {
 		configPath,
 		idleTimeoutMs: 60_000,

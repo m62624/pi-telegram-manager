@@ -15,29 +15,41 @@ import {
  */
 
 describe("buildPlugmemConfig", () => {
-	it("writes dim 0 and no provider when there is no embedder", () => {
-		const toml = buildPlugmemConfig({ kind: "none", dim: 0 });
+	it("writes an explicit disabled embedder by default", () => {
+		const toml = buildPlugmemConfig({ enabled: false, dim: 0 });
 		expect(toml).toContain("dim = 0");
-		expect(toml).toContain('kind = "none"');
-		// Nothing else: an endpoint written under `kind = "none"` reads like a setting
-		// that is doing something.
+		expect(toml).toContain("enabled = false");
+		expect(toml).not.toContain("kind");
 		expect(toml).not.toContain("url");
 		expect(toml).not.toContain("model");
 	});
 
-	it("passes an embedder through verbatim", () => {
+	it("passes the full endpoint and model through verbatim", () => {
 		const toml = buildPlugmemConfig({
-			kind: "ollama",
-			url: "http://localhost:11434/v1",
+			enabled: true,
+			url: "http://localhost:11434/v1/embeddings",
 			model: "nomic-embed-text",
 			apiKeyEnv: "OPENAI_API_KEY",
 			dim: 768,
 		});
 		expect(toml).toContain("dim = 768");
-		expect(toml).toContain('kind = "ollama"');
-		expect(toml).toContain('url = "http://localhost:11434/v1"');
+		expect(toml).toContain("enabled = true");
+		expect(toml).toContain('url = "http://localhost:11434/v1/embeddings"');
 		expect(toml).toContain('model = "nomic-embed-text"');
 		expect(toml).toContain('api_key_env = "OPENAI_API_KEY"');
+	});
+
+	it("keeps provider settings while disabled", () => {
+		const toml = buildPlugmemConfig({
+			enabled: false,
+			url: "https://api.openai.com/v1/embeddings",
+			model: "text-embedding-3-small",
+			dim: 1536,
+		});
+		expect(toml).toContain("dim = 1536");
+		expect(toml).toContain("enabled = false");
+		expect(toml).toContain('url = "https://api.openai.com/v1/embeddings"');
+		expect(toml).toContain('model = "text-embedding-3-small"');
 	});
 
 	it("escapes a value rather than trusting it", () => {
@@ -45,19 +57,19 @@ describe("buildPlugmemConfig", () => {
 		// the owner as a memory that will not open — a long way from the quote mark that
 		// caused it.
 		const toml = buildPlugmemConfig({
-			kind: "openai",
-			url: 'http://host/"odd"',
+			enabled: true,
+			url: 'http://host/v1/embeddings/"odd"',
 			model: "a\\b",
 			dim: 1,
 		});
-		expect(toml).toContain('url = "http://host/\\"odd\\""');
+		expect(toml).toContain('url = "http://host/v1/embeddings/\\"odd\\""');
 		expect(toml).toContain('model = "a\\\\b"');
 	});
 
 	it("omits the key env when there is none to name", () => {
 		const toml = buildPlugmemConfig({
-			kind: "lmstudio",
-			url: "http://localhost:1234/v1",
+			enabled: true,
+			url: "http://localhost:1234/v1/embeddings",
 			model: "e5",
 			dim: 384,
 		});
@@ -67,30 +79,38 @@ describe("buildPlugmemConfig", () => {
 
 describe("validateEmbedder", () => {
 	it("accepts the default: no embedder, no vectors", () => {
-		expect(() => validateEmbedder({ kind: "none", dim: 0 })).not.toThrow();
-		expect(embedderActive({ kind: "none", dim: 0 })).toBe(false);
+		expect(() => validateEmbedder({ enabled: false, dim: 0 })).not.toThrow();
+		expect(embedderActive({ enabled: false, dim: 0 })).toBe(false);
 	});
 
-	it("refuses a width on an embedder that is switched off", () => {
-		// Not pedantry: `dim` is written into every database at creation, so a stray
-		// non-zero here would silently create vector-shaped databases with nothing to
-		// fill them — and then refuse to open them once the embedder was really turned on.
-		expect(() => validateEmbedder({ kind: "none", dim: 768 })).toThrow(
-			/dim must be 0/,
-		);
+	it("allows disabled settings to retain their vector width", () => {
+		// The width is fixed in the database. Keeping it while disabled lets the owner
+		// switch the same endpoint back on without making existing memories unopenable.
+		expect(() =>
+			validateEmbedder({
+				enabled: false,
+				url: "http://localhost:11434/v1/embeddings",
+				model: "nomic-embed-text",
+				dim: 768,
+			}),
+		).not.toThrow();
 	});
 
 	it("requires a url, a model and a width once one is switched on", () => {
-		expect(() => validateEmbedder({ kind: "ollama", dim: 768 })).toThrow(
+		expect(() => validateEmbedder({ enabled: true, dim: 768 })).toThrow(
 			/url is required/,
 		);
 		expect(() =>
-			validateEmbedder({ kind: "ollama", url: "http://x/v1", dim: 768 }),
+			validateEmbedder({
+				enabled: true,
+				url: "http://x/v1/embeddings",
+				dim: 768,
+			}),
 		).toThrow(/model is required/);
 		expect(() =>
 			validateEmbedder({
-				kind: "ollama",
-				url: "http://x/v1",
+				enabled: true,
+				url: "http://x/v1/embeddings",
 				model: "e5",
 				dim: 0,
 			}),
@@ -99,7 +119,7 @@ describe("validateEmbedder", () => {
 
 	it("names the offending key, the way every other setting check does", () => {
 		expect(() =>
-			validateEmbedder({ kind: "vllm", dim: 1 }, "memory.embedder"),
+			validateEmbedder({ enabled: true, dim: 1 }, "memory.embedder"),
 		).toThrow(/memory\.embedder\.url/);
 	});
 });

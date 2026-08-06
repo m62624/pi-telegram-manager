@@ -59,7 +59,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "consolidationMaxSteps": 12,
     "consolidationMaxNudges": 2,
     "embedder": {
-      "kind": "none",
+      "enabled": false,
       "dim": 0
     }
   },
@@ -271,56 +271,77 @@ no API key and no network:
 | Time | "what was true then", recent windows | no |
 | Semantic (vectors) | meaning, paraphrase | **yes** |
 
-So with `kind: "none"` (the default), a fact reading *"prefers to be called in the
+So with `enabled: false` (the default), a fact reading *"prefers to be called in the
 evening"* answers a question containing "evening", but not a question phrased *"when
-should I reach them?"*. Add an embedder and it does.
+should I reach them?"*. Enable the configured embedder and it does.
 
-These keys are passed to plugmem **verbatim** — they are its own `[embedder]` section
-plus `dim`, and this project does not interpret them. Any OpenAI-compatible
-`/v1/embeddings` endpoint works; all the provider names build the same HTTP client, so
-`kind` is a label for what you are pointing at.
+These keys are translated to plugmem's `[embedder]` section plus `[engine].dim`.
+There is one implementation, `OpenAiCompatEmbedder`: `url` is the complete
+OpenAI-compatible embeddings endpoint exactly as entered — no `/embeddings` path is
+appended — and `model` is the model name selected on that server. OpenAI, Ollama,
+LM Studio, vLLM and llama.cpp-compatible servers all use this same shape.
 
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
-| `memory.embedder.kind` | `"none"` | replaces | `none`, `ollama`, `openai`, `openai-compat`, `lmstudio`, `vllm` or `llamacpp`. |
-| `memory.embedder.url` | unset | replaces | The `/v1/embeddings` endpoint. Required once `kind` is not `none`. |
-| `memory.embedder.model` | unset | replaces | Embedding model name. Required once `kind` is not `none`. |
+| `memory.embedder.enabled` | `false` | replaces | Create and call the embedder when `true`; `false` keeps the settings but makes no HTTP requests. |
+| `memory.embedder.url` | unset | replaces | The complete embeddings endpoint URL, for example `https://api.openai.com/v1/embeddings`. Required when enabled. |
+| `memory.embedder.model` | unset | replaces | Embedding model name selected on the server. Required when enabled. |
 | `memory.embedder.apiKeyEnv` | unset | replaces | Name of the **environment variable** holding the bearer token — never the token itself. |
-| `memory.embedder.dim` | `0` | replaces | Embedding width. Must be `0` when `kind` is `none`, and greater than `0` otherwise. |
+| `memory.embedder.dim` | `0` | replaces | Embedding width. Must be greater than `0` when enabled; keep the stored width while temporarily disabled. |
 
 A local example, with [Ollama](https://ollama.com) already running:
 
 ```jsonc
-"memory": {
-  "embedder": {
-    "kind": "ollama",
-    "url": "http://localhost:11434/v1",
-    "model": "nomic-embed-text",
-    "dim": 768
+  "memory": {
+    "embedder": {
+      "enabled": true,
+      "url": "http://localhost:11434/v1/embeddings",
+      "model": "nomic-embed-text",
+      "dim": 768
+    }
   }
-}
 ```
 
 Settings that do not add up are refused **when the settings are read**, not at the
-first recall: an active `kind` without a `url`, a `model` or a `dim` fails the mode
-start with the offending key named.
+first recall: an enabled embedder without a `url`, a `model` or a positive `dim` fails
+the mode start with the offending key named. A disabled embedder may retain all three
+values, which makes switching it back on safe for an existing database.
+
+Choose the model and its output width before the first use of a memory. The database
+does not record the model name, so changing `model` while keeping the same `dim` will
+still open the file, but it would mix vectors from two different models. Migrate the
+memory before changing the model. Changing only `url` is safe when it still serves the
+same model and dimension. To temporarily stop semantic embedding, set `enabled: false`
+and keep the existing `model` and `dim`.
 
 > ⚠️ **`dim` cannot be changed on a memory that already has facts in it.** plugmem
 > writes the embedding width into each database at creation and refuses to open one
-> whose stored width disagrees — which is the right call, but it means *turning an
-> embedder on later* leaves your existing memories unopenable. The bot keeps answering
-> people and tells you so in the **log** topic. To move the data across, with the bot
-> stopped:
+> whose stored width disagrees. This is not an automatic model rebuild. To migrate
+> facts to a new model or dimension, use plugmem's supported JSONL export/import
+> around a stopped bot:
+>
+> First restore the old `dim` (and, if necessary, set `enabled: false`), start and
+> stop the manager once so it regenerates the old `config.toml`, then export each
+> contact database you want to keep. After that, update the settings and move the
+> old memory directory aside before creating the new databases.
 >
 > ```console
-> $ WS=~/.pi/agent/extensions/pi-telegram-manager/memory
-> $ plugmem-cli --workspace $WS --db u123456789 export > u123456789.jsonl
-> $ # then, with the new settings in place and the old database moved aside:
-> $ plugmem-cli --workspace $WS --db u123456789 import u123456789.jsonl
+> $ WS="<agent-dir returned by getAgentDir()>/extensions/pi-telegram-manager/memory"
+> $ CFG="$WS/config.toml"                 # the manager-generated config for the old database
+> $ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 export > u123456789.jsonl
+> $ # move the whole memory directory to a timestamped backup, then update settings
+> $ # and start/stop the manager once so it creates a fresh $WS and config.toml
+> $ CFG="$WS/config.toml"                 # now contains the new model and dimension
+> $ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 import u123456789.jsonl
 > ```
 >
-> Vectors are recomputed on import; closed revisions do not survive it. Decide before
-> the memories are worth keeping, or accept losing the history.
+> `getAgentDir()` above means the agent directory resolved by the Pi SDK; the actual
+> path is `<getAgentDir()>/extensions/pi-telegram-manager/memory/`. Move that whole
+> directory to a timestamped backup instead of deleting it. On the next start the
+> manager creates fresh per-contact databases. Import recomputes vectors using the
+> current embedder, but only currently open facts and edges are exported; closed
+> revisions do not survive this portable migration. For a complete backup, copy the
+> database files without changing their settings.
 
 ### Reading your own memory
 
@@ -329,11 +350,12 @@ lock. It lets go after a minute of that contact being idle, so `plugmem-cli` can
 it without stopping anything:
 
 ```console
-$ WS=~/.pi/agent/extensions/pi-telegram-manager/memory
-$ plugmem-cli --workspace $WS workspace list
-$ plugmem-cli --workspace $WS --db u123456789 recall --entity "Alice"
-$ plugmem-cli --workspace $WS --db u123456789 recall --entity "Alice" --tag episode
-$ plugmem-cli --workspace $WS --db u123456789 stats
+$ WS="<agent-dir returned by getAgentDir()>/extensions/pi-telegram-manager/memory"
+$ CFG="$WS/config.toml"
+$ plugmem-cli --workspace "$WS" --config "$CFG" workspace list
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 recall --entity "Alice"
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 recall --entity "Alice" --tag episode
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 stats
 ```
 
 The database name is `u` followed by the contact's numeric Telegram user id, and the

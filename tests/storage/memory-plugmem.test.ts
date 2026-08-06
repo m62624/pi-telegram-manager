@@ -112,7 +112,7 @@ describe("a contact's memory", () => {
 		// and the pool's own. Closing either alone leaves the file locked.
 		const root = mkdtempSync(join(tmpdir(), "ptm-idle-"));
 		const configPath = join(root, "config.toml");
-		writeFileSync(configPath, buildPlugmemConfig({ kind: "none", dim: 0 }));
+		writeFileSync(configPath, buildPlugmemConfig({ enabled: false, dim: 0 }));
 		const workspace = createPlugmemWorkspace(root, {
 			configPath,
 			idleTimeoutMs: 1,
@@ -145,7 +145,7 @@ describe("a contact's memory", () => {
 	it("releases everything on close, so a restart is not locked out", async () => {
 		const root = mkdtempSync(join(tmpdir(), "ptm-close-"));
 		const configPath = join(root, "config.toml");
-		writeFileSync(configPath, buildPlugmemConfig({ kind: "none", dim: 0 }));
+		writeFileSync(configPath, buildPlugmemConfig({ enabled: false, dim: 0 }));
 		const first = createPlugmemWorkspace(root, {
 			configPath,
 			idleTimeoutMs: 60_000,

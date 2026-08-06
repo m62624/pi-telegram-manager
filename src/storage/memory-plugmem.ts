@@ -77,11 +77,11 @@ function isDimMismatch(error: unknown): boolean {
  * Turn a failure to open into something the owner can act on.
  *
  * The dim case is called out by name because it is the one failure that is not a
- * broken install but a legitimate settings change: turning an embedder on writes a
- * vector width into new databases, and databases created before it have the old one.
- * plugmem refuses rather than reinterpreting the file, which is right — and it leaves
- * the owner holding a memory they cannot open until they either move it or put the
- * setting back.
+ * broken install but a legitimate settings change: changing the configured vector
+ * width disagrees with the width stored in an existing database. plugmem refuses
+ * rather than reinterpreting the file, which is right — and it leaves the owner
+ * holding a memory they cannot open until they either migrate it, move it aside, or
+ * put the previous setting back.
  */
 function openFailure(name: string, error: unknown): MemoryOpenError {
 	if (isDimMismatch(error)) {
@@ -89,10 +89,10 @@ function openFailure(name: string, error: unknown): MemoryOpenError {
 			`memory "${name}" was created with a different embedding width than ` +
 				"memory.embedder.dim now asks for. plugmem stores the width in the " +
 				"database and will not reinterpret it. Either restore the previous " +
-				"memory.embedder settings, or move the facts across:\n" +
-				`  plugmem-cli --workspace <memory dir> --db ${name} export > ${name}.jsonl\n` +
+				"memory.embedder settings, move the database aside, or migrate the facts:\n" +
+				`  plugmem-cli --workspace <memory dir> --config <memory dir>/config.toml --db ${name} export > ${name}.jsonl\n` +
 				`  # then, with the new settings in place, into a fresh database:\n` +
-				`  plugmem-cli --workspace <memory dir> --db ${name} import ${name}.jsonl\n` +
+				`  plugmem-cli --workspace <memory dir> --config <memory dir>/config.toml --db ${name} import ${name}.jsonl\n` +
 				"(vectors are recomputed on import; closed revisions do not survive it)",
 			error,
 		);

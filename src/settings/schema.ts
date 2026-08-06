@@ -5,7 +5,6 @@
  * `TypeError` with the offending path so misconfig is loud but recoverable.
  */
 import {
-	EMBEDDER_KINDS,
 	type EmbedderSettings,
 	validateEmbedder,
 } from "../storage/plugmem-config";
@@ -319,16 +318,17 @@ export interface TelegramSettings {
 		 */
 		consolidationMaxNudges: number;
 		/**
-		 * The embedding provider, passed through to plugmem verbatim.
+		 * The single OpenAI-compatible embedder, passed through to plugmem verbatim.
 		 *
-		 * Leave it at `none` and everything still works: three of plugmem's four recall
-		 * sources — keyword (BM25), entity graph and time — need no model, no API key
-		 * and no network. What an embedder adds is matching by MEANING, so that a fact
-		 * reading "prefers to be called in the evening" answers a question about when
-		 * to reach them, and not only a question containing the word "evening".
+		 * Leave `enabled` false and everything still works: three of plugmem's four
+		 * recall sources — keyword (BM25), entity graph and time — need no model, no API
+		 * key and no network. What an embedder adds is matching by MEANING, so that a
+		 * fact reading "prefers to be called in the evening" answers a question about
+		 * when to reach them, and not only a question containing the word "evening".
 		 *
 		 * `dim` is written INTO each database at creation and cannot be changed on one
-		 * that already holds facts — see SETTINGS.md before switching an embedder on.
+		 * that already holds facts — see SETTINGS.md before changing it. Disabling the
+		 * embedder keeps the URL, model and dimension so it can be enabled again safely.
 		 */
 		embedder: EmbedderSettings;
 	};
@@ -414,7 +414,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		consolidationMaxNudges: 2,
 		// No embedder by default: keyword, graph and time answer without one, so the
 		// bot works on a machine with no embedding service and no key.
-		embedder: { kind: "none", dim: 0 },
+		embedder: { enabled: false, dim: 0 },
 	},
 	forwards: { maxChars: 2000, maxMessages: 5, groupWindowMs: 3000 },
 	files: { maxBytes: 52_428_800, maxImagesPerTurn: 10 },
@@ -807,11 +807,10 @@ export function normalizeSettings(
 			// of the first turn taken for a stranger. `validateEmbedder` is a deliberate
 			// copy of its rules — see `storage/plugmem-config.ts`.
 			embedder: validatedEmbedder({
-				kind: asEnum(
-					embedder.kind,
-					"memory.embedder.kind",
-					EMBEDDER_KINDS,
-					d.memory.embedder.kind,
+				enabled: asBoolean(
+					embedder.enabled,
+					"memory.embedder.enabled",
+					d.memory.embedder.enabled,
 				),
 				url: asOptionalString(embedder.url, "memory.embedder.url"),
 				model: asOptionalString(embedder.model, "memory.embedder.model"),

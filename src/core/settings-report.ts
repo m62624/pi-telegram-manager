@@ -132,9 +132,9 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			`- episodes (messages and turn outcomes) recorded: ${onOff(s.memory.episodes)}`,
 			`- memory pass: up to ${s.memory.consolidationMaxSteps} tool calls, ${s.memory.consolidationMaxNudges} re-prompts`,
 			`- embedder: ${
-				s.memory.embedder.kind === "none"
-					? "none (keyword, entity-graph and time recall still work)"
-					: `${s.memory.embedder.kind} — ${s.memory.embedder.model ?? "(no model)"} at ${
+				!s.memory.embedder.enabled
+					? "disabled (keyword, entity-graph and time recall still work)"
+					: `${s.memory.embedder.model ?? "(no model)"} at ${
 							s.memory.embedder.url ?? "(no url)"
 						}, ${s.memory.embedder.dim} dimensions`
 			}`,
