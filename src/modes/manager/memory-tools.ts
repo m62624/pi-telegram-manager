@@ -45,6 +45,9 @@ export const MEMORY_REPLY_TOOL_NAME = "manager_remember";
 /** Ends a consolidation pass. Nothing else does. */
 export const MEMORY_DONE_TOOL_NAME = "manager_done";
 
+/** Maximum inspection-only recall calls before the pass must make a decision. */
+export const MAX_RECALLS_WITHOUT_PROGRESS = 3;
+
 /** What one memory tool call did, as the ledger records it. */
 export interface MemoryStep {
 	tool: string;
@@ -69,6 +72,7 @@ export class MemoryLedger {
 	private readonly entries: MemoryStep[] = [];
 	private nudgeCount = 0;
 	private done = false;
+	private recallsSinceProgress = 0;
 	/** Whether the model called ANY memory tool during the turn now ending. */
 	private acted = false;
 	/**
@@ -88,6 +92,11 @@ export class MemoryLedger {
 
 	record(step: MemoryStep): void {
 		this.entries.push(step);
+		if (step.tool === "manager_recall") {
+			this.recallsSinceProgress += 1;
+		} else {
+			this.recallsSinceProgress = 0;
+		}
 		this.acted = true;
 		this.pendingNudge = false;
 	}
@@ -129,6 +138,39 @@ export class MemoryLedger {
 
 	nudges(): number {
 		return this.nudgeCount;
+	}
+
+	/** Number of recall calls since the last non-recall memory action. */
+	recallCountSinceProgress(): number {
+		return this.recallsSinceProgress;
+	}
+
+	/** Whether another inspection would only prolong the current pass. */
+	recallBlocked(): boolean {
+		return this.recallsSinceProgress >= MAX_RECALLS_WITHOUT_PROGRESS;
+	}
+
+	/**
+	 * The small mutable draft that survives context reconstruction.
+	 *
+	 * Tool messages are not a reliable state store: the manager context is deliberately
+	 * rebuilt from the active chat before every sample. This draft is therefore concise,
+	 * explicit and derived only from the pass ledger.
+	 */
+	contextDraft(): string {
+		if (this.entries.length === 0) {
+			return (
+				"[Memory pass state: no memory tool has run in this pass yet. " +
+				"Inspect only what is needed, make useful changes, or call manager_done.]"
+			);
+		}
+		const next = this.recallBlocked()
+			? "inspection is complete; choose manager_remember, manager_revise, manager_forget, or manager_done"
+			: "decide whether another concrete inspection or a memory action is needed";
+		return (
+			`[Memory pass state: ${this.recallCountSinceProgress()}/${MAX_RECALLS_WITHOUT_PROGRESS} ` +
+			`recall checks since the last memory action; next, ${next}.]`
+		);
 	}
 
 	/**
@@ -449,7 +491,7 @@ export function createMemoryTools(
 		name: "manager_recall",
 		label: "Manager Recall",
 		description:
-			"Search your own long-term memory about this person. Use it to check what you already know before storing something, to find what a conversation may have made obsolete, or to answer a question about them from memory rather than guessing. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
+			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. manager_remember performs its own duplicate/similarity preflight before writing. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -468,6 +510,14 @@ export function createMemoryTools(
 			additionalProperties: false,
 		} as never,
 		async execute(_id, params: { query?: string; tags?: string[] }) {
+			const ledger = context.ledger();
+			if (ledger.recallBlocked()) {
+				return fail(
+					"Recall is paused for this memory pass: several inspections produced no " +
+						"memory action. Do not search again with a rephrased query. Choose " +
+						"manager_remember, manager_revise, manager_forget, or manager_done.",
+				);
+			}
 			const query = params.query?.trim() || undefined;
 			const tags = Array.isArray(params.tags)
 				? params.tags.filter((tag) => typeof tag === "string" && tag.trim())

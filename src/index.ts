@@ -3199,6 +3199,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			get consolidationDone() {
 				return manager?.isConsolidationDone() ?? false;
 			},
+			get recallBlocked() {
+				return manager?.isConsolidationRecallBlocked() ?? false;
+			},
 			get revising() {
 				return manager?.isReviseTurn() ?? false;
 			},

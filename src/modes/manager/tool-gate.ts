@@ -52,6 +52,8 @@ export interface ManagerTurnKind {
 	 * aborted" in the owner's feed, once per memory pass.
 	 */
 	consolidationDone?: boolean;
+	/** Recall is temporarily hidden after too many inspection-only calls. */
+	recallBlocked?: boolean;
 	/** A drafted reply is held and must be resolved (`isReviseTurn`). */
 	revising: boolean;
 }
@@ -92,6 +94,7 @@ export function managerToolGate(
 		matches: (name: string): boolean => {
 			if (turn.consolidating) {
 				if (turn.consolidationDone) return false;
+				if (turn.recallBlocked && name === "manager_recall") return false;
 				return isMemoryTool(name);
 			}
 			if (turn.revising) return name === MANAGER_RESOLVE_TOOL_NAME;

@@ -101,6 +101,19 @@ describe("managerToolGate", () => {
 		]);
 	});
 
+	it("hides recall after the pass has inspected without making progress", () => {
+		const gate = managerToolGate(base, {
+			consolidating: true,
+			recallBlocked: true,
+			revising: false,
+		});
+		expect(gate.matches("manager_recall")).toBe(false);
+		expect(gate.matches("manager_remember")).toBe(true);
+		expect(gate.matches("manager_revise")).toBe(true);
+		expect(gate.matches("manager_forget")).toBe(true);
+		expect(gate.matches("manager_done")).toBe(true);
+	});
+
 	it("never lets anything through that the owner's sandbox refuses", () => {
 		const gate = managerToolGate(base, ordinary);
 		expect(gate.matches("bash")).toBe(false);

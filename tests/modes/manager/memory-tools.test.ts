@@ -192,6 +192,23 @@ describe("manager_recall", () => {
 		// the answer from the conversation and reporting it as something it remembered.
 		expect(text(result)).toContain("do not infer it");
 	});
+
+	it("blocks a recall-only loop after several different searches", async () => {
+		const { tools, ledger } = harness();
+		for (const query of ["first point", "second point", "third point"]) {
+			await tools.get("manager_recall")?.execute("t1", { query });
+		}
+
+		const blocked = await tools
+			.get("manager_recall")
+			?.execute("t1", { query: "a rephrased point" });
+
+		expect((blocked as { isError?: boolean }).isError).toBe(true);
+		expect(text(blocked)).toContain(
+			"Do not search again with a rephrased query",
+		);
+		expect(ledger.size()).toBe(3);
+	});
 });
 
 describe("manager_revise", () => {
@@ -270,5 +287,29 @@ describe("MemoryLedger", () => {
 			summary: "forgot [f1]",
 		});
 		expect(ledger.digest()).toBe("1. recalled a\n2. forgot [f1]");
+	});
+
+	it("keeps a compact context draft and resets inspection pressure after progress", () => {
+		const ledger = new MemoryLedger();
+		expect(ledger.contextDraft()).toContain("no memory tool has run");
+		for (const argsKey of ["a", "b", "c"]) {
+			ledger.record({
+				tool: "manager_recall",
+				argsKey,
+				summary: "recalled a concrete point → 0 hit(s)",
+			});
+		}
+		expect(ledger.recallCountSinceProgress()).toBe(3);
+		expect(ledger.recallBlocked()).toBe(true);
+		expect(ledger.contextDraft()).toContain("inspection is complete");
+
+		ledger.record({
+			tool: "manager_remember",
+			argsKey: "new",
+			summary: "remembered one useful fact",
+		});
+		expect(ledger.recallCountSinceProgress()).toBe(0);
+		expect(ledger.recallBlocked()).toBe(false);
+		expect(ledger.contextDraft()).toContain("0/3 recall checks");
 	});
 });

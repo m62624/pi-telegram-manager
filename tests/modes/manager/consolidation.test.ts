@@ -142,6 +142,26 @@ describe("consolidationDirective", () => {
 		expect(directive).toContain("will not");
 	});
 
+	it("requires a decision after different recalls make no progress", () => {
+		const ledger = new MemoryLedger();
+		for (const argsKey of ["one", "two", "three"]) {
+			ledger.record({
+				tool: "manager_recall",
+				argsKey,
+				summary: `recalled ${argsKey}`,
+			});
+		}
+
+		const directive = consolidationDirective(ledger, {
+			maxSteps: 5,
+			maxNudges: limits.maxNudges,
+		});
+		expect(directive).toContain("inspection is complete");
+		expect(directive).toContain("Do not call manager_recall again");
+		expect(directive).toContain("manager_remember");
+		expect(directive).toContain("manager_done");
+	});
+
 	it("asks the model to wrap up once the budget is spent", () => {
 		const directive = consolidationDirective(ledgerWith(3), limits);
 		expect(directive).toContain("used this pass's budget");
@@ -193,7 +213,7 @@ describe("the consolidation system block", () => {
 			"the conversation was about a hobby",
 		);
 		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
-			"Before every new fact, check",
+			"manager_remember performs a duplicate and similarity preflight",
 		);
 	});
 });

@@ -141,7 +141,8 @@ export function consolidationMemoryBlock(rendered: string): string {
 	return (
 		`What you currently remember about this person:\n\n${body}\n\n` +
 		"The number in each [fN] tag is that fact's id: pass it to manager_revise to " +
-		"replace it, or manager_forget to drop it. Use manager_recall to look for " +
-		"anything not shown here."
+		"replace it, or manager_forget to drop it. Use manager_recall only for a " +
+		"concrete unresolved point; manager_remember performs its own preflight before " +
+		"writing a new fact."
 	);
 }

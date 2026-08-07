@@ -59,10 +59,12 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"time-bound. For example, 'wants to pursue a hobby without unwanted details' is a " +
 	"useful preference about this person; 'the conversation was about a hobby' is only a topic " +
 	"and is not a fact about them. Skip passing moods, today's location, and isolated " +
-	"details with no likely future use. Before every new fact, check the existing " +
-	"durable facts with manager_recall; then store only what is genuinely new, revise " +
-	"what this conversation overturned, and forget only what was wrong or never about " +
-	"this person. You have your memory tools and as many turns as " +
+	"details with no likely future use. Before storing, manager_remember performs a " +
+	"duplicate and similarity preflight; use manager_recall for a concrete inspection, " +
+	"then store only what is genuinely new, revise what this conversation overturned, " +
+	"and forget only what was wrong or never about this person. The runtime carries a " +
+	"small pass state; after several recall checks without a memory action, stop " +
+	"inspecting and decide. You have your memory tools and as many turns as " +
 	"you need. Call exactly one tool per turn " +
 	`and end the pass with ${MEMORY_DONE_TOOL_NAME} when the memory matches the ` +
 	"conversation.";
@@ -83,7 +85,7 @@ function workDirective(ledger: MemoryLedger): string {
 	return (
 		"[Memory pass. Call ONE memory tool now, or " +
 		`${MEMORY_DONE_TOOL_NAME} if the memory already matches the conversation.\n` +
-		"  manager_recall — check what you hold before every new fact;\n" +
+		"  manager_recall — inspect one concrete unresolved point; do not loop;\n" +
 		"  manager_remember — store something durable this conversation established;\n" +
 		"  manager_revise — replace a fact this conversation overturned (its [fN] id);\n" +
 		"  manager_forget — drop a fact that was wrong or was never about this person;\n" +
@@ -143,6 +145,16 @@ function repeatDirective(ledger: MemoryLedger): string {
 	);
 }
 
+/** The directive after several different recalls made no memory progress. */
+function recallLimitDirective(ledger: MemoryLedger): string {
+	return (
+		"[Memory pass — inspection is complete for now. Do not call manager_recall " +
+		"again with another wording. Decide from the conversation and the memory block: " +
+		"call manager_remember, manager_revise, manager_forget, or manager_done.\n\n" +
+		`This pass so far:\n${ledger.digest()}]`
+	);
+}
+
 /** The directive once the pass has spent its step budget. */
 function budgetDirective(ledger: MemoryLedger): string {
 	return (
@@ -173,6 +185,7 @@ export function consolidationDirective(
 	if (ledger.isFinished()) return CONSOLIDATION_DONE;
 	if (ledger.size() >= limits.maxSteps) return budgetDirective(ledger);
 	if (ledger.needsNudge()) return nudgeDirective(ledger, limits);
+	if (ledger.recallBlocked()) return recallLimitDirective(ledger);
 	if (ledger.repeatedLast()) return repeatDirective(ledger);
 	return workDirective(ledger);
 }

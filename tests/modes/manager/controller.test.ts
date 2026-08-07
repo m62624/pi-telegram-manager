@@ -1438,6 +1438,29 @@ describe("ManagerController", () => {
 		expect(directive).toContain("same call twice");
 	});
 
+	it("re-injects a draft and blocks a loop of differently worded recalls", async () => {
+		const harness = await setup();
+		const { controller } = harness;
+		await intoMemoryPass(harness);
+		const ledger = controller.memoryToolContext().ledger();
+
+		for (const argsKey of ["first", "second", "third"]) {
+			ledger.record({
+				tool: "manager_recall",
+				argsKey,
+				summary: "recalled a concrete point → 0 hit(s)",
+			});
+			await controller.stepConsolidation();
+		}
+
+		expect(controller.isConsolidationRecallBlocked()).toBe(true);
+		const trailing =
+			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
+		expect(trailing).toContain("Memory pass state");
+		expect(trailing).toContain("inspection is complete");
+		expect(trailing).toContain("Do not call manager_recall again");
+	});
+
 	it("stops a pass that will not stop itself, one sample past its budget", async () => {
 		const harness = await setup();
 		const { controller } = harness;

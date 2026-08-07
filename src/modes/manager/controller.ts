@@ -637,6 +637,11 @@ export class ManagerController {
 		};
 	}
 
+	/** Whether the active memory pass has exhausted its inspection-only allowance. */
+	isConsolidationRecallBlocked(): boolean {
+		return this.consolidating?.ledger.recallBlocked() ?? false;
+	}
+
 	/**
 	 * The memory of whoever this turn is about, or null when there is nobody to
 	 * remember — an unidentified chat, or the owner talking to their own bot.
@@ -1560,6 +1565,7 @@ export class ManagerController {
 				content: [
 					this.nowLine(),
 					consolidationMemoryBlock(held?.rendered ?? ""),
+					current.ledger.contextDraft(),
 					consolidationDirective(current.ledger, this.deps.consolidationLimits),
 				]
 					.filter((part) => part.trim())
