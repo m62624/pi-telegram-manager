@@ -55,6 +55,7 @@ import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import { type HeadChurn, PrefixWatch } from "./core/payload-probe";
+import { stopProcess } from "./core/process-recovery";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
@@ -421,6 +422,7 @@ const NOT_CONNECTED_NOTICE = [
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const RECOVERY_GRACE_MS = 3_000;
 /** How long a single connection-watchdog probe (getMe) may take before it counts as failed. */
 const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
@@ -1740,6 +1742,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * where `busy` is lowered, and where the waiting prompts are handed over.
 	 */
 	pi.on("agent_settled", async () => {
+		// agent_end is only the end of one low-level run. A memory pass must survive
+		// retries, compaction, and queued continuations, otherwise the next fragment
+		// runs with the ordinary reply/silent tools and can answer a chat that nobody
+		// just wrote to. Finalize while busy is still true so finalizeConsolidation's
+		// triggerTurn cannot start a nested run from this callback.
+		if (manager?.isConsolidating()) {
+			await manager.onAgentSettled().catch(() => {});
+			updateManagerBanner();
+			visibility.refresh();
+		}
 		busy = false;
 		// One macrotask later, so the finished run has fully unwound its own `finally`
 		// before the next prompt starts the next run from underneath it.
@@ -3580,6 +3592,88 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		if (manager) await stopManager();
 		if (connect && activeCtx) await stopConnect(activeCtx);
 	};
+
+	const recoverTelegram = async (
+		args: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		const active = await lifecycle.resolveActive();
+		if (!active) {
+			ctx.ui.notify("Telegram recovery: no active instance.");
+			return;
+		}
+
+		if (active.pid === process.pid) {
+			await abort.abort();
+			await stopAll();
+			await lifecycle.forceClear(active);
+			ctx.ui.notify(
+				"Telegram recovery: stopped the active mode in this session.",
+			);
+			return;
+		}
+
+		const heartbeatAge = Math.max(0, Date.now() - active.heartbeatAt);
+		const detail = `mode=${active.mode}, pid=${active.pid}, heartbeat=${Math.round(heartbeatAge / 1000)}s ago`;
+		const force = /(?:^|\s)--force(?:\s|$)/u.test(args);
+		if (!force) {
+			if (!ctx.hasUI) {
+				ctx.ui.notify(
+					`Telegram recovery found a foreign instance (${detail}). ` +
+						"Use /telegram-recover --force from the TUI to stop it.",
+					"warning",
+				);
+				return;
+			}
+			const confirmed = await ctx.ui.confirm(
+				"Force-stop Telegram instance?",
+				`${detail}. This terminates that Pi process and releases the Telegram lock.`,
+			);
+			if (!confirmed) {
+				ctx.ui.notify("Telegram recovery cancelled.");
+				return;
+			}
+		}
+
+		const result = await stopProcess(
+			active.pid,
+			{
+				isAlive: pidIsAlive,
+				signal: (pid, signal) => process.kill(pid, signal),
+				now: () => Date.now(),
+				sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+			},
+			{ graceMs: RECOVERY_GRACE_MS },
+		);
+		if (!result.stopped) {
+			ctx.ui.notify(
+				`Telegram recovery could not stop pid ${active.pid}. ` +
+					"The singleton was left untouched.",
+				"error",
+			);
+			return;
+		}
+
+		const cleared = await lifecycle.forceClear(active);
+		if (!cleared && (await lifecycle.resolveActive())) {
+			ctx.ui.notify(
+				"Telegram recovery stopped the old process, but the lock changed meanwhile; " +
+					"nothing was cleared automatically.",
+				"error",
+			);
+			return;
+		}
+		ctx.ui.notify(
+			`Telegram recovery: stopped the old ${active.mode} instance (pid ${active.pid})` +
+				(result.escalated ? " with SIGKILL" : "") +
+				". Start a mode again in this session.",
+		);
+	};
+
+	pi.registerCommand(COMMANDS.recover, {
+		description: "Recover Telegram from an inaccessible or stuck Pi session.",
+		handler: recoverTelegram,
+	});
 
 	// Start a specific mode using the captured command context.
 	const startMode = async (

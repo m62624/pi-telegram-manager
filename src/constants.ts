@@ -50,6 +50,8 @@ export const COMMANDS = {
 	stop: "telegram-stop",
 	/** Print the active bridge status. */
 	status: "telegram-status",
+	/** Recover a bridge held by an inaccessible or wedged Pi instance. */
+	recover: "telegram-recover",
 } as const;
 
 /**

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ToolCallEventResult } from "../../src/pi/sdk";
 import { createToolMatcher } from "../../src/pi/tool-allow";
 import {
+	CONSOLIDATION_END_TURN_HINT,
 	RESOLVE_DRAFT_END_TURN_HINT,
 	registerToolGuard,
 } from "../../src/pi/tool-guard";
@@ -71,5 +72,30 @@ describe("registerToolGuard", () => {
 		expect(result.block).toBe(true);
 		expect(result.reason).toContain("manager_resolve_draft");
 		expect(result.reason).toContain("disabled this turn");
+	});
+
+	it("never steers a blocked silent call back to reply tools during consolidation", async () => {
+		const pi = fakePi();
+		const matcher = createToolMatcher([
+			"manager_remember",
+			"manager_recall",
+			"manager_revise",
+			"manager_forget",
+			"manager_done",
+		]);
+		registerToolGuard(pi as never, {
+			isActive: () => true,
+			matcher: () => matcher,
+			endTurnHint: () => CONSOLIDATION_END_TURN_HINT,
+		});
+		const result = await pi.call("manager_silent");
+		expect(result.block).toBe(true);
+		expect(result.reason).toContain("background memory pass");
+		expect(result.reason).toContain(
+			"manager_reply / manager_silent do not exist",
+		);
+		expect(result.reason).not.toContain(
+			"End your turn by calling exactly one of manager_reply",
+		);
 	});
 });

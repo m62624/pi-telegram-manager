@@ -41,6 +41,8 @@ export interface LifecycleController {
 	activate(input: ActivateInput): Promise<ActivateResult>;
 	/** Turn a mode off (only if this instance owns that mode). */
 	deactivate(mode: BridgeMode): Promise<void>;
+	/** Clear a foreign record only if it is still the exact record being recovered. */
+	forceClear(expected: TelegramSingletonRecord): Promise<boolean>;
 	/** Refresh the heartbeat if this instance owns the active record. */
 	heartbeat(): Promise<void>;
 }
@@ -112,6 +114,21 @@ export function createLifecycleController(
 				}
 				return current; // not ours — leave untouched
 			});
+		},
+
+		async forceClear(expected) {
+			let cleared = false;
+			await deps.store.update((current) => {
+				if (
+					current?.pid === expected.pid &&
+					current.instanceId === expected.instanceId
+				) {
+					cleared = true;
+					return null;
+				}
+				return current;
+			});
+			return cleared;
 		},
 
 		async heartbeat() {
