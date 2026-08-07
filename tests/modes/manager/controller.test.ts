@@ -1318,6 +1318,7 @@ describe("ManagerController", () => {
 			interlocutorName: "Alice",
 		});
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 
 		// Probe 2 — candidates. Owner-tagged / non-durable ones are dropped by code.
 		expect(
@@ -1336,6 +1337,7 @@ describe("ManagerController", () => {
 			],
 		});
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 
 		// Probe 3 — per-fact verify (only the one surviving candidate).
 		expect(
@@ -1347,6 +1349,7 @@ describe("ManagerController", () => {
 			evidenceQuote: "ordered a laptop",
 		});
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 
 		const facts = await deps.contactStore.getFacts("5");
 		expect(facts.map((f) => f.text)).toEqual(["ordered a laptop"]);
@@ -1417,8 +1420,9 @@ describe("ManagerController", () => {
 		// The whole interrogation ran WITHOUT re-triggering an agent per probe.
 		expect(triggerAgent.mock.calls.length).toBe(triggersAtStart);
 
-		// The aborted run ends → agent_end persists the verified fact and closes the pass.
+		// The aborted run settles → the verified fact is persisted and the pass closes.
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect((await deps.contactStore.getFacts("5")).map((f) => f.text)).toEqual([
 			"ordered a laptop",
 		]);
@@ -1459,7 +1463,8 @@ describe("ManagerController", () => {
 		});
 		// The step preserves the identify progress, then yields for the live work.
 		expect(await controller.stepConsolidation()).toBe("abort");
-		await controller.onAgentEnd(); // finishConsolidationRun → pause
+		await controller.onAgentEnd();
+		await controller.onAgentSettled(); // finishConsolidationRun → pause
 		expect(controller.isConsolidating()).toBe(false);
 
 		// Serve the live message so the chat frees up again.
@@ -1700,6 +1705,7 @@ describe("consolidation pause/resume under live work", () => {
 		// (a live turn, NOT another consolidation probe).
 		setIdle(true);
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
 		expect(isLiveTurn(triggerAgent.mock.calls.at(-1) as unknown[])).toBe(true);
 
@@ -1855,7 +1861,8 @@ describe("consolidation pause/resume under live work", () => {
 			evidenceQuote: "ordered a laptop",
 		});
 		await controller.stepConsolidation();
-		await controller.onAgentEnd(); // the pass finalizes
+		await controller.onAgentEnd();
+		await controller.onAgentSettled(); // the pass finalizes
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
 		const passes = countConsolidation(triggerAgent.mock.calls);
 		expect(passes).toBe(1);
@@ -2379,6 +2386,7 @@ describe("a memory pass is not a conversation", () => {
 			.probeSink()
 			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		controller.probeSink().record({ tool: "candidates", items: [] });
 		expect(controller.turnDecided()).toBe(false);
 		await controller.stepConsolidation();
@@ -2402,8 +2410,10 @@ describe("a memory pass is not a conversation", () => {
 			.probeSink()
 			.record({ tool: "identify", sameAsOwner: false, interlocutorName: "A" });
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		controller.probeSink().record({ tool: "candidates", items: [] });
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 
 		expect(controller.isConsolidating()).toBe(false);
 		expect(controller.decisionSink().current().kind).toBe("none");

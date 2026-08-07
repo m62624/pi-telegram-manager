@@ -5,10 +5,7 @@ import {
 	MANAGER_RESOLVE_TOOL_NAME,
 	MANAGER_TOOL_NAMES,
 } from "../../src/modes/manager/decision";
-import {
-	MEMORY_REPLY_TOOL_NAME,
-	MEMORY_TOOL_NAMES,
-} from "../../src/modes/manager/memory-tools";
+import { INTERROGATION_TOOL_NAMES } from "../../src/modes/manager/interrogation";
 import { managerHoldsSession } from "../../src/modes/manager/polarity";
 import { managerToolGate } from "../../src/modes/manager/tool-gate";
 import { createToolMatcher } from "../../src/pi/tool-allow";
@@ -198,9 +195,8 @@ describe("the real group wiring (index.ts)", () => {
 	// Exactly what index.ts registers, so the sandbox is tested as it actually runs.
 	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
 	const MANAGER_GROUP = [
-		"manager_reply",
-		"manager_silent",
-		...MEMORY_TOOL_NAMES,
+		...MANAGER_TOOL_NAMES,
+		...INTERROGATION_TOOL_NAMES,
 		MANAGER_RESOLVE_TOOL_NAME,
 		...ABOUT_TOOL_NAMES,
 	];
@@ -211,9 +207,8 @@ describe("the real group wiring (index.ts)", () => {
 		"ask_user",
 		...TELEGRAM_TOOL_NAMES,
 		...ABOUT_TOOL_NAMES,
-		"manager_reply",
-		"manager_silent",
-		...MEMORY_TOOL_NAMES,
+		...MANAGER_TOOL_NAMES,
+		...INTERROGATION_TOOL_NAMES,
 		MANAGER_RESOLVE_TOOL_NAME,
 	];
 
@@ -296,16 +291,12 @@ describe("the real group wiring (index.ts)", () => {
 		visibility.setActive("manager", true);
 
 		expect(api.active.sort()).toEqual(
-			[
-				...MANAGER_TOOL_NAMES,
-				MEMORY_REPLY_TOOL_NAME,
-				...ABOUT_TOOL_NAMES,
-			].sort(),
+			[...MANAGER_TOOL_NAMES, ...ABOUT_TOOL_NAMES].sort(),
 		);
 
 		consolidating = true;
 		visibility.refresh();
-		expect(api.active.sort()).toEqual([...MEMORY_TOOL_NAMES].sort());
+		expect(api.active.sort()).toEqual([...INTERROGATION_TOOL_NAMES].sort());
 		expect(api.active).not.toContain("manager_reply");
 		expect(api.active).not.toContain("manager_silent");
 
