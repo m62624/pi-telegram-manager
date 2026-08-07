@@ -276,6 +276,11 @@ Then open Pi and start a mode.
 | `/telegram-mixed` | Start **mixed** mode — terminal + Telegram in one session |
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
+| `/telegram-recover` | Recover a mode held by an inaccessible or stuck Pi session |
+
+`/telegram-recover` shows the foreign process and asks for confirmation before sending
+SIGTERM, escalating to SIGKILL only when needed, then clears only the matching singleton
+record. In a headless TUI use `/telegram-recover --force`.
 
 **In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/resume` (pick / resume which session Personal runs in).
 

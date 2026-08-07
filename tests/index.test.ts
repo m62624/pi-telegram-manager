@@ -32,6 +32,7 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"telegram-mixed",
 			"telegram-stop",
 			"telegram-status",
+			"telegram-recover",
 		]) {
 			expect(commands.has(command)).toBe(true);
 		}

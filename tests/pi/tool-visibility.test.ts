@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ABOUT_TOOL_NAMES } from "../../src/core/about";
 import { TELEGRAM_TOOL_NAMES } from "../../src/core/attachments";
+import {
+	MANAGER_RESOLVE_TOOL_NAME,
+	MANAGER_TOOL_NAMES,
+} from "../../src/modes/manager/decision";
+import { INTERROGATION_TOOL_NAMES } from "../../src/modes/manager/interrogation";
 import { managerHoldsSession } from "../../src/modes/manager/polarity";
+import { managerToolGate } from "../../src/modes/manager/tool-gate";
 import { createToolMatcher } from "../../src/pi/tool-allow";
 import {
 	createToolVisibility,
@@ -189,10 +195,9 @@ describe("the real group wiring (index.ts)", () => {
 	// Exactly what index.ts registers, so the sandbox is tested as it actually runs.
 	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
 	const MANAGER_GROUP = [
-		"manager_reply",
-		"manager_silent",
-		"manager_remember",
-		"manager_skip",
+		...MANAGER_TOOL_NAMES,
+		...INTERROGATION_TOOL_NAMES,
+		MANAGER_RESOLVE_TOOL_NAME,
 		...ABOUT_TOOL_NAMES,
 	];
 	const ALL = [
@@ -202,10 +207,9 @@ describe("the real group wiring (index.ts)", () => {
 		"ask_user",
 		...TELEGRAM_TOOL_NAMES,
 		...ABOUT_TOOL_NAMES,
-		"manager_reply",
-		"manager_silent",
-		"manager_remember",
-		"manager_skip",
+		...MANAGER_TOOL_NAMES,
+		...INTERROGATION_TOOL_NAMES,
+		MANAGER_RESOLVE_TOOL_NAME,
 	];
 
 	/** A fresh Pi session starts with every registered tool active. */
@@ -261,6 +265,50 @@ describe("the real group wiring (index.ts)", () => {
 		]) {
 			expect(api.active).not.toContain(forbidden);
 		}
+	});
+
+	it("keeps the real manager visibility in sync with the turn kind", () => {
+		const api = fakeApi();
+		let consolidating = false;
+		let consolidationDone = false;
+		let revising = false;
+		const matcher = managerToolGate(createToolMatcher(MANAGER_GROUP), {
+			get consolidating() {
+				return consolidating;
+			},
+			get consolidationDone() {
+				return consolidationDone;
+			},
+			get revising() {
+				return revising;
+			},
+		});
+		const visibility = createToolVisibility(api, {
+			connect: CONNECT_GROUP,
+			manager: MANAGER_GROUP,
+		});
+		visibility.setExclusive("manager", matcher);
+		visibility.setActive("manager", true);
+
+		expect(api.active.sort()).toEqual(
+			[...MANAGER_TOOL_NAMES, ...ABOUT_TOOL_NAMES].sort(),
+		);
+
+		consolidating = true;
+		visibility.refresh();
+		expect(api.active.sort()).toEqual([...INTERROGATION_TOOL_NAMES].sort());
+		expect(api.active).not.toContain("manager_reply");
+		expect(api.active).not.toContain("manager_silent");
+
+		consolidationDone = true;
+		visibility.refresh();
+		expect(api.active).toEqual([]);
+
+		consolidating = false;
+		consolidationDone = false;
+		revising = true;
+		visibility.refresh();
+		expect(api.active).toEqual([MANAGER_RESOLVE_TOOL_NAME]);
 	});
 
 	it("keeps the sandbox closed even while personal mode is also active (mixed)", () => {
