@@ -13,6 +13,20 @@
  */
 
 /**
+ * Links, removed before matching. A URL is not speech: nobody addresses the bot
+ * by pasting an address that happens to contain its name.
+ *
+ * Normalization reduces `/`, `-` and `.` to spaces, so every path segment of a
+ * link becomes a bare token — and the default wake-word list is `llm, manager`.
+ * A link to this very project (`.../pi-telegram-manager/pull/47`) therefore read
+ * as a summons: the owner pasted a PR link, the bot decided it had been called
+ * by name, and answered a message that was never addressed to it. That is the
+ * one path by which an owner message opens a turn at all, so a false match here
+ * costs a reply nobody asked for.
+ */
+const LINK = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)\S+/giu;
+
+/**
  * Lowercase and reduce everything that is not a letter or number to single
  * spaces, so a token sits between spaces regardless of surrounding punctuation.
  */
@@ -24,13 +38,16 @@ function normalize(text: string): string {
 		.trim();
 }
 
-/** Whether `text` contains any of `words` as a whole word/phrase (case-insensitive). */
+/**
+ * Whether `text` contains any of `words` as a whole word/phrase
+ * (case-insensitive), ignoring anything inside a {@link LINK}.
+ */
 export function matchesMention(
 	text: string,
 	words: readonly string[],
 ): boolean {
 	if (!text || words.length === 0) return false;
-	const haystack = ` ${normalize(text)} `;
+	const haystack = ` ${normalize(text.replace(LINK, " "))} `;
 	return words.some((word) => {
 		const needle = normalize(word);
 		return needle.length > 0 && haystack.includes(` ${needle} `);
