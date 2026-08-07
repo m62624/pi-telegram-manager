@@ -40,6 +40,16 @@ function ownerMsg(text: string, messageId = 100): Message {
 	} as Message;
 }
 
+function secondInterlocutorMsg(text: string, messageId = 1): Message {
+	return {
+		message_id: messageId,
+		date: 0,
+		chat: { id: 43, type: "private", first_name: "Alex" },
+		from: { id: 7, is_bot: false, first_name: "Alex" },
+		text,
+	} as Message;
+}
+
 async function setup(mentionWords: string[] = []) {
 	const fs = new FakeFs();
 	const paths = createTelegramPaths("/agent");
@@ -1527,6 +1537,69 @@ describe("ManagerController", () => {
 		await controller.onTick();
 		expect(controller.isConsolidating()).toBe(true);
 		expect(controller.memoryToolContext().ledger().size()).toBe(1);
+	});
+
+	it("keeps a paused pass and both contact memories isolated across a chat switch", async () => {
+		const harness = await setup();
+		const { controller, memory, clock } = harness;
+		await intoMemoryPass(harness);
+		await memory.of("5").remember({
+			text: "A-only durable marker",
+			tags: ["fact", "context"],
+		});
+		await memory.of("7").remember({
+			text: "B-only durable marker",
+			tags: ["fact", "context"],
+		});
+
+		const pausedLedger = controller.memoryToolContext().ledger();
+		pausedLedger.record({
+			tool: "manager_remember",
+			argsKey: "a-progress",
+			summary: "remembered a fact for the first contact",
+		});
+		await controller.stepConsolidation();
+
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "43",
+			fromId: 7,
+			message: secondInterlocutorMsg("Please discuss the blue marker", 1),
+		});
+		// The live message stops consolidation at the next sample boundary and parks A's
+		// ledger. It does not change which transcript/memory the current A sample sees.
+		expect(await controller.stepConsolidation()).toBe("abort");
+		await controller.onAgentEnd();
+		expect(controller.isConsolidating()).toBe(false);
+
+		// After the owner-reply window, the ordinary turn is for B and resolves B's DB.
+		clock.advance(300_001);
+		await controller.onTick();
+		expect(await controller.memoryToolContext().active()).toBe(memory.of("7"));
+		const bContext =
+			(await controller.buildContextForActive())
+				?.map((message) => message.content)
+				.join("\n") ?? "";
+		expect(bContext).toContain("B-only durable marker");
+		expect(bContext).not.toContain("A-only durable marker");
+
+		controller.decisionSink().record({ kind: "reply", text: "B reply" });
+		await controller.onAgentEnd();
+
+		// Once B's live turn and continuation window are over, the paused pass for A is
+		// resumed with the same ledger and a freshly loaded A transcript.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(controller.isConsolidating()).toBe(true);
+		expect(controller.memoryToolContext().ledger()).toBe(pausedLedger);
+		expect(controller.memoryToolContext().ledger().size()).toBe(1);
+		expect(await controller.memoryToolContext().active()).toBe(memory.of("5"));
+		const aContext =
+			(await controller.buildContextForActive())
+				?.map((message) => message.content)
+				.join("\n") ?? "";
+		expect(aContext).toContain("A-only durable marker");
+		expect(aContext).not.toContain("B-only durable marker");
 	});
 
 	it("keeps what a pass stored even when the pass is cut off", async () => {
