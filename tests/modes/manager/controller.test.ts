@@ -965,6 +965,9 @@ describe("ManagerController", () => {
 		).toBe(true);
 		// The turn ends with the action directive that forces a tool call.
 		expect(ctx?.at(-1)?.content).toContain("manager_reply");
+		expect(ctx?.at(-1)?.content).toContain(
+			"State: batch #1; last=interlocutor",
+		);
 	});
 
 	it("carries reply/forward context of an interlocutor message into the context", async () => {

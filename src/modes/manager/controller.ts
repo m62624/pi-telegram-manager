@@ -64,7 +64,7 @@ import {
 	type IsolatedMessage,
 	windowRecords,
 } from "./context-isolation";
-import { analyzeChat, type ConversationState } from "./conversation-state";
+import { analyzeChat, conversationStateCard } from "./conversation-state";
 import {
 	DecisionState,
 	DraftResolutionState,
@@ -503,17 +503,6 @@ interface ConsolidationPass {
 	 * at every launch.
 	 */
 	coveredThrough: number;
-}
-
-/** A short human-readable state line injected so the model decides deliberately. */
-function stateSummary(state: ConversationState): string {
-	if (state.interlocutorWaiting) {
-		return "[State: the interlocutor sent the latest message and is waiting; the owner has not answered. Decide whether a reply is needed.]";
-	}
-	if (state.lastAuthor === "owner") {
-		return "[State: the owner spoke last. Stay silent unless you are directly addressed.]";
-	}
-	return "[State: you replied last. Continue only if there is something to add.]";
 }
 
 export class ManagerController {
@@ -1489,9 +1478,18 @@ export class ManagerController {
 			? "owner"
 			: "interlocutor";
 		const owed = this.ownerSummoned.has(active) || state.interlocutorWaiting;
+		const trigger = owed ? triggerMessage(records, triggerSide) : undefined;
+		const directAddressed =
+			this.ownerSummoned.has(active) ||
+			(trigger !== undefined &&
+				matchesMention(trigger.text, this.deps.mentionWords));
 		const hint =
 			directive === MANAGER_ACTION_TRIGGER && owed
 				? triggerHint(records, triggerSide, this.deps.mentionWords)
+				: "";
+		const stateCard =
+			directive === MANAGER_ACTION_TRIGGER
+				? conversationStateCard(records, { directAddressed })
 				: "";
 		return [
 			{ role: "user", content: system },
@@ -1502,7 +1500,7 @@ export class ManagerController {
 					this.nowLine(),
 					opener,
 					known,
-					`${stateSummary(state)}${hint ? `\n\n${hint}` : ""}`,
+					`${stateCard}${hint ? `\n\n${hint}` : ""}`,
 					directive,
 				]
 					.filter((part) => part.trim())
