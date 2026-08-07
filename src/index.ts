@@ -55,12 +55,19 @@ import { formatClock, formatNowLine } from "./core/datetime";
 import { readInstructionFiles } from "./core/instructions";
 import { createLifecycleController, pidIsAlive } from "./core/lifecycle";
 import { type HeadChurn, PrefixWatch } from "./core/payload-probe";
+import { stopProcess } from "./core/process-recovery";
 import {
 	classifyInputSource,
 	shouldMirrorToTelegram,
 } from "./core/prompt-origin";
 import { createSerialLane } from "./core/serial-lane";
 import { renderSettingsReport } from "./core/settings-report";
+import {
+	activeTelegramMode,
+	hasManagerRuntime,
+	hasPersonalRuntime,
+	type TelegramRuntimeState,
+} from "./core/telegram-mode-state";
 import {
 	fullOutputPath,
 	planAttachment,
@@ -424,6 +431,7 @@ const NOT_CONNECTED_NOTICE = [
 
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const RECOVERY_GRACE_MS = 3_000;
 /** How long a single connection-watchdog probe (getMe) may take before it counts as failed. */
 const CONNECTION_PROBE_TIMEOUT_MS = 15_000;
 const TYPING_REFRESH_MS = 4_000;
@@ -814,6 +822,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	let managerUi: {
 		setWidget: ExtensionCommandContext["ui"]["setWidget"];
 	} | null = null;
+	const runtimeState = (): TelegramRuntimeState => ({
+		manager: manager !== null,
+		managerClient: managerClient !== null,
+		connect: connect !== null,
+		client: client !== null,
+		mixed: mixedActive,
+	});
 
 	// `/switch` control state. `activeCtx` is the most recent command context —
 	// needed so a Telegram button press (which has no Pi ctx) can still notify and
@@ -1406,7 +1421,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		pi.registerTool(tool);
 	}
 
-	const stopConnect = async (ctx: ExtensionCommandContext): Promise<void> => {
+	const stopConnect = async (ctx?: ExtensionCommandContext): Promise<void> => {
+		// Detach the runtime before waiting for Telegram. grammY performs one final
+		// network request while stopping long polling; the local bridge must already
+		// look stopped if that request is slow or unavailable.
+		const stoppingClient = client;
+		client = null;
+		connect = null;
 		stopTyping();
 		stopThinking();
 		disarmWatchdog();
@@ -1418,9 +1439,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			clearInterval(queuePump);
 			queuePump = null;
 		}
-		await client?.stop().catch(() => {});
-		client = null;
-		connect = null;
 		connectSystemBlock = null;
 		// Nothing will ever confirm a hand-off that is still waiting: the mode is gone.
 		turnStarted.clear();
@@ -1434,12 +1452,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		toolOutputMaxBytes = 0;
 		activeSettings = null;
 		contextReset.forget();
+		await stoppingClient?.stop().catch(() => {});
 		await lifecycle.deactivate("connect");
 		visibility.setActive("connect", false);
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		ctx?.ui.setStatus(STATUS_KEY, undefined);
 	};
 
 	const stopManager = async (): Promise<void> => {
+		// Capture and detach first for the same reason as stopConnect. This also
+		// makes recovery safe after a partial start where managerClient exists but
+		// the ManagerController was never assigned.
+		const stoppingClient = managerClient;
+		managerClient = null;
+		manager = null;
+		const wasMixed = mixedActive;
 		disarmWatchdog();
 		if (notConnectedTimer) {
 			clearTimeout(notConnectedTimer);
@@ -1454,9 +1480,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			clearInterval(managerHeartbeat);
 			managerHeartbeat = null;
 		}
-		await managerClient?.stop().catch(() => {});
-		managerClient = null;
-		manager = null;
+		await stoppingClient?.stop().catch(() => {});
 		await memoryWorkspace?.close().catch(() => {});
 		memoryWorkspace = null;
 		deliverManagerFeed = null;
@@ -1473,7 +1497,6 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		lastContext = null;
 		// Tear down mixed-mode state (a no-op for the standalone manager). Deactivate
 		// the lifecycle record for whichever mode was actually running.
-		const wasMixed = mixedActive;
 		if (wasMixed) {
 			cancelMixedReturnTimer();
 			mixedActive = false;
@@ -1493,6 +1516,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			visibility.setActive("connect", false);
 			activeCtx?.ui.setStatus(STATUS_KEY, undefined);
 		}
+		await stoppingClient?.stop().catch(() => {});
 		await lifecycle.deactivate(wasMixed ? "mixed" : "manager");
 	};
 
@@ -1769,6 +1793,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 * where `busy` is lowered, and where the waiting prompts are handed over.
 	 */
 	pi.on("agent_settled", async () => {
+		// agent_end is only the end of one low-level run. A memory pass must survive
+		// retries, compaction, and queued continuations, otherwise the next fragment
+		// runs with the ordinary reply/silent tools and can answer a chat that nobody
+		// just wrote to. Finalize while busy is still true so finalizeConsolidation's
+		// triggerTurn cannot start a nested run from this callback.
+		if (manager?.isConsolidating()) {
+			await manager.onAgentSettled().catch(() => {});
+			updateManagerBanner();
+			visibility.refresh();
+		}
 		busy = false;
 		// One macrotask later, so the finished run has fully unwound its own `finally`
 		// before the next prompt starts the next run from underneath it.
@@ -2124,7 +2158,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const CONNECT_INTENT_MAX_AGE_MS = 60_000;
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		if (!(connect || manager)) return;
+		const activeRuntime = runtimeState();
+		const activeRecord = await lifecycle.resolveActive();
+		const ownsOrRunsRuntime =
+			hasManagerRuntime(activeRuntime) || hasPersonalRuntime(activeRuntime);
+		if (!ownsOrRunsRuntime && !(activeRecord?.pid === process.pid)) return;
 		// A session switch (new/resume/fork) re-arms the bridge in the next instance, so
 		// leave the pin for it to set; only a real stop flips it to "Stopped" here. (No
 		// goodbye card: a card said the same thing once, then stayed in the chat forever.)
@@ -2138,8 +2176,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// collides with it (getUpdates 409), and the lapsed heartbeat holds the lock on
 		// this same pid. Use the shutdown context (still valid pre-dispose) via the adapter.
 		const commandCtx = commandContextFromBase(ctx);
-		if (manager) await stopManager();
-		if (connect) await stopConnect(commandCtx);
+		if (hasManagerRuntime(activeRuntime)) await stopManager();
+		if (hasPersonalRuntime(runtimeState())) await stopConnect(commandCtx);
+		if (!ownsOrRunsRuntime && activeRecord?.pid === process.pid)
+			await lifecycle.deactivate(activeRecord.mode);
 	});
 
 	// The other half of a session switch: the freshly-loaded instance finds the note the
@@ -3612,22 +3652,33 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(COMMANDS.stop, {
 		description: "Stop the active Telegram mode.",
 		handler: async (_args, ctx) => {
-			if (manager) {
-				await updateModePin("stop");
-				await stopManager();
-				ctx.ui.notify("Telegram: stopped.");
-			} else if (connect) {
+			const target = activeTarget();
+			if (target === "stop") {
+				// A failed start may have written the singleton before creating its
+				// controller/client. Clear that own record too; otherwise /stop would
+				// report "nothing active" while the next start is still blocked.
+				const active = await lifecycle.resolveActive();
+				if (active?.pid === process.pid) {
+					await lifecycle.deactivate(active.mode);
+					ctx.ui.notify("Telegram: stopped.");
+					return;
+				}
+				ctx.ui.notify("No Telegram mode is active.", "warning");
+				return;
+			}
+			// A stop is a priority action: a live model turn must not keep the
+			// singleton alive while its Telegram client is being torn down.
+			await abort.abort();
+			if (connect) {
 				await connect
 					.sendToChat(
 						card("🔌", "Disconnected", [note("From the Pi terminal session.")]),
 					)
 					.catch(() => {});
-				await updateModePin("stop");
-				await stopConnect(ctx);
-				ctx.ui.notify("Telegram: stopped.");
-			} else {
-				ctx.ui.notify("No Telegram mode is active.", "warning");
 			}
+			await updateModePin("stop");
+			await stopAll();
+			ctx.ui.notify("Telegram: stopped.");
 		},
 	});
 
@@ -3644,16 +3695,98 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	// The mode currently running, for the panel caption / pin ("stop" when idle).
 	const activeTarget = (): PanelMode => {
-		if (manager) return mixedActive ? "mixed" : "manager";
-		if (connect) return "personal";
-		return "stop";
+		return activeTelegramMode(runtimeState());
 	};
 
 	// Stop every active mode (either or neither may be running).
 	const stopAll = async (): Promise<void> => {
-		if (manager) await stopManager();
-		if (connect && activeCtx) await stopConnect(activeCtx);
+		const activeRuntime = runtimeState();
+		if (hasManagerRuntime(activeRuntime)) await stopManager();
+		if (hasPersonalRuntime(runtimeState()))
+			await stopConnect(activeCtx ?? undefined);
 	};
+
+	const recoverTelegram = async (
+		args: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> => {
+		const active = await lifecycle.resolveActive();
+		if (!active) {
+			ctx.ui.notify("Telegram recovery: no active instance.");
+			return;
+		}
+
+		if (active.pid === process.pid) {
+			await abort.abort();
+			await stopAll();
+			await lifecycle.forceClear(active);
+			ctx.ui.notify(
+				"Telegram recovery: stopped the active mode in this session.",
+			);
+			return;
+		}
+
+		const heartbeatAge = Math.max(0, Date.now() - active.heartbeatAt);
+		const detail = `mode=${active.mode}, pid=${active.pid}, heartbeat=${Math.round(heartbeatAge / 1000)}s ago`;
+		const force = /(?:^|\s)--force(?:\s|$)/u.test(args);
+		if (!force) {
+			if (!ctx.hasUI) {
+				ctx.ui.notify(
+					`Telegram recovery found a foreign instance (${detail}). ` +
+						"Use /telegram-recover --force from the TUI to stop it.",
+					"warning",
+				);
+				return;
+			}
+			const confirmed = await ctx.ui.confirm(
+				"Force-stop Telegram instance?",
+				`${detail}. This terminates that Pi process and releases the Telegram lock.`,
+			);
+			if (!confirmed) {
+				ctx.ui.notify("Telegram recovery cancelled.");
+				return;
+			}
+		}
+
+		const result = await stopProcess(
+			active.pid,
+			{
+				isAlive: pidIsAlive,
+				signal: (pid, signal) => process.kill(pid, signal),
+				now: () => Date.now(),
+				sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+			},
+			{ graceMs: RECOVERY_GRACE_MS },
+		);
+		if (!result.stopped) {
+			ctx.ui.notify(
+				`Telegram recovery could not stop pid ${active.pid}. ` +
+					"The singleton was left untouched.",
+				"error",
+			);
+			return;
+		}
+
+		const cleared = await lifecycle.forceClear(active);
+		if (!cleared && (await lifecycle.resolveActive())) {
+			ctx.ui.notify(
+				"Telegram recovery stopped the old process, but the lock changed meanwhile; " +
+					"nothing was cleared automatically.",
+				"error",
+			);
+			return;
+		}
+		ctx.ui.notify(
+			`Telegram recovery: stopped the old ${active.mode} instance (pid ${active.pid})` +
+				(result.escalated ? " with SIGKILL" : "") +
+				". Start a mode again in this session.",
+		);
+	};
+
+	pi.registerCommand(COMMANDS.recover, {
+		description: "Recover Telegram from an inaccessible or stuck Pi session.",
+		handler: recoverTelegram,
+	});
 
 	// Start a specific mode using the captured command context.
 	const startMode = async (

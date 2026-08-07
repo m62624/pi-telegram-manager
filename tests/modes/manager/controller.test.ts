@@ -1406,6 +1406,7 @@ describe("ManagerController", () => {
 		ledger.finish();
 		expect(await controller.stepConsolidation()).toBe("abort");
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(controller.isConsolidating()).toBe(false);
 		expect(memory.texts("5")).toContain("ordered a laptop for work");
 	});
@@ -1427,6 +1428,7 @@ describe("ManagerController", () => {
 		expect(await controller.stepConsolidation()).toBe("continue");
 		expect(await controller.stepConsolidation()).toBe("abort");
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(controller.isConsolidating()).toBe(false);
 	});
 
@@ -1529,6 +1531,7 @@ describe("ManagerController", () => {
 		expect(await controller.stepConsolidation()).toBe("abort");
 		const before = triggerAgent.mock.calls.length;
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(controller.isConsolidating()).toBe(false);
 		expect(triggerAgent.mock.calls.length).toBeGreaterThan(before);
 
@@ -1573,6 +1576,7 @@ describe("ManagerController", () => {
 		// ledger. It does not change which transcript/memory the current A sample sees.
 		expect(await controller.stepConsolidation()).toBe("abort");
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(controller.isConsolidating()).toBe(false);
 
 		// After the owner-reply window, the ordinary turn is for B and resolves B's DB.
@@ -1781,6 +1785,7 @@ describe("consolidation pause/resume under live work", () => {
 		// (a live turn, NOT another consolidation probe).
 		setIdle(true);
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 		expect(countConsolidation(triggerAgent.mock.calls)).toBe(1);
 		expect(isLiveTurn(triggerAgent.mock.calls.at(-1) as unknown[])).toBe(true);
 
@@ -1920,7 +1925,8 @@ describe("consolidation pause/resume under live work", () => {
 		await controller.stepConsolidation();
 		controller.memoryToolContext().ledger().finish();
 		await controller.stepConsolidation();
-		await controller.onAgentEnd(); // the pass finalizes
+		await controller.onAgentEnd();
+		await controller.onAgentSettled(); // the pass finalizes
 		expect(await deps.consolidationQueue.all()).toHaveLength(0);
 		const passes = countConsolidation(triggerAgent.mock.calls);
 		expect(passes).toBe(1);
@@ -2460,6 +2466,7 @@ describe("a memory pass is not a conversation", () => {
 		controller.decisionSink().record({ kind: "silent" });
 		controller.memoryToolContext().ledger().finish();
 		await controller.onAgentEnd();
+		await controller.onAgentSettled();
 
 		expect(controller.isConsolidating()).toBe(false);
 		expect(controller.decisionSink().current().kind).toBe("none");

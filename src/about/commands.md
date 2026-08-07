@@ -63,6 +63,7 @@ Pi. Do not promise otherwise — see the `settings` topic.
 
 ## In the terminal, not in the chat
 
-`/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop` and
-`/telegram-status` are Pi commands: the owner types them at their terminal, not to the
-bot. Sending them to the bot does nothing.
+`/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop`,
+`/telegram-status` and `/telegram-recover` are Pi commands: the owner types them at
+their terminal, not to the bot. Sending them to the bot does nothing. Recovery asks
+before stopping a mode held by another Pi process; add `--force` for a headless TUI.

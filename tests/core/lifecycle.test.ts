@@ -111,4 +111,23 @@ describe("lifecycle crash-reset", () => {
 		await lifecycle.heartbeat();
 		expect((await store.load())?.heartbeatAt).toBe(3000);
 	});
+
+	it("force-clears only the exact foreign record being recovered", async () => {
+		const { lifecycle, store } = setup();
+		const active = {
+			mode: "manager" as const,
+			pid: 999,
+			instanceId: "foreign",
+			startedAt: 0,
+			heartbeatAt: 1000,
+		};
+		await store.save(active);
+
+		expect(await lifecycle.forceClear({ ...active, instanceId: "other" })).toBe(
+			false,
+		);
+		expect(await store.load()).toEqual(active);
+		expect(await lifecycle.forceClear(active)).toBe(true);
+		expect(await store.load()).toBeNull();
+	});
 });

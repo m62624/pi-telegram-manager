@@ -1126,9 +1126,11 @@ export class ManagerController {
 	 * probe, neither of which is a chat-facing decision).
 	 */
 	async onAgentEnd(finalText?: string): Promise<ManagerTurnLog | null> {
-		// A consolidation run ended — finalize, pause, or resume it (no reply sent).
+		// agent_end is not terminal: Pi may retry, compact, or continue the same run
+		// after this event. Keep the memory pass and its tool gate alive until
+		// onAgentSettled, otherwise the continuation would see manager_reply/silent and
+		// mistake a background pass for a conversation turn.
 		if (this.consolidating) {
-			await this.finishConsolidationRun();
 			return null;
 		}
 		const active = this.scheduler.activeChat();
@@ -1374,6 +1376,15 @@ export class ManagerController {
 	}
 
 	/**
+	 * Finish a background memory pass only after Pi confirms that no retry, compaction,
+	 * or queued continuation remains. Until this point the pass owns the tool list.
+	 */
+	async onAgentSettled(): Promise<void> {
+		if (!this.consolidating) return;
+		await this.finishConsolidationRun();
+	}
+
+	/**
 	 * Advance time: chats whose owner-reply window expired in silence become ready
 	 * (first engagement), and the active chat is released when its continuation
 	 * window lapses; then start a turn if the agent is idle.
@@ -1599,7 +1610,7 @@ export class ManagerController {
 	 * agent re-triggering on it.
 	 *
 	 * `isIdle()` is a real answer, not a formality, and it is false on every path that
-	 * reaches here from {@link onAgentEnd} — a run cannot take a prompt while it is
+	 * reaches here from {@link onAgentSettled} — a run cannot take a prompt while it is
 	 * still ending. Declining costs nothing: the chat stays unserved, the draft stays
 	 * held, and the host asks again the moment the session settles.
 	 */
