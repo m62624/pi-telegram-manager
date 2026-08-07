@@ -95,11 +95,66 @@ describe("manager_remember", () => {
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
-		// The collision arrives attached to the write that caused it, with the id needed
-		// to fix it — where it used to take a whole extra inference during a pass.
-		expect(text(result)).toContain("close to what you already remember");
+		// The preflight catches the collision BEFORE the new fact exists, with the id
+		// needed to revise it or explicitly keep both.
+		expect(memory?.texts()).toEqual(["works at a bank"]);
+		expect(text(result)).toContain("Not stored yet");
 		expect(text(result)).toContain("works at a bank");
 		expect(text(result)).toContain("manager_revise");
+	});
+
+	it("skips an exact duplicate without creating another fact", async () => {
+		const { tools, memory } = harness();
+		await memory?.remember({
+			text: "enjoys a particular hobby",
+			tags: ["fact", "preference"],
+		});
+		const result = await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{
+					text: "Enjoys a particular hobby!",
+					subject: "interlocutor",
+					kind: "preference",
+				},
+			],
+		});
+		expect(memory?.texts()).toEqual(["enjoys a particular hobby"]);
+		expect(text(result)).toContain("Already remembered [f0]");
+	});
+
+	it("writes a compatible close fact only after explicit confirmation", async () => {
+		const { tools, memory } = harness();
+		await memory?.remember({
+			text: "enjoys a particular hobby",
+			tags: ["fact", "preference"],
+		});
+		const blocked = await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{
+					text: "wants to pursue that hobby without unwanted details",
+					subject: "interlocutor",
+					kind: "preference",
+				},
+			],
+		});
+		expect(memory?.texts()).toEqual(["enjoys a particular hobby"]);
+		expect(text(blocked)).toContain("confirm_similar=true");
+
+		const confirmed = await tools.get("manager_remember")?.execute("t2", {
+			confirm_similar: true,
+			facts: [
+				{
+					text: "wants to pursue that hobby without unwanted details",
+					subject: "interlocutor",
+					kind: "preference",
+				},
+			],
+		});
+		expect(memory?.texts()).toEqual([
+			"enjoys a particular hobby",
+			"wants to pursue that hobby without unwanted details",
+		]);
+		expect(text(confirmed)).toContain("Stored [f1]");
 	});
 
 	it("stores nothing, and says why, when nothing was about them", async () => {

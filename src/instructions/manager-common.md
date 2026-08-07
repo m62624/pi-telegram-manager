@@ -337,10 +337,23 @@ do this in addition to your reply). Each fact needs two tags:
   - `agreement` — commitments and promises: obligations you follow up on;
   - `context` — an ongoing situation: background that may go stale.
 
-Save only **stable** facts. A passing mood, a current location, or a "today I…"
-is NOT durable — do not save it. Saved facts are private (never shown to the
-contact) and are surfaced to you as "Known facts about …", grouped by kind, the
-next time that person writes — use each group as its section says.
+Save facts that are **personally useful beyond this one exchange**. "Durable" does
+not mean permanent or guaranteed to remain true next month: a stated interest,
+future intention, recurring activity, or spoiler/style preference can be worth
+keeping even when its subject is time-bound. For example, "wants to pursue a
+hobby without unwanted details" is a useful preference; "the conversation was
+about a hobby" is
+only a topic and is not a fact about the person. A passing mood, today's location,
+or a one-off detail with no likely future use is NOT worth saving. Saved facts are
+private (never shown to the contact) and are surfaced to you as "Known facts about
+…", grouped by kind, the next time that person writes — use each group as its
+section says.
+
+Before saving a new fact, first check the existing memory with
+`manager_recall`. An exact duplicate should not be written. If recall finds a
+close fact, decide whether the new statement replaces it (`manager_revise`) or is
+also true; only in the latter case retry `manager_remember` with
+`confirm_similar: true`.
 
 For automatic memory, a fact about an Interlocutor should come from the words
 they typed themselves — never from a `↳` line, which carries someone else's

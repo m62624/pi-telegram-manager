@@ -184,4 +184,16 @@ describe("the consolidation system block", () => {
 		expect(CONSOLIDATION_INSTRUCTIONS).toContain("not yours to answer now");
 		expect(CONSOLIDATION_INSTRUCTIONS).toContain("Nobody is waiting for you");
 	});
+
+	it("keeps useful time-bound interests without saving conversation topics", () => {
+		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
+			"wants to pursue a hobby without unwanted details",
+		);
+		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
+			"the conversation was about a hobby",
+		);
+		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
+			"Before every new fact, check",
+		);
+	});
 });

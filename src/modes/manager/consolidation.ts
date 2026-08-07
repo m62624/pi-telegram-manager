@@ -53,9 +53,17 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"nothing you write reaches Telegram: there is no reply tool on this turn, and a " +
 	"question left standing in the transcript below is one you have already answered " +
 	"or one that is not yours to answer now. Work strictly about the interlocutor — " +
-	"never the owner, never yourself. You have your memory tools and as many turns as " +
-	"you need: look things up, store what is durable and new, replace what this " +
-	"conversation has overturned, drop what was wrong. Call exactly one tool per turn " +
+	"never the owner, never yourself. A durable fact does not have to be permanent or " +
+	"true forever: save a personal interest, future intention, recurring activity, or " +
+	"preference that would help in a later conversation, even when its subject is " +
+	"time-bound. For example, 'wants to pursue a hobby without unwanted details' is a " +
+	"useful preference about this person; 'the conversation was about a hobby' is only a topic " +
+	"and is not a fact about them. Skip passing moods, today's location, and isolated " +
+	"details with no likely future use. Before every new fact, check the existing " +
+	"durable facts with manager_recall; then store only what is genuinely new, revise " +
+	"what this conversation overturned, and forget only what was wrong or never about " +
+	"this person. You have your memory tools and as many turns as " +
+	"you need. Call exactly one tool per turn " +
 	`and end the pass with ${MEMORY_DONE_TOOL_NAME} when the memory matches the ` +
 	"conversation.";
 
@@ -75,7 +83,7 @@ function workDirective(ledger: MemoryLedger): string {
 	return (
 		"[Memory pass. Call ONE memory tool now, or " +
 		`${MEMORY_DONE_TOOL_NAME} if the memory already matches the conversation.\n` +
-		"  manager_recall — look at what you hold before changing it;\n" +
+		"  manager_recall — check what you hold before every new fact;\n" +
 		"  manager_remember — store something durable this conversation established;\n" +
 		"  manager_revise — replace a fact this conversation overturned (its [fN] id);\n" +
 		"  manager_forget — drop a fact that was wrong or was never about this person;\n" +

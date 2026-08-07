@@ -20,6 +20,7 @@ import {
 	type ContactMemory,
 	FACT_KINDS,
 	type FactKind,
+	type MemorySimilar,
 } from "../../storage/memory";
 import { FACT_RELATIONS, type FactRelation } from "./decision";
 
@@ -209,6 +210,59 @@ function brief(text: string, limit = 60): string {
 	return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
+/** Compare fact statements without treating terminal punctuation as a new fact. */
+function factKey(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/\s+/g, " ")
+		.replace(/[.!…]+$/u, "")
+		.trim();
+}
+
+/**
+ * Check the live durable memory before a write.
+ *
+ * Plugmem also returns similar facts from `remember`, but that is after the new fact
+ * already exists. The manager tool is a better boundary for the safer two-phase
+ * behaviour: exact duplicates are ignored, and possible conflicts wait for an
+ * explicit confirmation or a revise decision from the model.
+ */
+async function preflightFact(
+	memory: ContactMemory,
+	text: string,
+	contactName: string,
+): Promise<{ duplicate?: MemorySimilar; similar: MemorySimilar[] }> {
+	const result = await memory.recall({
+		query: text,
+		entities: [contactName],
+		tags: ["fact"],
+		k: 8,
+		tokenBudget: 256,
+	});
+	const candidates: MemorySimilar[] = [];
+	const seen = new Set<number>();
+	for (const hit of result.hits) {
+		if (seen.has(hit.id)) continue;
+		seen.add(hit.id);
+		const existing = await memory.get(hit.id);
+		if (!existing) continue;
+		candidates.push({
+			id: existing.id,
+			text: existing.text,
+			score: hit.score,
+			reason: "PreflightRecall",
+		});
+	}
+	const key = factKey(text);
+	const duplicate = candidates.find(
+		(candidate) => factKey(candidate.text) === key,
+	);
+	return {
+		duplicate,
+		similar: candidates.filter((candidate) => candidate !== duplicate),
+	};
+}
+
 /**
  * How a conflicting fact is reported back to the model.
  *
@@ -263,7 +317,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Save what will still be true next month (name, city, role, preferences, commitments), not a passing mood, today's location, or anything the conversation above already says. If a fact is close to one you already hold, you will be told so along with its id, so you can replace it.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts: an exact duplicate is skipped, and a close fact is held for review. If a close fact is compatible, retry with confirm_similar=true; if it changed, use manager_revise with the old id. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -291,6 +345,11 @@ export function createMemoryTools(
 					},
 					description: "Durable facts, each tagged with subject and kind.",
 				},
+				confirm_similar: {
+					type: "boolean",
+					description:
+						"Only after the preflight showed a close fact and you decided both statements are true; allows this new fact to be committed.",
+				},
 			},
 			required: ["facts"],
 			additionalProperties: false,
@@ -299,6 +358,7 @@ export function createMemoryTools(
 			_id,
 			params: {
 				facts?: Array<{ text?: string; subject?: string; kind?: string }>;
+				confirm_similar?: boolean;
 			},
 		) {
 			const raw = Array.isArray(params.facts) ? params.facts : [];
@@ -328,18 +388,47 @@ export function createMemoryTools(
 			}
 			const result = await withMemory(async (memory) => {
 				const notes: string[] = [];
+				let stored = 0;
+				let blocked = 0;
 				for (const fact of keep) {
+					const preflight = await preflightFact(
+						memory,
+						fact.text,
+						context.contactName(),
+					);
+					if (preflight.duplicate) {
+						notes.push(
+							`Already remembered [f${preflight.duplicate.id}]: ${preflight.duplicate.text}. Nothing new was written.`,
+						);
+						continue;
+					}
+					if (preflight.similar.length > 0 && !params.confirm_similar) {
+						blocked += 1;
+						notes.push(
+							`Not stored yet — first review these close facts:\n${preflight.similar
+								.map((similar) => `  [f${similar.id}] ${similar.text}`)
+								.join("\n")}\n` +
+								"If the new statement replaces one, use manager_revise. If both are true, retry manager_remember with confirm_similar=true.",
+						);
+						continue;
+					}
 					const outcome = await memory.remember({
 						text: fact.text,
 						entity: context.contactName(),
 						tags: ["fact", fact.kind],
 						validFrom: context.now(),
 					});
+					stored += 1;
 					notes.push(
 						`Stored [f${outcome.id}] ${fact.text}${conflictNote(
 							outcome.similar,
 							outcome.id,
 						)}`,
+					);
+				}
+				if (blocked > 0 && stored === 0) {
+					notes.unshift(
+						"The preflight check found existing facts, so nothing was committed until you decide whether this is a duplicate, a revision, or a compatible additional fact.",
 					);
 				}
 				return notes.join("\n");
