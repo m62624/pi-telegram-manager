@@ -50,8 +50,9 @@ describe("recallQuery", () => {
 	});
 
 	it("is empty when nobody is waiting", () => {
-		// A revise turn, or a turn the owner summoned: the memory has already had its say
-		// on this batch, and the caller reads "" as "do not spend a recall".
+		// A revise turn, or a turn with no unanswered interlocutor batch, has no
+		// text query. Owner-summoned contact turns use a separate entity-scoped
+		// inventory path in the controller.
 		expect(recallQuery([said("interlocutor", "x"), said("bot", "y")])).toBe("");
 		expect(recallQuery([])).toBe("");
 	});

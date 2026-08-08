@@ -779,7 +779,7 @@ describe("ManagerController", () => {
 	});
 
 	it("keeps the contact memory when the Owner summons the bot in that contact's chat", async () => {
-		const { controller } = await setup(["llm"]);
+		const { controller, memory } = await setup(["llm"]);
 		await controller.onBusinessMessage({
 			connectionId: CONN,
 			chatId: "42",
@@ -790,14 +790,17 @@ describe("ManagerController", () => {
 			connectionId: CONN,
 			chatId: "42",
 			fromId: OWNER_ID,
-			message: ownerMsg("llm, remember that the contact works remotely"),
+			message: ownerMsg("llm, what do you remember about this contact?"),
+		});
+		await memory.of("5").remember({
+			text: "prefers voice notes",
+			tags: ["fact", "preference"],
 		});
 
 		expect(await controller.memoryToolContext().active()).not.toBeNull();
 		const context = await controller.buildContextForActive();
-		expect(context?.at(-1)?.content).toContain(
-			"a summons in a contact chat still uses that contact's memory",
-		);
+		expect(context?.at(-1)?.content).toContain("prefers voice notes");
+		expect(context?.at(-1)?.content).toContain("What you remember about Alice");
 	});
 
 	it("never opens a turn on the owner's own question to the interlocutor", async () => {

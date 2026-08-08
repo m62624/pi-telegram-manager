@@ -42,8 +42,8 @@ export function recallQuery(records: readonly ChatMessageRecord[]): string {
 	const tail: string[] = [];
 	for (let i = records.length - 1; i >= 0; i -= 1) {
 		const record = records[i];
-		// A reply of ours, or a line the owner typed, closes the batch: everything older
-		// has been dealt with by somebody.
+		// A reply of ours, or a line the owner typed, closes the batch: everything
+		// older has been dealt with by somebody.
 		if (record.author === "bot" || record.author === "owner") break;
 		const words = ownWords(record);
 		if (words) tail.unshift(words);

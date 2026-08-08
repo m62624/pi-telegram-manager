@@ -247,6 +247,9 @@ describe("the real group wiring (index.ts)", () => {
 		expect(api.active).toContain("bash");
 		// The other mode's tools do not leak in.
 		expect(api.active).not.toContain("manager_reply");
+		for (const memoryTool of MEMORY_TOOL_NAMES) {
+			expect(api.active).not.toContain(memoryTool);
+		}
 	});
 
 	it("gives the manager ONLY messaging + about — nothing from personal mode", () => {

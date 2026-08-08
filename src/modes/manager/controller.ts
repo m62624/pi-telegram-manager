@@ -1722,10 +1722,18 @@ export class ManagerController {
 		contactName: string | undefined,
 		memory: ContactMemory | null,
 	): Promise<string> {
-		const query = recallQuery(records);
-		// Nothing outstanding means nothing to look up: on a revise turn or a turn the
-		// owner summoned, the memory has already had its say on this batch.
-		if (!query) return "";
+		// A normal turn recalls the unanswered interlocutor batch. When the Owner
+		// summons the bot inside a contact chat, use the current contact's memory
+		// without a text query: the Owner may be asking for an inventory such as
+		// "what do you remember about them?", which has no lexical overlap with
+		// the stored facts. This is deliberately not a name-to-database lookup:
+		// activeMemory() already selected the database from the current chat's
+		// Telegram userId.
+		const ownerSummoned = this.ownerSummoned.has(chatId);
+		const query = ownerSummoned ? "" : recallQuery(records);
+		// Nothing outstanding means nothing to look up, except for an Owner summon:
+		// the explicit summon is the request to inspect this current contact's memory.
+		if (!query && !ownerSummoned) return "";
 		const cached = this.recallCache;
 		if (cached && cached.chatId === chatId && cached.query === query) {
 			return cached.block;
@@ -1733,7 +1741,7 @@ export class ManagerController {
 		if (!memory) return "";
 		const name = contactName ?? chatId;
 		const result = await memory.recall({
-			query,
+			query: query || undefined,
 			entities: [name],
 			k: this.deps.recallK,
 			tokenBudget: this.deps.recallTokenBudget,
