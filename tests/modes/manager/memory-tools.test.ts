@@ -5,6 +5,11 @@ import {
 	MemoryLedger,
 	type MemoryToolContext,
 } from "../../../src/modes/manager/memory-tools";
+import {
+	MEMORY_RECALL_SOURCE,
+	type MemoryRecallQuery,
+	type MemoryRecallResult,
+} from "../../../src/storage/memory";
 import { FakeContactMemory } from "../../helpers/fake-memory";
 
 /**
@@ -35,6 +40,31 @@ const text = (result: unknown): string =>
 	(result as { content: { text: string }[] }).content
 		.map((c) => c.text)
 		.join("");
+
+/** A general recall can surface a graph fact without textual similarity. */
+class GraphOnlyRecallMemory extends FakeContactMemory {
+	lastQuery?: MemoryRecallQuery;
+
+	override async recall(query: MemoryRecallQuery): Promise<MemoryRecallResult> {
+		this.lastQuery = query;
+		const fact = this.facts[0];
+		if (!fact) return { hits: [], rendered: "", truncated: false };
+		return {
+			hits: [
+				{
+					id: fact.id,
+					score: 1,
+					sources: MEMORY_RECALL_SOURCE.graph,
+					recordedAt: fact.recordedAt,
+					validFrom: fact.validFrom,
+					validTo: fact.validTo,
+				},
+			],
+			rendered: "",
+			truncated: false,
+		};
+	}
+}
 
 describe("the memory verbs", () => {
 	it("are listed in a fixed order", () => {
@@ -102,6 +132,22 @@ describe("manager_remember", () => {
 		expect(text(result)).toContain("works at a bank");
 		expect(text(result)).toContain("manager_revise");
 		expect(ledger.steps().at(-1)?.summary).toContain("stored 0 fact(s)");
+	});
+
+	it("does not turn a graph-only recall hit into a similarity conflict", async () => {
+		const memory = new GraphOnlyRecallMemory();
+		await memory.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools } = harness(memory);
+
+		const result = await tools.get("manager_remember")?.execute("t1", {
+			facts: [{ text: "likes tea", subject: "interlocutor" }],
+		});
+
+		expect(memory.texts()).toEqual(["works at a bank", "likes tea"]);
+		expect(text(result)).toContain("Stored [f1]");
+		// Similarity preflight must not activate graph expansion. General recall still
+		// uses entity anchors when the model explicitly searches its memory.
+		expect(memory.lastQuery?.entities).toBeUndefined();
 	});
 
 	it("skips an exact duplicate without creating another fact", async () => {

@@ -20,6 +20,7 @@ import {
 	type ContactMemory,
 	FACT_KINDS,
 	type FactKind,
+	MEMORY_RECALL_SOURCE,
 	type MemorySimilar,
 } from "../../storage/memory";
 import { FACT_RELATIONS, type FactRelation } from "./decision";
@@ -322,18 +323,24 @@ function factKey(text: string): string {
 async function preflightFact(
 	memory: ContactMemory,
 	text: string,
-	contactName: string,
 ): Promise<{ duplicate?: MemorySimilar; similar: MemorySimilar[] }> {
 	const result = await memory.recall({
 		query: text,
-		entities: [contactName],
 		tags: ["fact"],
 		k: 8,
 		tokenBudget: 256,
 	});
 	const candidates: MemorySimilar[] = [];
 	const seen = new Set<number>();
+	const similaritySources =
+		MEMORY_RECALL_SOURCE.bm25 | MEMORY_RECALL_SOURCE.vector;
 	for (const hit of result.hits) {
+		// This is a similarity preflight, not a general memory lookup. Entity
+		// anchors and temporal expansion are useful for answering questions, but a
+		// graph/time-only hit is not evidence that the new statement is a duplicate
+		// or a contradiction. The adapter preserves sources from plugmem, and the
+		// port requires every implementation to provide that provenance.
+		if ((hit.sources & similaritySources) === 0) continue;
 		if (seen.has(hit.id)) continue;
 		seen.add(hit.id);
 		const existing = await memory.get(hit.id);
@@ -409,7 +416,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts: an exact duplicate is skipped, and a close fact is held for review. If a close fact is compatible, retry with confirm_similar=true; if it changed, use manager_revise with the old id. Read the result literally: 'Stored' means committed, while 'Not stored yet' and 'Already remembered' mean no new fact was written. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both are true, or the listed candidate is unrelated/a false positive, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -484,11 +491,7 @@ export function createMemoryTools(
 			const result = await withMemory(async (memory) => {
 				const notes: string[] = [];
 				for (const fact of keep) {
-					const preflight = await preflightFact(
-						memory,
-						fact.text,
-						context.contactName(),
-					);
+					const preflight = await preflightFact(memory, fact.text);
 					if (preflight.duplicate) {
 						duplicates += 1;
 						notes.push(
@@ -502,7 +505,7 @@ export function createMemoryTools(
 							`Not stored yet — first review these close facts:\n${preflight.similar
 								.map((similar) => `  [f${similar.id}] ${similar.text}`)
 								.join("\n")}\n` +
-								"If the new statement replaces one, use manager_revise. If both are true, retry manager_remember with confirm_similar=true.",
+								"Decision required: if the new statement replaces one, use manager_revise with that [fN] id; if both are true, or the candidate is unrelated, retry manager_remember with confirm_similar=true. No new fact was written in this call.",
 						);
 						continue;
 					}

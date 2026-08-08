@@ -56,6 +56,21 @@ export const FACT_KINDS: readonly FactKind[] = [
 	"context",
 ];
 
+/**
+ * Provenance bits returned by plugmem for a recall hit.
+ *
+ * These are deliberately duplicated as a tiny port-level contract rather than
+ * importing the SDK outside `storage/`: a graph or time hit explains why a fact
+ * was useful to a prompt, but it is not evidence that a new statement is similar
+ * enough to block a write.
+ */
+export const MEMORY_RECALL_SOURCE = {
+	bm25: 1,
+	graph: 1 << 1,
+	time: 1 << 2,
+	vector: 1 << 3,
+} as const;
+
 /** What is written when a fact is remembered or revised. */
 export interface MemoryWrite {
 	text: string;
@@ -99,6 +114,8 @@ export interface MemoryHit {
 	id: number;
 	/** Fused rank across the lexical, graph, temporal and vector sources. */
 	score: number;
+	/** Bitset of sources that surfaced this hit. */
+	sources: number;
 	recordedAt: number;
 	validFrom: number;
 	validTo?: number;

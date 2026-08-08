@@ -20,6 +20,7 @@ import type {
 	MemoryWrite,
 	MemoryWriteOutcome,
 } from "../../src/storage/memory";
+import { MEMORY_RECALL_SOURCE } from "../../src/storage/memory";
 
 function words(text: string): Set<string> {
 	return new Set(
@@ -96,6 +97,7 @@ export class FakeContactMemory implements ContactMemory {
 		const hits = matched.map((fact) => ({
 			id: fact.id,
 			score: 1,
+			sources: MEMORY_RECALL_SOURCE.bm25,
 			recordedAt: fact.recordedAt,
 			validFrom: fact.validFrom,
 			validTo: fact.validTo,

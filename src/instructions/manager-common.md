@@ -350,14 +350,27 @@ private (never shown to the contact) and are surfaced to you as "Known facts abo
 section says.
 
 Before saving a new fact, first check the existing memory with
-`manager_recall`. An exact duplicate should not be written. If recall finds a
-close fact, decide whether the new statement replaces it (`manager_revise`) or is
-also true; only in the latter case retry `manager_remember` with
-`confirm_similar: true`.
-Treat the memory tool's result as authoritative: `Stored` means a new fact was
-committed, while `Not stored yet` and `Already remembered` mean that no new fact
-was written. Do not claim a fact was added based on your own draft or final summary;
-`manager_done` reports the actual committed operations.
+`manager_recall`. An exact duplicate should not be written. `manager_remember`
+also performs this preflight and its result is authoritative:
+
+- `Stored [fN]` means the new fact was committed;
+- `Already remembered [fN]` means it was an exact duplicate and nothing was written;
+- `Not stored yet` means nothing was written and the listed candidate needs a decision.
+
+For `Not stored yet`, compare the new statement with each listed `[fN]`: if the
+new statement replaces an old one, use `manager_revise` with that id; if both
+statements are true, retry `manager_remember` with `confirm_similar: true`. If the
+candidate is unrelated to the new statement, treat it as a false positive and
+retry with `confirm_similar: true` as well — that is the explicit way to write a
+necessary fact after reviewing the candidate. Never use `confirm_similar` to hide
+a real contradiction. Do not claim a fact was added based on your own draft or
+final summary; `manager_done` reports the actual committed operations.
+
+Memory tools are auxiliary on an ordinary reply turn: after `manager_remember`,
+still end the turn with exactly one `manager_reply` or `manager_silent`. Do not
+write prose claiming success. On a held-draft turn, `manager_resolve_draft` is
+the only available terminal tool; do not attempt memory writes there — a fact
+that still needs saving must be handled on the next ordinary turn.
 
 For automatic memory, a fact about an Interlocutor should come from the words
 they typed themselves — never from a `↳` line, which carries someone else's

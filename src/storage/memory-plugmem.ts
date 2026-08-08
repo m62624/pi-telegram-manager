@@ -200,6 +200,7 @@ function contactMemory(open: () => Promise<Plugmem>): ContactMemory {
 			const hits: MemoryHit[] = result.facts.map((hit) => ({
 				id: hit.id,
 				score: hit.score,
+				sources: hit.sources,
 				recordedAt: hit.recordedAt,
 				validFrom: hit.validFrom,
 				validTo: closedAt(hit.validTo),
