@@ -48,6 +48,20 @@ export const MEMORY_DONE_TOOL_NAME = "manager_done";
 /** Maximum inspection-only recall calls before the pass must make a decision. */
 export const MAX_RECALLS_WITHOUT_PROGRESS = 3;
 
+/**
+ * Authoritative accounting for durable memory operations in one pass.
+ *
+ * This is kept separate from the compact prompt journal: model-written prose must
+ * never turn a preflight rejection into a claimed write.
+ */
+export interface MemoryOutcome {
+	stored?: number;
+	duplicates?: number;
+	blocked?: number;
+	revised?: number;
+	forgotten?: number;
+}
+
 /** What one memory tool call did, as the ledger records it. */
 export interface MemoryStep {
 	tool: string;
@@ -58,6 +72,8 @@ export interface MemoryStep {
 	argsKey: string;
 	/** One line, for the nudge directive and the owner's log card. */
 	summary: string;
+	/** Engine outcome, when this step changed or attempted durable memory. */
+	outcome?: MemoryOutcome;
 }
 
 /**
@@ -70,6 +86,13 @@ export interface MemoryStep {
  */
 export class MemoryLedger {
 	private readonly entries: MemoryStep[] = [];
+	private readonly outcome: Required<MemoryOutcome> = {
+		stored: 0,
+		duplicates: 0,
+		blocked: 0,
+		revised: 0,
+		forgotten: 0,
+	};
 	private nudgeCount = 0;
 	private done = false;
 	private recallsSinceProgress = 0;
@@ -92,6 +115,9 @@ export class MemoryLedger {
 
 	record(step: MemoryStep): void {
 		this.entries.push(step);
+		for (const key of Object.keys(this.outcome) as (keyof MemoryOutcome)[]) {
+			this.outcome[key] += step.outcome?.[key] ?? 0;
+		}
 		if (step.tool === "manager_recall") {
 			this.recallsSinceProgress += 1;
 		} else {
@@ -194,6 +220,30 @@ export class MemoryLedger {
 		return this.entries
 			.map((step, index) => `${index + 1}. ${step.summary}`)
 			.join("\n");
+	}
+
+	/** Return the only completion status the model may rely on. */
+	completionSummary(): string {
+		const parts: string[] = [];
+		const plural = (count: number, word: string): string =>
+			`${count} ${word}${count === 1 ? "" : "s"}`;
+		if (this.outcome.stored > 0)
+			parts.push(`${plural(this.outcome.stored, "fact")} stored`);
+		if (this.outcome.revised > 0)
+			parts.push(`${plural(this.outcome.revised, "fact")} revised`);
+		if (this.outcome.forgotten > 0)
+			parts.push(`${plural(this.outcome.forgotten, "fact")} forgotten`);
+		if (this.outcome.blocked > 0)
+			parts.push(
+				`${plural(this.outcome.blocked, "fact")} not stored (similarity review pending)`,
+			);
+		if (this.outcome.duplicates > 0)
+			parts.push(
+				`${plural(this.outcome.duplicates, "exact duplicate")} skipped`,
+			);
+		if (parts.length === 0)
+			return "Memory pass finished. No memory changes were committed in this pass.";
+		return `Memory pass finished. ${parts.join("; ")}. This status is based on completed memory operations.`;
 	}
 }
 
@@ -359,7 +409,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts: an exact duplicate is skipped, and a close fact is held for review. If a close fact is compatible, retry with confirm_similar=true; if it changed, use manager_revise with the old id. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts: an exact duplicate is skipped, and a close fact is held for review. If a close fact is compatible, retry with confirm_similar=true; if it changed, use manager_revise with the old id. Read the result literally: 'Stored' means committed, while 'Not stored yet' and 'Already remembered' mean no new fact was written. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -419,7 +469,7 @@ export function createMemoryTools(
 				context.ledger().record({
 					tool: "manager_remember",
 					argsKey: "none",
-					summary: "remembered nothing (no interlocutor facts)",
+					summary: "stored 0 facts (no interlocutor facts)",
 				});
 				return ok(
 					"Nothing stored: owner/other facts are deliberately discarded. This " +
@@ -428,10 +478,11 @@ export function createMemoryTools(
 						"interlocutor; in the Owner's own chat, do not retry the memory tool.",
 				);
 			}
+			let stored = 0;
+			let blocked = 0;
+			let duplicates = 0;
 			const result = await withMemory(async (memory) => {
 				const notes: string[] = [];
-				let stored = 0;
-				let blocked = 0;
 				for (const fact of keep) {
 					const preflight = await preflightFact(
 						memory,
@@ -439,6 +490,7 @@ export function createMemoryTools(
 						context.contactName(),
 					);
 					if (preflight.duplicate) {
+						duplicates += 1;
 						notes.push(
 							`Already remembered [f${preflight.duplicate.id}]: ${preflight.duplicate.text}. Nothing new was written.`,
 						);
@@ -479,9 +531,8 @@ export function createMemoryTools(
 			context.ledger().record({
 				tool: "manager_remember",
 				argsKey: keep.map((fact) => fact.text).join("|"),
-				summary: `remembered ${keep.length} fact(s): ${brief(
-					keep.map((fact) => fact.text).join("; "),
-				)}`,
+				summary: `stored ${stored} fact(s); ${blocked} held for review; ${duplicates} duplicate(s) skipped`,
+				outcome: { stored, blocked, duplicates },
 			});
 			return ok(result);
 		},
@@ -590,6 +641,7 @@ export function createMemoryTools(
 				tool: "manager_revise",
 				argsKey: `${target}#${text}`,
 				summary: `revised [f${target}] "${brief(result.before, 40)}" → "${brief(text, 40)}"`,
+				outcome: { revised: 1 },
 			});
 			return ok(
 				`Replaced [f${target}] with [f${result.id}]: ${text}\nThe old version is closed, not erased.`,
@@ -640,6 +692,7 @@ export function createMemoryTools(
 				summary: `forgot [f${target}] "${brief(result.text, 40)}"${
 					reason ? ` — ${brief(reason, 40)}` : ""
 				}`,
+				outcome: { forgotten: 1 },
 			});
 			return ok(`Forgotten [f${target}]: ${result.text}`);
 		},
@@ -649,24 +702,16 @@ export function createMemoryTools(
 		name: MEMORY_DONE_TOOL_NAME,
 		label: "Manager Done",
 		description:
-			"End the memory pass. Call this when the memory matches the conversation — everything durable is stored, nothing stale is left standing — or when there was nothing worth changing at all. This is the ONLY way a memory pass ends; nothing is sent to anyone either way.",
+			"End the memory pass. Call this when the memory matches the conversation — everything durable is stored, nothing stale is left standing — or when there was nothing worth changing at all. The returned completion status is authoritative and is calculated from completed memory operations; do not claim a fact was stored when manager_remember said 'Not stored yet' or 'Already remembered'. This is the ONLY way a memory pass ends; nothing is sent to anyone either way.",
 		parameters: {
 			type: "object",
-			properties: {
-				summary: {
-					type: "string",
-					description:
-						"Optional one line on what you changed, for the owner's log.",
-				},
-			},
+			properties: {},
 			additionalProperties: false,
 		} as never,
-		async execute(_id, params: { summary?: string }) {
+		async execute(_id, _params: unknown) {
+			const completion = context.ledger().completionSummary();
 			context.ledger().finish();
-			const summary = params.summary?.trim();
-			return ok(
-				summary ? `Memory pass finished: ${summary}` : "Memory pass finished.",
-			);
+			return ok(completion);
 		},
 	});
 

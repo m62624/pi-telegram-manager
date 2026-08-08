@@ -354,6 +354,10 @@ Before saving a new fact, first check the existing memory with
 close fact, decide whether the new statement replaces it (`manager_revise`) or is
 also true; only in the latter case retry `manager_remember` with
 `confirm_similar: true`.
+Treat the memory tool's result as authoritative: `Stored` means a new fact was
+committed, while `Not stored yet` and `Already remembered` mean that no new fact
+was written. Do not claim a fact was added based on your own draft or final summary;
+`manager_done` reports the actual committed operations.
 
 For automatic memory, a fact about an Interlocutor should come from the words
 they typed themselves — never from a `↳` line, which carries someone else's

@@ -90,7 +90,7 @@ describe("manager_remember", () => {
 	});
 
 	it("shows the model what a new fact may be contradicting", async () => {
-		const { tools, memory } = harness();
+		const { tools, memory, ledger } = harness();
 		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
@@ -101,6 +101,7 @@ describe("manager_remember", () => {
 		expect(text(result)).toContain("Not stored yet");
 		expect(text(result)).toContain("works at a bank");
 		expect(text(result)).toContain("manager_revise");
+		expect(ledger.steps().at(-1)?.summary).toContain("stored 0 fact(s)");
 	});
 
 	it("skips an exact duplicate without creating another fact", async () => {
@@ -257,8 +258,34 @@ describe("manager_done", () => {
 	it("is the only thing that ends a pass", async () => {
 		const { tools, ledger } = harness();
 		expect(ledger.isFinished()).toBe(false);
-		await tools.get("manager_done")?.execute("t1", { summary: "all current" });
+		await tools.get("manager_done")?.execute("t1", {});
 		expect(ledger.isFinished()).toBe(true);
+	});
+
+	it("reports committed operations instead of trusting model prose", async () => {
+		const { tools, memory } = harness();
+		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
+		});
+
+		const result = await tools.get("manager_done")?.execute("t1", {
+			summary: "the new fact was added",
+		});
+
+		expect(text(result)).not.toContain("fact stored");
+		expect(text(result)).toContain("1 fact not stored");
+		expect(text(result)).not.toContain("the new fact was added");
+	});
+
+	it("reports a real write as stored", async () => {
+		const { tools } = harness();
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [{ text: "likes tea", subject: "interlocutor" }],
+		});
+
+		const result = await tools.get("manager_done")?.execute("t1", {});
+		expect(text(result)).toContain("1 fact stored");
 	});
 });
 
