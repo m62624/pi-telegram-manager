@@ -23,6 +23,14 @@ export interface ConnectIntent {
 	mode: ReArmMode;
 	/** The cwd the picker armed this for; the re-arm only fires for a session in it. */
 	cwd: string;
+	/**
+	 * The session that was active when the picker armed the switch. A normal Pi launch
+	 * has no previous session file, so this makes the note a hand-off marker rather than
+	 * a persisted "start Telegram next time" flag.
+	 */
+	sourceSessionFile: string;
+	/** The exact selected session file; absent only for the picker's "New" option. */
+	targetSessionFile?: string;
 	/** When it was armed (epoch ms), so a stale note left by a crash is ignored. */
 	armedAt: number;
 }
@@ -30,8 +38,12 @@ export interface ConnectIntent {
 /** How the re-arm reads a `session_start`, kept apart from the fs so it is unit-testable. */
 export interface IntentContext {
 	cwd: string;
-	/** `SessionStartEvent.reason` — only our own switch produces "new"/"resume". */
+	/** `SessionStartEvent.reason` — only a replacement may re-arm the bridge. */
 	reason: string;
+	/** The file Pi was replacing; absent on ordinary startup/reload. */
+	previousSessionFile?: string;
+	/** The newly active file, used to bind a resume to the selected target. */
+	sessionFile?: string;
 	now: number;
 	maxAgeMs: number;
 }
@@ -39,10 +51,10 @@ export interface IntentContext {
 /**
  * Whether a persisted intent should re-arm the bridge for THIS `session_start`.
  *
- * It must be for this project (`cwd`), it must come from a session replacement we caused
- * (`reason` "new" or "resume" — never a plain "startup"/"reload", so a leftover note can
- * never auto-connect an ordinary launch), and it must be fresh (a crash between arming
- * and the switch leaves a note the age check discards).
+ * It must be for this project (`cwd`), it must come from a session replacement that has a
+ * previous session file, and that file must be the one the picker was running in. This
+ * is deliberately stricter than checking `reason`: a leftover note must never turn a
+ * plain Pi launch into a Telegram launch.
  */
 export function intentApplies(
 	intent: ConnectIntent | null,
@@ -51,6 +63,16 @@ export function intentApplies(
 	if (!intent) return false;
 	if (intent.cwd !== ctx.cwd) return false;
 	if (ctx.reason !== "new" && ctx.reason !== "resume") return false;
+	if (
+		ctx.previousSessionFile === undefined ||
+		ctx.previousSessionFile !== intent.sourceSessionFile
+	)
+		return false;
+	if (
+		intent.targetSessionFile !== undefined &&
+		ctx.sessionFile !== intent.targetSessionFile
+	)
+		return false;
 	return ctx.now - intent.armedAt <= ctx.maxAgeMs;
 }
 

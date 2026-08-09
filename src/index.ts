@@ -2193,6 +2193,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			intentApplies(intent, {
 				cwd: ctx.cwd,
 				reason: event.reason,
+				previousSessionFile: event.previousSessionFile,
+				sessionFile: ctx.sessionManager.getSessionFile(),
 				now,
 				maxAgeMs: CONNECT_INTENT_MAX_AGE_MS,
 			})
@@ -2983,8 +2985,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const armConnectIntent = async (
 		mode: ReArmMode,
 		cwd: string,
+		sourceSessionFile: string | undefined,
+		targetSessionFile?: string,
 	): Promise<void> => {
-		await connectIntent.arm({ mode, cwd, armedAt: Date.now() });
+		// An in-memory/never-saved session has no stable hand-off identity. Do not leave
+		// behind a broad "start on the next session" note; the owner can start Telegram
+		// explicitly in the new session instead.
+		if (!sourceSessionFile) return;
+		await connectIntent.arm({
+			mode,
+			cwd,
+			sourceSessionFile,
+			targetSessionFile,
+			armedAt: Date.now(),
+		});
 	};
 
 	/**
@@ -3002,6 +3016,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		mode: ReArmMode,
 	): Promise<boolean> => {
 		const currentId = ctx.sessionManager.getSessionId();
+		const sourceSessionFile = ctx.sessionManager.getSessionFile();
 		const sessions = await listSessions(ctx.cwd).catch(() => []);
 		const title =
 			mode === "mixed" ? "Mixed — pick a session" : "Personal — pick a session";
@@ -3021,7 +3036,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				page = pick.page;
 				continue;
 			}
-			await armConnectIntent(mode, ctx.cwd);
+			await armConnectIntent(
+				mode,
+				ctx.cwd,
+				sourceSessionFile,
+				pick.kind === "resume" ? pick.path : undefined,
+			);
 			if (pick.kind === "new") {
 				await ctx.newSession();
 			} else {
@@ -3931,7 +3951,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		await ack("Resuming…");
-		await armConnectIntent(mixedActive ? "mixed" : "connect", ctx.cwd);
+		await armConnectIntent(
+			mixedActive ? "mixed" : "connect",
+			ctx.cwd,
+			ctx.sessionManager.getSessionFile(),
+			targetPath,
+		);
 		await ctx.switchSession(targetPath);
 	};
 
