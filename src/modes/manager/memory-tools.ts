@@ -54,7 +54,7 @@ export const MAX_RECALLS_WITHOUT_PROGRESS = 3;
  * Authoritative accounting for durable memory operations in one pass.
  *
  * This is kept separate from the compact prompt journal: model-written prose must
- * never turn a preflight rejection into a claimed write.
+ * never turn a refused write into a claimed one.
  */
 export interface MemoryOutcome {
 	stored?: number;
@@ -492,7 +492,7 @@ export function createMemoryTools(
 				confirm_similar: {
 					type: "boolean",
 					description:
-						"Only after the preflight showed a close fact and you decided both statements are true; allows this new fact to be committed.",
+						"Only after manager_remember answered 'Not stored yet' and you decided both statements are true; allows this new fact to be committed alongside the one it is close to.",
 				},
 			},
 			required: ["facts"],
@@ -605,20 +605,20 @@ export function createMemoryTools(
 		name: "manager_recall",
 		label: "Manager Recall",
 		description:
-			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
+			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Always give a query in words — that is what the search ranks on. Tags only NARROW that search and every one you add must be on the fact, so 'fact'+'preference' cannot return an identity or a context fact and an empty answer means only that nothing carries all of them: prefer no tags, or one. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
 		parameters: {
 			type: "object",
 			properties: {
 				query: {
 					type: "string",
 					description:
-						"What you are looking for, in words — e.g. 'where they work' or 'what we agreed about the deadline'.",
+						"What you are looking for, in words — e.g. 'where they work' or 'what we agreed about the deadline'. This is what the search ranks on; without it there is nothing to rank.",
 				},
 				tags: {
 					type: "array",
 					items: { type: "string", enum: MEMORY_TAGS },
 					description:
-						"Optional filter; a memory must carry ALL of these, so pick one or two. 'fact' = durable facts, narrowed by identity/preference/agreement/context; 'episode' = what happened, narrowed by message (they said it), owner (the owner said it) or turn+reply/silent (what you did).",
+						"Optional filter, ANDed: a memory must carry EVERY tag listed, so each one you add can only remove answers. Leave it out unless one kind is genuinely all you want. 'fact' = durable facts, narrowed by identity/preference/agreement/context; 'episode' = what happened, narrowed by message (they said it), owner (the owner said it) or turn+reply/silent (what you did).",
 				},
 			},
 			additionalProperties: false,

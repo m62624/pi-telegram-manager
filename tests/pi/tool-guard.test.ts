@@ -97,5 +97,11 @@ describe("registerToolGuard", () => {
 		expect(result.reason).not.toContain(
 			"End your turn by calling exactly one of manager_reply",
 		);
+		// And it points at a way out that exists. It used to name "the interrogation
+		// step shown in the directive" — a four-step automaton that has since been
+		// replaced by the memory verbs, so the steer sent the model looking for a tool
+		// no directive names.
+		expect(result.reason).toContain("manager_done");
+		expect(result.reason).not.toContain("interrogation");
 	});
 });

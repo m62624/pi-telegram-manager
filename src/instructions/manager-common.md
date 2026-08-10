@@ -366,12 +366,24 @@ there are only two answers: if the new statement **replaces** the old one, use
 hide a real contradiction. Do not claim a fact was added based on your own draft
 or final summary; `manager_done` reports the actual committed operations.
 
-When you do search, `manager_recall` takes tags, and a memory must carry **every**
-tag you ask for. You never choose a tag when writing — `kind` above becomes one —
-but you can filter by any of them when reading: `fact` for durable statements
-(narrowed by `identity`, `preference`, `agreement`, `context`), `episode` for what
-happened, narrowed by `message` (they said it), `owner` (the owner said it in that
-chat) or `turn` with `reply`/`silent` (what you did about it).
+When you do search, give `manager_recall` a **query in words** — that is the only
+thing it ranks on. Tags are a filter laid over that ranking, and a memory must
+carry **every** tag you ask for, so each tag can only take answers away: asking
+for `fact` + `preference` hides everything filed as `identity` or `context`, and
+an empty result then means "nothing carries all of those", not "nothing is known".
+Use one tag, or none. You never choose a tag when writing — `kind` above becomes
+one — but you can filter by any of them when reading: `fact` for durable
+statements (narrowed by `identity`, `preference`, `agreement`, `context`),
+`episode` for what happened, narrowed by `message` (they said it), `owner` (the
+owner said it in that chat) or `turn` with `reply`/`silent` (what you did).
+
+A recalled line is formatted for you to read: `- [f3] Alice: takes evening
+classes (2026-08; active) #fact #preference`. Only the sentence is the fact. The
+`[fN]` is its id, the parenthesis is how long it has held, the `#tags` are how it
+is filed — never copy any of them into the text you write. And keep one statement
+per fact when you revise: correct the one thing that changed rather than merging
+several updates, and drop what has stopped being true instead of carrying it into
+the new version.
 
 Memory tools are auxiliary on an ordinary reply turn: after `manager_remember`,
 still end the turn with exactly one `manager_reply` or `manager_silent`. Do not
