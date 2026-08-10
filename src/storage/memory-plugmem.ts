@@ -301,9 +301,15 @@ function contactMemory(
 			});
 		},
 
-		async link(src, relation, dst): Promise<void> {
+		async link(src, relation, dst, provenance): Promise<void> {
 			return verb(async () => {
-				await db.link({ src, rel: relation, dst });
+				await db.link({ src, rel: relation, dst, provenance });
+			});
+		},
+
+		async unlink(src, relation, dst): Promise<boolean> {
+			return verb(async () => {
+				return db.unlink({ src, rel: relation, dst });
 			});
 		},
 

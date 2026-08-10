@@ -4,6 +4,7 @@ import {
 	MEMORY_TOOL_NAMES,
 	MemoryLedger,
 	type MemoryToolContext,
+	stripRendering,
 } from "../../../src/modes/manager/memory-tools";
 import type {
 	MemoryRecallQuery,
@@ -76,6 +77,8 @@ describe("the memory verbs", () => {
 			"manager_recall",
 			"manager_revise",
 			"manager_forget",
+			"manager_link",
+			"manager_unlink",
 			"manager_done",
 		]);
 	});
@@ -487,6 +490,110 @@ describe("manager_forget", () => {
 		const { tools } = harness();
 		const result = await tools.get("manager_forget")?.execute("t1", { id: 7 });
 		expect((result as { isError?: boolean }).isError).toBe(true);
+	});
+});
+
+describe("manager_link / manager_unlink", () => {
+	it("connects the contact to a topic by default", async () => {
+		const { tools, memory, ledger } = harness();
+		const result = await tools
+			.get("manager_link")
+			?.execute("t1", { dst: "chess", relation: "involved_in" });
+		expect(memory?.links).toEqual(["Alice —involved_in→ chess"]);
+		expect(text(result)).toContain("Alice —involved_in→ chess");
+		expect(ledger.steps()[0].tool).toBe("manager_link");
+	});
+
+	it("chains topic to topic when src is another topic", async () => {
+		const { tools, memory } = harness();
+		await tools.get("manager_link")?.execute("t1", {
+			src: "chess",
+			dst: "board games",
+			relation: "part_of",
+		});
+		expect(memory?.links).toEqual(["chess —part_of→ board games"]);
+	});
+
+	it("refuses an unknown relation", async () => {
+		const { tools } = harness();
+		const result = await tools
+			.get("manager_link")
+			?.execute("t1", { dst: "chess", relation: "bogus" });
+		expect((result as { isError?: boolean }).isError).toBe(true);
+		expect(text(result)).toContain("must be one of");
+	});
+
+	it("closes a link that exists", async () => {
+		const { tools, memory } = harness();
+		await tools
+			.get("manager_link")
+			?.execute("t1", { dst: "chess", relation: "involved_in" });
+		const result = await tools
+			.get("manager_unlink")
+			?.execute("t2", { dst: "chess", relation: "involved_in" });
+		expect(memory?.links).toEqual([]);
+		expect(text(result)).toContain("Unlinked");
+	});
+
+	it("says plainly when there was nothing to unlink", async () => {
+		const { tools } = harness();
+		const result = await tools
+			.get("manager_unlink")
+			?.execute("t1", { dst: "chess", relation: "involved_in" });
+		expect(text(result)).toContain("no");
+		expect(text(result)).toContain("link to close");
+	});
+});
+
+describe("topic-filed facts", () => {
+	it("manager_remember files a fact under the topic entity, not the contact", async () => {
+		const { tools, memory } = harness();
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{
+					text: "is a strategy game played on a checkered board",
+					subject: "interlocutor",
+					kind: "context",
+					topic: "chess",
+				},
+			],
+		});
+		expect(memory?.facts[0]?.entity).toBe("chess");
+	});
+
+	it("manager_revise keeps a topic-filed fact under the same topic", async () => {
+		const { tools, memory } = harness();
+		await memory?.remember({
+			text: "is a strategy game played on a checkered board",
+			entity: "chess",
+			tags: ["fact", "context"],
+		});
+		await tools.get("manager_revise")?.execute("t1", {
+			id: 0,
+			text: "is a two-player strategy game",
+			topic: "chess",
+		});
+		const revised = memory?.facts.find((fact) =>
+			fact.text.includes("two-player"),
+		);
+		expect(revised?.entity).toBe("chess");
+	});
+});
+
+describe("stripRendering", () => {
+	it("strips a leading entity prefix that does not match the one passed in", async () => {
+		// A generic fallback for a line copied from a DIFFERENT entity's block than the
+		// one this write names — only trips when the trailing decoration is still there.
+		const cleaned = stripRendering(
+			"chess: is a two-player strategy game (2026-08; active) #fact #context",
+			"Alice",
+		);
+		expect(cleaned).toBe("is a two-player strategy game");
+	});
+
+	it("leaves an ordinary sentence starting with a capitalized word alone", async () => {
+		const cleaned = stripRendering("Note: bring an umbrella tomorrow", "Alice");
+		expect(cleaned).toBe("Note: bring an umbrella tomorrow");
 	});
 });
 

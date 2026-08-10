@@ -384,6 +384,61 @@ describe("a contact's memory", () => {
 		expect(found.rendered).toContain("see you at the rehearsal");
 	});
 
+	it("reaches a topic's own facts from the contact through a link", async () => {
+		// The topic graph. A fact filed under a topic entity is its own node — a recall
+		// anchored on the contact walks the edge and pulls it in, the same as the
+		// contact/episode link above (`ann`/`bob` in the plugmem skill).
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "Alice enjoys strategy games",
+			entity: "Alice",
+			tags: ["fact", "preference"],
+		});
+		await memory.remember({
+			text: "is a two-player strategy game played on a checkered board",
+			entity: "chess",
+			tags: ["fact", "context"],
+		});
+		await memory.link("Alice", "involved_in", "chess");
+
+		const found = await memory.recall({ entities: ["Alice"] });
+		expect(found.rendered).toContain("checkered board");
+	});
+
+	it("stops reaching a topic once the link is closed, but as-of still can", async () => {
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "is a two-player strategy game",
+			entity: "chess",
+			tags: ["fact", "context"],
+		});
+		await memory.link("Alice", "involved_in", "chess");
+		const beforeUnlink = Date.now();
+		// A real gap, not just a captured instant: the edge's own open/close times are
+		// the engine's wall clock, and without daylight between them a fast run can tie
+		// `beforeUnlink` with the unlink's own timestamp in the same millisecond.
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const closed = await memory.unlink("Alice", "involved_in", "chess");
+		expect(closed).toBe(true);
+
+		const now = await memory.recall({ entities: ["Alice"] });
+		expect(now.rendered).not.toContain("two-player strategy game");
+
+		const then = await memory.recall({
+			entities: ["Alice"],
+			asOf: beforeUnlink,
+		});
+		expect(then.rendered).toContain("two-player strategy game");
+	});
+
+	it("says plainly when there was no link to close", async () => {
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		expect(await memory.unlink("Alice", "involved_in", "chess")).toBe(false);
+	});
+
 	it("closes a superseded fact instead of erasing it", async () => {
 		const { workspace } = fresh();
 		const memory = await workspace.for("111");

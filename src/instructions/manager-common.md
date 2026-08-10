@@ -349,6 +349,11 @@ private (never shown to the contact) and are surfaced to you as "Known facts abo
 …", grouped by kind, the next time that person writes — use each group as its
 section says.
 
+One exchange often yields several atomic facts — a stated interest, a topic, an
+appointment — and each is its own entry in the SAME `facts` array, never one
+sentence that blends them. A one-off appointment that has already happened is
+usually worth dropping entirely, not keeping.
+
 You do **not** need to search before saving. The memory checks each new fact
 against what it already holds about that person and refuses to duplicate one, so
 `manager_recall` before `manager_remember` only spends a turn. Its result is
@@ -385,6 +390,10 @@ period, not both — a period is listed by date and your words do not rank it.
 `as_of` is a third thing: it rewinds the memory to what it believed on that day,
 so a fact revised since comes back in its older wording. Nothing learned after
 that day is visible to it, so never use it to search recent memory.
+
+During memory passes you also have `manager_link`/`manager_unlink`, for
+connecting this person to a durable topic in the memory's graph; a fact filed
+under such a topic reads with the topic's name in place of the person's.
 
 A recalled line is formatted for you to read: `- [f3] Alice: takes evening
 classes (2026-08; active) #fact #preference`. Only the sentence is the fact. The

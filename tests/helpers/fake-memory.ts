@@ -142,9 +142,23 @@ export class FakeContactMemory implements ContactMemory {
 		return outcomes;
 	}
 
-	async link(src: string, relation: string, dst: string): Promise<void> {
+	async link(
+		src: string,
+		relation: string,
+		dst: string,
+		_provenance?: number,
+	): Promise<void> {
 		const edge = `${src} —${relation}→ ${dst}`;
 		if (!this.links.includes(edge)) this.links.push(edge);
+	}
+
+	/** Close an edge, reporting whether one was open — mirrors the real engine. */
+	async unlink(src: string, relation: string, dst: string): Promise<boolean> {
+		const edge = `${src} —${relation}→ ${dst}`;
+		const index = this.links.indexOf(edge);
+		if (index < 0) return false;
+		this.links.splice(index, 1);
+		return true;
 	}
 
 	async revise(id: number, write: MemoryWrite): Promise<MemoryWriteOutcome> {

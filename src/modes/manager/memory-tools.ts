@@ -39,8 +39,32 @@ export const MEMORY_TOOL_NAMES = [
 	"manager_recall",
 	"manager_revise",
 	"manager_forget",
+	"manager_link",
+	"manager_unlink",
 	"manager_done",
 ] as const;
+
+/**
+ * The closed vocabulary for a topic-graph edge — deliberately abstract, not tied to any
+ * one kind of activity, so the model never has to invent wording. What each one means
+ * in practice is explained once, in {@link CONSOLIDATION_INSTRUCTIONS}, not repeated
+ * here: the tool gives the shape, the instruction gives the judgement.
+ */
+export const TOPIC_RELATIONS = [
+	"interested_in",
+	"involved_in",
+	"part_of",
+	"related_to",
+	"mentioned_with",
+] as const;
+
+export type TopicRelation = (typeof TOPIC_RELATIONS)[number];
+
+function asTopicRelation(value: unknown): TopicRelation | undefined {
+	return TOPIC_RELATIONS.includes(value as TopicRelation)
+		? (value as TopicRelation)
+		: undefined;
+}
 
 /** The one memory verb that is also available while answering somebody. */
 export const MEMORY_REPLY_TOOL_NAME = "manager_remember";
@@ -317,6 +341,14 @@ function brief(text: string, limit = 60): string {
 const RENDERED_INTERVAL =
 	/\s*\(\d{4}-\d{2}(?:\s*→\s*\d{4}-\d{2})?;\s*(?:active|closed)\)\s*$/u;
 
+/**
+ * The same interval marker, but matched anywhere rather than anchored to the end —
+ * used only to DETECT a decorated line (a `#tag` may still follow the interval), never
+ * to strip it. Stripping stays the anchored version's job, run by the loop below.
+ */
+const RENDERED_INTERVAL_ANYWHERE =
+	/\(\d{4}-\d{2}(?:\s*→\s*\d{4}-\d{2})?;\s*(?:active|closed)\)/u;
+
 /** The `- [f12] ` a recalled line opens with, when a whole line is pasted back. */
 const RENDERED_LEAD = /^\s*-?\s*\[f\d+\]\s*/u;
 
@@ -342,8 +374,23 @@ const RENDERED_LEAD = /^\s*-?\s*\[f\d+\]\s*/u;
 export function stripRendering(text: string, entity?: string): string {
 	let out = text.trim().replace(RENDERED_LEAD, "");
 	const subject = entity?.trim() ? `${entity.trim()}: ` : "";
-	if (subject && out.startsWith(subject))
+	if (subject && out.startsWith(subject)) {
 		out = out.slice(subject.length).trim();
+	} else {
+		// A generic fallback for a line filed under a DIFFERENT entity than the one
+		// this write names — a topic the model didn't repeat back exactly, or a line
+		// copied from the contact's own block while writing under a topic (or vice
+		// versa). Only trips when what follows still carries the block's own trailing
+		// decoration, so an ordinary sentence that happens to start with "Word: " is
+		// never touched.
+		const generic = /^[A-Za-z][\w '-]{0,40}: /u.exec(out);
+		if (
+			generic &&
+			RENDERED_INTERVAL_ANYWHERE.test(out.slice(generic[0].length))
+		) {
+			out = out.slice(generic[0].length).trim();
+		}
+	}
 	for (;;) {
 		const before = out;
 		out = out.replace(RENDERED_INTERVAL, "");
@@ -547,7 +594,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. The memory itself checks each fact against what it already holds about this person, and only stops a write when a stored fact genuinely says nearly the same thing; a merely related fact is stored without asking. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both statements are true, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. Do not merge an appointment, a topic, and an opinion from one exchange into one sentence either — 'plans to play a game with the Owner at 21:30 tonight; talked about a movie and two other games' is at least three separate facts, not one, and the dated appointment itself is usually not worth keeping at all once it has happened (nothing about a passed one-off event helps a later conversation). Pass every atomic fact from one exchange as its own entry in the SAME facts array rather than calling this tool once per fact or writing one blended sentence. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. The memory itself checks each fact against what it already holds about this person, and only stops a write when a stored fact genuinely says nearly the same thing; a merely related fact is stored without asking. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both statements are true, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -569,6 +616,11 @@ export function createMemoryTools(
 								description:
 									"identity (who they are) | preference (tastes/style) | agreement (commitments) | context (ongoing situation).",
 							},
+							topic: {
+								type: "string",
+								description:
+									"Usually leave blank — the fact is about the person. Set it only when this fact is really about a subject-matter node worth its own graph entry (a hobby, a show, a project), reusing the exact spelling of an existing linked topic when there is one.",
+							},
 						},
 						required: ["text", "subject"],
 						additionalProperties: false,
@@ -587,7 +639,12 @@ export function createMemoryTools(
 		async execute(
 			_id,
 			params: {
-				facts?: Array<{ text?: string; subject?: string; kind?: string }>;
+				facts?: Array<{
+					text?: string;
+					subject?: string;
+					kind?: string;
+					topic?: string;
+				}>;
 				confirm_similar?: boolean;
 			},
 		) {
@@ -598,9 +655,13 @@ export function createMemoryTools(
 			const keep = raw
 				.filter((item) => item?.text?.trim())
 				.map((item) => ({
-					text: stripRendering(item.text as string, context.contactName()),
+					text: stripRendering(
+						item.text as string,
+						item.topic?.trim() || context.contactName(),
+					),
 					subject: asRelation(item.subject),
 					kind: asKind(item.kind) ?? "context",
+					topic: item.topic?.trim() || undefined,
 				}))
 				.filter(
 					(fact) => fact.subject === "interlocutor" && fact.text.length > 0,
@@ -628,8 +689,9 @@ export function createMemoryTools(
 						text: fact.text,
 						// The subject entity, and also what scopes the similarity check: the
 						// engine compares a new fact against this entity's live facts, not
-						// against everything in the file.
-						entity: context.contactName(),
+						// against everything in the file. A topic entity files the fact as its
+						// own graph node instead of under the contact — see manager_link.
+						entity: fact.topic ?? context.contactName(),
 						tags: ["fact", fact.kind],
 						validFrom: context.now(),
 					};
@@ -818,7 +880,7 @@ export function createMemoryTools(
 		name: "manager_revise",
 		label: "Manager Revise",
 		description:
-			"Replace a fact that has stopped being true with what is true now — they changed job, moved, cancelled the plan. Give the id from its [fN] tag and the corrected statement. Write the statement alone: the '(2026-08; active)' after a recalled line and the '#tags' at its end are how the memory displays a fact, not part of it, and copying them in stores them as text. One fact = one statement — do not merge several updates into one line; revise them one at a time, and drop what is no longer true instead of carrying it along. The old version is closed rather than erased, so the memory still knows what it used to believe and when. Prefer this over forget whenever there is a successor: forget is for a fact that was simply wrong.",
+			"Replace a fact that has stopped being true with what is true now — they changed job, moved, cancelled the plan. Give the id from its [fN] tag and the corrected statement. Write the statement alone: the '(2026-08; active)' after a recalled line and the '#tags' at its end are how the memory displays a fact, not part of it, and copying them in stores them as text. One fact = one statement — do not merge several updates into one line; revise them one at a time, and drop what is no longer true instead of carrying it along. The old version is closed rather than erased, so the memory still knows what it used to believe and when. If the recalled line reads '<Topic>: …' instead of the person's name, the fact is filed under that topic — pass the same name as topic here, or the correction moves back onto the person. Prefer this over forget whenever there is a successor: forget is for a fact that was simply wrong.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -832,16 +894,25 @@ export function createMemoryTools(
 					enum: FACT_KINDS,
 					description: "identity | preference | agreement | context.",
 				},
+				topic: {
+					type: "string",
+					description:
+						"Only when the fact being revised is filed under a topic (its recalled line starts with '<Topic>: ' rather than the person's name) — repeat that same topic name so the successor stays filed under it.",
+				},
 			},
 			required: ["id", "text"],
 			additionalProperties: false,
 		} as never,
-		async execute(_id, params: { id?: number; text?: string; kind?: string }) {
+		async execute(
+			_id,
+			params: { id?: number; text?: string; kind?: string; topic?: string },
+		) {
 			const target = params.id;
+			const topic = params.topic?.trim() || undefined;
 			// The line being replaced is one the model has just READ, so the correction
 			// tends to arrive wearing the block's formatting — see `stripRendering`.
 			const text = params.text
-				? stripRendering(params.text, context.contactName())
+				? stripRendering(params.text, topic ?? context.contactName())
 				: "";
 			if (!Number.isFinite(target))
 				return fail("manager_revise needs a fact id.");
@@ -852,7 +923,7 @@ export function createMemoryTools(
 				if (!before) return { missing: true as const };
 				const outcome = await memory.revise(target as number, {
 					text,
-					entity: context.contactName(),
+					entity: topic ?? context.contactName(),
 					tags: ["fact", kind],
 					validFrom: context.now(),
 				});
@@ -925,6 +996,118 @@ export function createMemoryTools(
 		},
 	});
 
+	const link = defineTool({
+		name: "manager_link",
+		label: "Manager Link",
+		description:
+			"Connect this person to a durable TOPIC — a hobby, a show, a recurring activity — as its own entry in your memory's graph, or connect one topic to another. Reserve this for something that has come up more than once or that you just generalized into a durable fact; never for a single passing mention. dst is the topic name — reuse the exact spelling of an existing linked topic when there is one (the memory block shows any 'links:' line). src defaults to this person; pass another topic's name there instead to chain topic to topic. provenance, when given, is the [fN] id of the fact that justifies the edge.",
+		parameters: {
+			type: "object",
+			properties: {
+				dst: { type: "string", description: "The topic this connects to." },
+				relation: {
+					type: "string",
+					enum: TOPIC_RELATIONS,
+					description:
+						"interested_in | involved_in | part_of | related_to | mentioned_with — see the pass instructions for which one fits.",
+				},
+				src: {
+					type: "string",
+					description:
+						"Defaults to this person. Pass a topic's name instead to link topic to topic.",
+				},
+				provenance: {
+					type: "number",
+					description: "Optional [fN] id of the fact this edge follows from.",
+				},
+			},
+			required: ["dst", "relation"],
+			additionalProperties: false,
+		} as never,
+		async execute(
+			_id,
+			params: {
+				dst?: string;
+				relation?: string;
+				src?: string;
+				provenance?: number;
+			},
+		) {
+			const dst = params.dst?.trim();
+			const relation = asTopicRelation(params.relation);
+			if (!dst) return fail("manager_link needs dst, the topic to connect to.");
+			if (!relation)
+				return fail(`relation must be one of: ${TOPIC_RELATIONS.join(", ")}.`);
+			const src = params.src?.trim() || context.contactName();
+			const provenance = Number.isFinite(params.provenance)
+				? (params.provenance as number)
+				: undefined;
+			const result = await withMemory((memory) =>
+				memory.link(src, relation, dst, provenance),
+			);
+			if (result && typeof result === "object" && "error" in result)
+				return fail(result.error);
+			context.ledger().record({
+				tool: "manager_link",
+				argsKey: `${src}#${relation}#${dst}`,
+				summary: `linked ${src} —${relation}→ ${dst}`,
+			});
+			return ok(`Linked: ${src} —${relation}→ ${dst}`);
+		},
+	});
+
+	const unlink = defineTool({
+		name: "manager_unlink",
+		label: "Manager Unlink",
+		description:
+			"Close a topic relation that has stopped holding — the interest faded, the connection was wrong. This does not delete any fact, only the edge; a past recall of what was connected then still works. Same src/dst/relation as manager_link.",
+		parameters: {
+			type: "object",
+			properties: {
+				dst: { type: "string", description: "The topic this connects to." },
+				relation: {
+					type: "string",
+					enum: TOPIC_RELATIONS,
+					description: "The same relation the edge was created with.",
+				},
+				src: {
+					type: "string",
+					description: "Defaults to this person.",
+				},
+			},
+			required: ["dst", "relation"],
+			additionalProperties: false,
+		} as never,
+		async execute(
+			_id,
+			params: { dst?: string; relation?: string; src?: string },
+		) {
+			const dst = params.dst?.trim();
+			const relation = asTopicRelation(params.relation);
+			if (!dst)
+				return fail("manager_unlink needs dst, the topic to disconnect.");
+			if (!relation)
+				return fail(`relation must be one of: ${TOPIC_RELATIONS.join(", ")}.`);
+			const src = params.src?.trim() || context.contactName();
+			const result = await withMemory((memory) =>
+				memory.unlink(src, relation, dst),
+			);
+			if (typeof result !== "boolean") return fail(result.error);
+			context.ledger().record({
+				tool: "manager_unlink",
+				argsKey: `${src}#${relation}#${dst}`,
+				summary: result
+					? `unlinked ${src} —${relation}→ ${dst}`
+					: `no such link to unlink: ${src} —${relation}→ ${dst}`,
+			});
+			return ok(
+				result
+					? `Unlinked: ${src} —${relation}→ ${dst}`
+					: `There was no ${src} —${relation}→ ${dst} link to close.`,
+			);
+		},
+	});
+
 	const done = defineTool({
 		name: MEMORY_DONE_TOOL_NAME,
 		label: "Manager Done",
@@ -942,5 +1125,5 @@ export function createMemoryTools(
 		},
 	});
 
-	return [remember, recall, revise, forget, done];
+	return [remember, recall, revise, forget, link, unlink, done];
 }

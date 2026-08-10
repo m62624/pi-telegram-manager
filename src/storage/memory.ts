@@ -304,11 +304,28 @@ export interface ContactMemory {
 	/**
 	 * Join two subjects with a typed edge, creating it or refreshing it.
 	 *
-	 * The one use here is {@link MEMORY_EPISODE_ENTITY}: a recall anchored on the
+	 * The original use is {@link MEMORY_EPISODE_ENTITY}: a recall anchored on the
 	 * contact walks their edges, so the link is what keeps their messages reachable
-	 * from their name once the episodes stopped being filed under it.
+	 * from their name once the episodes stopped being filed under it. The topic graph
+	 * (`manager_link`) is the second: `provenance`, when given, is the fact id the edge
+	 * follows from — the answer to "why does the memory think this edge exists", surfaced
+	 * back by a graph recall.
 	 */
-	link(src: string, relation: string, dst: string): Promise<void>;
+	link(
+		src: string,
+		relation: string,
+		dst: string,
+		provenance?: number,
+	): Promise<void>;
+	/**
+	 * Close a typed edge for current recall, without touching any fact.
+	 *
+	 * The edge is not deleted: its interval closes the way a revised fact's does, so
+	 * `asOf` before the unlink still walks the graph as it stood. Resolves with whether
+	 * an edge was actually open — a caller that unlinks something never linked is told
+	 * plainly, rather than getting a silent no-op.
+	 */
+	unlink(src: string, relation: string, dst: string): Promise<boolean>;
 	/** One fact, whole — the only way to get a fact's text by id. */
 	get(id: number): Promise<MemoryFact | null>;
 }

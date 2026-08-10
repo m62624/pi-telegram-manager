@@ -50,6 +50,8 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"manager_recall",
 			"manager_revise",
 			"manager_forget",
+			"manager_link",
+			"manager_unlink",
 			// The memory verbs, in a fixed order: tool schemas are rendered into the head of
 			// the prompt, so the same tools listed differently are a cache miss on the whole
 			// prompt (`pi/tool-visibility.ts`).

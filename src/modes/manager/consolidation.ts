@@ -62,7 +62,37 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"details with no likely future use. manager_remember refuses on its own to write a " +
 	"fact the memory already holds, so store without searching first; use manager_recall " +
 	"only for a concrete inspection, revise what this conversation overturned, " +
-	"and forget only what was wrong or never about this person. The runtime carries a " +
+	"and forget only what was wrong or never about this person.\n\n" +
+	"If a stored fact bundles several statements into one sentence, split it: write " +
+	"each atomic statement as its own manager_remember fact FIRST, and only once every " +
+	"piece has been stored (or is already known), manager_forget the bundled original — " +
+	"in that order, never the reverse. A run cut off between the two steps then leaves " +
+	"the original AND the split pieces both standing, which is redundant but nothing is " +
+	"lost; a run cut off the other way around would lose whatever had not been split out " +
+	"yet. For the same reason, if you ever see a stored fact whose text is a superset of " +
+	"other stored facts that already say the same things atomically (yours or a previous " +
+	"pass's), manager_forget the superset — never the atomic facts it restates.\n\n" +
+	"A dated agreement/context fact whose date has already passed (compare it to the " +
+	"[Now: …] line) is not automatically worth keeping: if nothing suggests it will " +
+	"recur, manager_forget it outright — a past appointment has no future use once it " +
+	"has happened. If it is at least the second fact you can find about the same " +
+	"recurring activity, replace them with ONE dateless fact stating the pattern (e.g. " +
+	"'plays a game with the Owner regularly, evenings' rather than a string of specific " +
+	"dates) via manager_revise on the most recent instance, then manager_forget the " +
+	"older dated instances it now replaces.\n\n" +
+	"You also have manager_link and manager_unlink, for connecting this person to a " +
+	"TOPIC — a hobby, a show, a recurring activity — as its own entry in the graph, " +
+	"reachable even when a later conversation uses different words. Reach for a topic " +
+	"only once it looks durable (it has come up more than once, or this pass just " +
+	"generalized a recurring fact about it); never for a single passing mention. Pick " +
+	"the relation by what kind of connection it actually is: interested_in for a " +
+	"durable interest that does not imply active participation, involved_in for " +
+	"something the person actively and repeatedly does, part_of when one topic is a " +
+	"narrower piece of a broader one, related_to for a plain association with no " +
+	"hierarchy, and mentioned_with — used sparingly — for the weakest case, where " +
+	"something merely came up alongside something else. manager_unlink closes a " +
+	"relation that has stopped holding; it does not delete any fact.\n\n" +
+	"The runtime carries a " +
 	"small pass state; after several recall checks without a memory action, stop " +
 	"inspecting and decide. You have your memory tools and as many turns as " +
 	"you need. Call exactly one tool per turn " +
@@ -89,6 +119,8 @@ function workDirective(ledger: MemoryLedger): string {
 		"  manager_remember — store something durable this conversation established;\n" +
 		"  manager_revise — replace a fact this conversation overturned (its [fN] id);\n" +
 		"  manager_forget — drop a fact that was wrong or was never about this person;\n" +
+		"  manager_link — connect this person to a durable topic, or one topic to another;\n" +
+		"  manager_unlink — close a topic relation that has stopped holding;\n" +
 		`  ${MEMORY_DONE_TOOL_NAME} — finish.\n` +
 		"Do not write plain text: it goes nowhere and ends nothing. Nothing here is " +
 		`sent to anybody.${soFar}]`
