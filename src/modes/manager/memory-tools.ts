@@ -304,6 +304,52 @@ function brief(text: string, limit = 60): string {
 	return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
+/**
+ * A recalled line's decoration, as the engine renders it: `(2026-08; active)` for a
+ * fact that still holds, `(2026-08 → 2026-09; closed)` for one that has been revised.
+ */
+const RENDERED_INTERVAL =
+	/\s*\(\d{4}-\d{2}(?:\s*→\s*\d{4}-\d{2})?;\s*(?:active|closed)\)\s*$/u;
+
+/** The `- [f12] ` a recalled line opens with, when a whole line is pasted back. */
+const RENDERED_LEAD = /^\s*-?\s*\[f\d+\]\s*/u;
+
+/**
+ * Take the block's formatting back off a statement the model copied out of it.
+ *
+ * A recall is rendered for reading — `- [f25] Alice: went back to night shifts
+ * (2026-08; active) #fact #context` — and every part of that except the sentence is
+ * the engine describing the fact, not the fact. A model revising something it just
+ * read pastes the line as it saw it, and then the interval is inside the text: it
+ * survives the write, renders again beside a fresh one, and the next revision carries
+ * two. Observed on a real pass — a corrected sentence arrived with `(2026-08; active)`
+ * on the end of it — so this is a fix for something that happens, not a precaution.
+ *
+ * Only decoration this project can recognise is removed, which is what keeps it from
+ * eating a real sentence: a trailing `#tag` goes only when it is one of
+ * {@link MEMORY_TAGS} (so "#1 priority" and a hashtag someone actually uses stay), a
+ * trailing parenthesis goes only when it carries the `; active` / `; closed` marker
+ * (so "works remotely (mostly)" stays), and the leading subject goes only when it is
+ * the very name this write is about to be filed under. Repeated because a line already
+ * spoiled by an earlier pass carries the interval twice.
+ */
+export function stripRendering(text: string, entity?: string): string {
+	let out = text.trim().replace(RENDERED_LEAD, "");
+	const subject = entity?.trim() ? `${entity.trim()}: ` : "";
+	if (subject && out.startsWith(subject))
+		out = out.slice(subject.length).trim();
+	for (;;) {
+		const before = out;
+		out = out.replace(RENDERED_INTERVAL, "");
+		const tag = /\s#([a-z]+)\s*$/u.exec(out);
+		if (tag && (MEMORY_TAGS as readonly string[]).includes(tag[1])) {
+			out = out.slice(0, tag.index);
+		}
+		out = out.trim();
+		if (out === before.trim()) return out;
+	}
+}
+
 /** Compare fact statements without treating terminal punctuation as a new fact. */
 function factKey(text: string): string {
 	return text
@@ -466,11 +512,13 @@ export function createMemoryTools(
 			const keep = raw
 				.filter((item) => item?.text?.trim())
 				.map((item) => ({
-					text: (item.text as string).trim(),
+					text: stripRendering(item.text as string, context.contactName()),
 					subject: asRelation(item.subject),
 					kind: asKind(item.kind) ?? "context",
 				}))
-				.filter((fact) => fact.subject === "interlocutor");
+				.filter(
+					(fact) => fact.subject === "interlocutor" && fact.text.length > 0,
+				);
 			if (keep.length === 0) {
 				context.ledger().record({
 					tool: "manager_remember",
@@ -624,7 +672,7 @@ export function createMemoryTools(
 		name: "manager_revise",
 		label: "Manager Revise",
 		description:
-			"Replace a fact that has stopped being true with what is true now — they changed job, moved, cancelled the plan. Give the id from its [fN] tag and the corrected statement. The old version is closed rather than erased, so the memory still knows what it used to believe and when. Prefer this over forget whenever there is a successor: forget is for a fact that was simply wrong.",
+			"Replace a fact that has stopped being true with what is true now — they changed job, moved, cancelled the plan. Give the id from its [fN] tag and the corrected statement. Write the statement alone: the '(2026-08; active)' after a recalled line and the '#tags' at its end are how the memory displays a fact, not part of it, and copying them in stores them as text. One fact = one statement — do not merge several updates into one line; revise them one at a time, and drop what is no longer true instead of carrying it along. The old version is closed rather than erased, so the memory still knows what it used to believe and when. Prefer this over forget whenever there is a successor: forget is for a fact that was simply wrong.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -644,7 +692,11 @@ export function createMemoryTools(
 		} as never,
 		async execute(_id, params: { id?: number; text?: string; kind?: string }) {
 			const target = params.id;
-			const text = params.text?.trim();
+			// The line being replaced is one the model has just READ, so the correction
+			// tends to arrive wearing the block's formatting — see `stripRendering`.
+			const text = params.text
+				? stripRendering(params.text, context.contactName())
+				: "";
 			if (!Number.isFinite(target))
 				return fail("manager_revise needs a fact id.");
 			if (!text) return fail("manager_revise needs the corrected text.");

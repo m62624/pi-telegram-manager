@@ -141,8 +141,10 @@ export function consolidationMemoryBlock(rendered: string): string {
 	return (
 		`What you currently remember about this person:\n\n${body}\n\n` +
 		"The number in each [fN] tag is that fact's id: pass it to manager_revise to " +
-		"replace it, or manager_forget to drop it. Use manager_recall only for a " +
-		"concrete unresolved point; manager_remember refuses on its own to write a fact " +
-		"the memory already holds."
+		"replace it, or manager_forget to drop it. Each line is FORMATTED for you: the " +
+		"fact itself is the sentence, while `(2026-08; active)` is when it has held and " +
+		"`#tags` are how it is filed — never copy those into a fact you write. Use " +
+		"manager_recall only for a concrete unresolved point; manager_remember refuses " +
+		"on its own to write a fact the memory already holds."
 	);
 }

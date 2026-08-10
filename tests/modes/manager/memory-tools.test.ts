@@ -87,6 +87,20 @@ describe("manager_remember", () => {
 		expect(ledger.size()).toBe(1);
 	});
 
+	it("stores the sentence, not the way a recalled line was displayed", async () => {
+		const { tools, memory } = harness();
+		await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{
+					text: "- [f7] Alice: takes evening classes (2026-08; active) #fact #preference",
+					subject: "interlocutor",
+					kind: "preference",
+				},
+			],
+		});
+		expect(memory?.texts()).toEqual(["takes evening classes"]);
+	});
+
 	it("keeps only what is about the person being talked to", async () => {
 		const { tools, memory } = harness();
 		await tools.get("manager_remember")?.execute("t1", {
@@ -301,6 +315,28 @@ describe("manager_revise", () => {
 			?.execute("t1", { id: 0, text: "freelances" });
 		expect(memory?.texts()).toEqual(["freelances"]);
 		expect(text(result)).toContain("closed, not erased");
+	});
+
+	it("stores the sentence when the model pastes the whole recalled line back", async () => {
+		// What a pass actually did: it read `- [f0] Alice: … (2026-08; active) #fact
+		// #context` and handed the correction back with the decoration still on it, so
+		// the display string became part of the fact and would render twice next time.
+		const { tools, memory } = harness();
+		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		await tools.get("manager_revise")?.execute("t1", {
+			id: 0,
+			text: "- [f0] Alice: freelances now (2026-08; active) #fact #context",
+		});
+		expect(memory?.texts()).toEqual(["freelances now"]);
+	});
+
+	it("keeps a parenthesis and a hashtag that belong to the sentence", async () => {
+		const { tools, memory } = harness();
+		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		await tools
+			.get("manager_revise")
+			?.execute("t1", { id: 0, text: "works remotely (mostly) #teamgreen" });
+		expect(memory?.texts()).toEqual(["works remotely (mostly) #teamgreen"]);
 	});
 
 	it("refuses an id that is not there, and says how to find one", async () => {
