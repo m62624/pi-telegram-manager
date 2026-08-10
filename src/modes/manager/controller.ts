@@ -630,6 +630,9 @@ export class ManagerController {
 			},
 			ledger: () => this.consolidating?.ledger ?? this.scratchLedger,
 			now: () => this.deps.clock.now(),
+			// The same zone the `[Now: …]` line uses, so a date read there and a date
+			// asked about are the same day.
+			timezone: this.deps.timezone,
 		};
 	}
 

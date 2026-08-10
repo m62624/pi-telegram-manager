@@ -56,6 +56,53 @@ export function formatNowLine(now: number, timezone?: string): string {
 	return `[Now: ${formatClock(now, timezone)}]`;
 }
 
+/** A calendar day as the model writes one, and the only shape accepted from it. */
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Midnight of an ISO day, in the same zone the `[Now: …]` line is rendered in.
+ *
+ * The model is shown a date and asks about dates; the memory is addressed in
+ * milliseconds. Converting between them is this function's whole job, and the zone
+ * matters because the two ends must agree: a bot told it is Tuesday in Almaty and then
+ * given a window computed in UTC would answer about a day that is five hours out.
+ *
+ * The offset is read at the instant being converted rather than assumed, so a zone
+ * that changes offset during the year is handled. The half-hour of a DST transition is
+ * not: a day is the unit here, and no question asked of this memory turns on it.
+ *
+ * Returns `null` for anything that is not `YYYY-MM-DD` — the caller reports that as a
+ * tool error, because a silently-guessed date is a wrong answer with no symptom.
+ */
+export function startOfDay(day: string, timezone?: string): number | null {
+	const match = ISO_DAY.exec(day.trim());
+	if (!match) return null;
+	const [, year, month, date] = match;
+	const utc = Date.UTC(Number(year), Number(month) - 1, Number(date));
+	if (!Number.isFinite(utc)) return null;
+	let parts: Record<string, string>;
+	try {
+		parts = partsFor(utc, timezone);
+	} catch {
+		parts = partsFor(utc, undefined);
+	}
+	// What the zone calls that instant, back as UTC: the difference is its offset.
+	const shown = Date.UTC(
+		Number(parts.year),
+		Number(parts.month) - 1,
+		Number(parts.day),
+		Number(parts.hour),
+		Number(parts.minute),
+	);
+	return utc - (shown - utc);
+}
+
+/** One millisecond before the next day begins — the end of `day`, inclusive. */
+export function endOfDay(day: string, timezone?: string): number | null {
+	const start = startOfDay(day, timezone);
+	return start === null ? null : start + 86_400_000 - 1;
+}
+
 /**
  * There used to be a third function here: the clock as a standalone context
  * message for mode 1, appended before every call to the model. It is gone. A

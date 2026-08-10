@@ -411,6 +411,86 @@ describe("a contact's memory", () => {
 		expect(before?.validTo).toBe(2_000);
 	});
 
+	it("answers about a window of when it learned things", async () => {
+		// The knowledge axis, which is what "what came up last month" asks about — and
+		// past the transcript's pruning window the memory is the only thing that can
+		// answer it at all.
+		//
+		// `recordedAt` is stamped by the engine from its own clock, and `validFrom` does
+		// NOT move it. A window expressed in the conversation's own dates would filter on
+		// an axis nothing here ever set, so the boundary is taken from the clock, between
+		// the two writes.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "agreed to ship on the twelfth",
+			entity: "Alice",
+			tags: ["fact", "agreement"],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		const between = Date.now();
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		await memory.remember({
+			text: "moved to a new flat",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+		});
+
+		// Alone, because `range` is one of the four SOURCES and not a filter over the
+		// others: added to an entity anchor it contributes the period while the anchor
+		// goes on contributing everything else, and the answer silently stops being
+		// about the period at all. Run by itself it is exactly the window.
+		const earlier = await memory.recall({ range: [0, between] });
+		expect(earlier.rendered).toContain("ship on the twelfth");
+		expect(earlier.rendered).not.toContain("new flat");
+
+		const later = await memory.recall({ range: [between, Date.now() + 1] });
+		expect(later.rendered).toContain("new flat");
+		expect(later.rendered).not.toContain("ship on the twelfth");
+
+		// The half that decides how the tool exposes this.
+		const mixed = await memory.recall({
+			entities: ["Alice"],
+			range: [0, between],
+		});
+		expect(mixed.rendered).toContain("new flat");
+	});
+
+	it("answers as it stood then, not as it stands now", async () => {
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		const learned = Date.now();
+		const original = await memory.remember({
+			text: "works at a bank",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+			validFrom: learned,
+		});
+		// The successor takes over later on the TRUTH axis, which is what closes the
+		// original's interval. Both were recorded now, a moment apart.
+		await memory.revise(original.id, {
+			text: "freelances",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+			validFrom: learned + 10_000,
+		});
+
+		const then = await memory.recall({
+			entities: ["Alice"],
+			asOf: learned + 1_000,
+		});
+		expect(then.rendered).toContain("works at a bank");
+		expect(then.rendered).not.toContain("freelances");
+
+		// And the trap worth knowing before offering this to a model: `asOf` moves BOTH
+		// clocks, so an instant before the memory recorded anything answers with nothing
+		// — correctly, since it genuinely knew nothing then.
+		expect(
+			(await memory.recall({ entities: ["Alice"], asOf: learned - 1_000 }))
+				.rendered,
+		).toBe("");
+	});
+
 	it("drops a forgotten fact from recall", async () => {
 		const { workspace } = fresh();
 		const memory = await workspace.for("111");

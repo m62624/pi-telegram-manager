@@ -15,6 +15,7 @@
  * given a way to ask a different one: there is no `db` argument on any tool in this
  * file, and there is nothing to put in one.
  */
+import { endOfDay, startOfDay } from "../../core/datetime";
 import { defineTool, type ToolDefinition } from "../../pi/sdk";
 import {
 	type ContactMemory,
@@ -272,6 +273,11 @@ export interface MemoryToolContext {
 	ledger(): MemoryLedger;
 	/** Wall clock, injected so tests are not at the mercy of the real one. */
 	now(): number;
+	/**
+	 * The zone the `[Now: …]` line is rendered in, so a date the model reads there and
+	 * a date it asks about mean the same day. Unset → the host's zone.
+	 */
+	timezone?: string;
 }
 
 function ok(text: string) {
@@ -348,6 +354,86 @@ export function stripRendering(text: string, entity?: string): string {
 		out = out.trim();
 		if (out === before.trim()) return out;
 	}
+}
+
+/** A recall's time bounds, already in the milliseconds the memory is addressed in. */
+interface TimeWindow {
+	/** `[from, to)` over when the memory LEARNED something. */
+	range?: [number, number];
+	/** The instant to answer as of — see {@link ContactMemory.recall}. */
+	asOf?: number;
+	/** How to say it in a log line, and what makes two windows different calls. */
+	label: string;
+}
+
+/**
+ * Turn the dates a model can actually write into the instants the memory takes.
+ *
+ * The model is never given a millisecond. It reads `[Now: Mon 2026-07-10 14:32 +05:00]`
+ * and thinks in the days it sees there, so the tool takes `YYYY-MM-DD` and converts —
+ * in the same zone that line is rendered in, or the window would answer about a
+ * different day than the one the model meant.
+ *
+ * The two axes are kept apart, because they answer different questions and mixing them
+ * up produces confident nonsense: `after`/`before` bound when the memory LEARNED
+ * something ("what came up last month"), while `as_of` rewinds what it BELIEVED ("what
+ * did I think then") and hides everything recorded since. A bad date is refused rather
+ * than dropped — a window silently ignored answers a question nobody asked.
+ */
+function timeWindow(
+	params: { after?: string; before?: string; as_of?: string },
+	context: MemoryToolContext,
+): TimeWindow | { error: string } {
+	const zone = context.timezone;
+	const parse = (value: string, end: boolean): number | null =>
+		end ? endOfDay(value, zone) : startOfDay(value, zone);
+	const bounds: { key: string; value: string; end: boolean }[] = [
+		{ key: "after", value: params.after ?? "", end: false },
+		{ key: "before", value: params.before ?? "", end: false },
+		{ key: "as_of", value: params.as_of ?? "", end: true },
+	].filter((bound) => bound.value.trim().length > 0);
+	const parsed = new Map<string, number>();
+	for (const bound of bounds) {
+		const at = parse(bound.value, bound.end);
+		if (at === null) {
+			return {
+				error:
+					`'${bound.value}' is not a date this tool can read. Use YYYY-MM-DD ` +
+					`for ${bound.key} — the [Now: …] line above shows today in that form.`,
+			};
+		}
+		parsed.set(bound.key, at);
+	}
+	const after = parsed.get("after");
+	const before = parsed.get("before");
+	const asOf = parsed.get("as_of");
+	if (after !== undefined && before !== undefined && after >= before) {
+		return {
+			error:
+				`The window is empty: after=${params.after} is not earlier than ` +
+				`before=${params.before}. 'after' opens the window and 'before' closes it.`,
+		};
+	}
+	const label =
+		after !== undefined && before !== undefined
+			? `recorded ${params.after}…${params.before}`
+			: after !== undefined
+				? `recorded since ${params.after}`
+				: before !== undefined
+					? `recorded before ${params.before}`
+					: asOf !== undefined
+						? `as of ${params.as_of}`
+						: "";
+	return {
+		range:
+			after === undefined && before === undefined
+				? undefined
+				: // A fact recorded this instant is still inside "since today": the end is
+					// exclusive, so it has to sit past the clock rather than on it.
+					[after ?? 0, before ?? context.now() + 1],
+		asOf,
+		label,
+	};
 }
 
 /** Compare fact statements without treating terminal punctuation as a new fact. */
@@ -605,7 +691,7 @@ export function createMemoryTools(
 		name: "manager_recall",
 		label: "Manager Recall",
 		description:
-			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Always give a query in words — that is what the search ranks on. Tags only NARROW that search and every one you add must be on the fact, so 'fact'+'preference' cannot return an identity or a context fact and an empty answer means only that nothing carries all of them: prefer no tags, or one. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
+			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Always give a query in words — that is what the search ranks on. Tags only NARROW that search and every one you add must be on the fact, so 'fact'+'preference' cannot return an identity or a context fact and an empty answer means only that nothing carries all of them: prefer no tags, or one. The memory also remembers WHEN. 'after'/'before' (YYYY-MM-DD) ask a different question from a query: they list everything recorded in that period, newest first, which is how to answer 'what did we discuss last month' about a conversation the transcript no longer holds — so use words OR a period, not both. 'as_of' is neither: it rewinds the memory to what it believed on that day, and combines with a query normally. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -620,10 +706,34 @@ export function createMemoryTools(
 					description:
 						"Optional filter, ANDed: a memory must carry EVERY tag listed, so each one you add can only remove answers. Leave it out unless one kind is genuinely all you want. 'fact' = durable facts, narrowed by identity/preference/agreement/context; 'episode' = what happened, narrowed by message (they said it), owner (the owner said it) or turn+reply/silent (what you did).",
 				},
+				after: {
+					type: "string",
+					description:
+						"Optional 'YYYY-MM-DD'. Switches to listing a PERIOD instead of searching by words: everything the memory recorded on that day or later, newest first. Read today's date off the [Now: …] line.",
+				},
+				before: {
+					type: "string",
+					description:
+						"Optional 'YYYY-MM-DD'. The other end of that period — everything recorded before that day. Last month is after=<first of last month> with before=<first of this month>. A period is listed by date, so a query is not used to rank it; ask by words OR by period.",
+				},
+				as_of: {
+					type: "string",
+					description:
+						"Optional 'YYYY-MM-DD'. Answer as the memory stood at the end of that day: a fact revised since comes back in its older wording. Use it only for 'what did I believe then' — never to search recent memory, since anything learned afterwards is invisible to it.",
+				},
 			},
 			additionalProperties: false,
 		} as never,
-		async execute(_id, params: { query?: string; tags?: string[] }) {
+		async execute(
+			_id,
+			params: {
+				query?: string;
+				tags?: string[];
+				after?: string;
+				before?: string;
+				as_of?: string;
+			},
+		) {
 			const ledger = context.ledger();
 			if (ledger.recallBlocked()) {
 				return fail(
@@ -636,6 +746,8 @@ export function createMemoryTools(
 			const tags = Array.isArray(params.tags)
 				? params.tags.filter((tag) => typeof tag === "string" && tag.trim())
 				: undefined;
+			const when = timeWindow(params, context);
+			if ("error" in when) return fail(when.error);
 			// Tags are AND filters over a closed vocabulary, so one the memory has never
 			// written matches nothing — and an empty answer would read as "there is
 			// nothing about them", which is a different and much worse claim.
@@ -650,20 +762,54 @@ export function createMemoryTools(
 						"again with one of those, or with no tags at all.",
 				);
 			}
+			// A window is a different KIND of search, not an extra filter on this one.
+			// `range` is one of the engine's four sources: it contributes what was
+			// recorded in the period, and the words and the entity anchor go on
+			// contributing everything else, so a windowed search that kept them would
+			// answer with the period PLUS whatever else matched — while saying it was
+			// about the period. Run alone it is exactly the period, newest first, and
+			// dropping the anchor costs nothing here: every fact in this file is already
+			// about this one contact.
 			const result = await withMemory(async (memory) =>
-				memory.recall({ query, tags, entities: [context.contactName()] }),
+				memory.recall({
+					query: when.range ? undefined : query,
+					tags,
+					entities: when.range ? undefined : [context.contactName()],
+					range: when.range,
+					asOf: when.asOf,
+				}),
 			);
 			if ("error" in result) return fail(result.error);
 			context.ledger().record({
 				tool: "manager_recall",
-				argsKey: `${query ?? ""}#${(tags ?? []).join(",")}`,
-				summary: `recalled ${brief(query ?? tags?.join(", ") ?? "everything", 40)} → ${
-					result.hits.length
-				} hit(s)`,
+				// The window is part of the call: two searches for the same words over
+				// different periods are different questions, and a repeat detector that
+				// could not tell them apart would call the second one a loop.
+				argsKey: `${query ?? ""}#${(tags ?? []).join(",")}#${when.label}`,
+				summary: `recalled ${brief(query ?? tags?.join(", ") ?? "everything", 40)}${
+					when.label ? ` ${when.label}` : ""
+				} → ${result.hits.length} hit(s)`,
 			});
+			const body = result.rendered.trim();
+			if (!body) {
+				// Naming the window matters when there is one: "nothing" from a bounded
+				// search says nothing at all about what the memory holds outside it, and a
+				// model that reads it as "I know nothing about them" acts on that.
+				return ok(
+					`Nothing in memory matches that${when.label ? ` ${when.label}` : ""}. ` +
+						"It is not there — do not infer it from the conversation." +
+						(when.label
+							? " Search again without the dates before concluding the memory is empty."
+							: ""),
+				);
+			}
+			// Said plainly rather than silently: the model asked for words AND a period,
+			// and got the period. Leaving it to notice would invite it to read the list
+			// as a ranking of its query.
 			return ok(
-				result.rendered.trim() ||
-					"Nothing in memory matches that. It is not there — do not infer it from the conversation.",
+				when.range && query
+					? `Everything ${when.label}, newest first — not ranked by "${brief(query, 40)}":\n${body}`
+					: body,
 			);
 		},
 	});

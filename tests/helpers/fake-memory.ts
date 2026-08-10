@@ -69,18 +69,30 @@ export class FakeContactMemory implements ContactMemory {
 	readonly links: string[] = [];
 	private nextId = 0;
 
+	/**
+	 * What the next write is RECORDED at, when a test is about the knowledge axis.
+	 *
+	 * The engine stamps this itself, from the wall clock, and it is NOT `validFrom`:
+	 * one says when the memory learned something, the other when the statement became
+	 * true, and `range` reads the first while `asOf` moves both. A fake with no clock
+	 * has to conflate them by default — set this to test anything that turns on the
+	 * difference, and note that a test which sets only `validFrom` is asking a question
+	 * the real engine would answer differently.
+	 */
+	recordingAt: number | null = null;
+
 	async remember(write: MemoryWrite): Promise<MemoryWriteOutcome> {
 		const similar = this.similarTo(write.text, write.entity);
 		const id = this.nextId++;
-		const now = write.validFrom ?? 0;
+		const recordedAt = this.recordingAt ?? write.validFrom ?? 0;
 		this.facts.push({
 			id,
 			text: write.text,
 			entity: write.entity,
 			tags: write.tags ?? [],
 			metadata: write.metadata ?? {},
-			recordedAt: now,
-			validFrom: now,
+			recordedAt,
+			validFrom: write.validFrom ?? recordedAt,
 		});
 		return { id, similar };
 	}
@@ -148,7 +160,20 @@ export class FakeContactMemory implements ContactMemory {
 
 	async recall(query: MemoryRecallQuery): Promise<MemoryRecallResult> {
 		const needle = words(query.query ?? "");
-		const matched = this.live()
+		const matched = this.asOf(query.asOf)
+			// `[from, to)` over the knowledge axis — when the memory learned it.
+			//
+			// Applied as a filter, which is NOT what the engine does: there `range` is one
+			// of the four retrieval sources, so a windowed recall that also carries a
+			// query or an entity anchor comes back with the window PLUS whatever those
+			// matched. The caller is expected to send a window on its own, and then the
+			// two behave alike; `manager_recall` is what makes sure of it.
+			.filter(
+				(fact) =>
+					query.range === undefined ||
+					(fact.recordedAt >= query.range[0] &&
+						fact.recordedAt < query.range[1]),
+			)
 			.filter((fact) =>
 				(query.tags ?? []).every((tag) => fact.tags.includes(tag)),
 			)
@@ -184,8 +209,25 @@ export class FakeContactMemory implements ContactMemory {
 	}
 
 	/** Facts whose interval is still open — what a plain recall may return. */
-	private live(): MemoryFact[] {
+	private live(): FakeFact[] {
 		return this.facts.filter((fact) => fact.validTo === undefined);
+	}
+
+	/**
+	 * The facts as the memory held them at `at`, or the live ones when it is unset.
+	 *
+	 * Both clocks move together, which is the part worth copying: a fact recorded
+	 * AFTER the instant asked about does not answer, however true it is now. Anything
+	 * else would let an `as_of` question be answered with today's knowledge.
+	 */
+	private asOf(at?: number): FakeFact[] {
+		if (at === undefined) return this.live();
+		return this.facts.filter(
+			(fact) =>
+				fact.recordedAt <= at &&
+				fact.validFrom <= at &&
+				(fact.validTo === undefined || fact.validTo > at),
+		);
 	}
 
 	/** Just the text of the live facts, for readable assertions. */

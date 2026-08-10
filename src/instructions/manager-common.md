@@ -377,6 +377,15 @@ statements (narrowed by `identity`, `preference`, `agreement`, `context`),
 `episode` for what happened, narrowed by `message` (they said it), `owner` (the
 owner said it in that chat) or `turn` with `reply`/`silent` (what you did).
 
+The memory also knows **when**. `after` and `before` (`YYYY-MM-DD`, the form the
+`[Now: …]` line uses) ask a different question from a query: they list everything
+recorded in that period, newest first, so "what did we discuss last month" is
+answerable long after the transcript above has been pruned. Use words or a
+period, not both — a period is listed by date and your words do not rank it.
+`as_of` is a third thing: it rewinds the memory to what it believed on that day,
+so a fact revised since comes back in its older wording. Nothing learned after
+that day is visible to it, so never use it to search recent memory.
+
 A recalled line is formatted for you to read: `- [f3] Alice: takes evening
 classes (2026-08; active) #fact #preference`. Only the sentence is the fact. The
 `[fN]` is its id, the parenthesis is how long it has held, the `#tags` are how it

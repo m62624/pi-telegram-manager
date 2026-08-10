@@ -1411,7 +1411,11 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// No manager, no pass to account for. A throwaway keeps the tools total.
 			return new MemoryLedger();
 		},
-		now: () => Date.now(),
+		now: () => manager?.memoryToolContext().now() ?? Date.now(),
+		// A getter, so it follows a mode restarted with a different zone.
+		get timezone() {
+			return manager?.memoryToolContext().timezone;
+		},
 	};
 	for (const tool of [
 		...createManagerTools(managerDecisionSink),

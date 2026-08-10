@@ -28,6 +28,7 @@ function harness(memory: FakeContactMemory | null = new FakeContactMemory()) {
 		contactName: () => "Alice",
 		ledger: () => ledger,
 		now: () => 1_000,
+		timezone: "UTC",
 	};
 	const tools = new Map(
 		createMemoryTools(context).map((tool) => [tool.name, tool]),
@@ -40,8 +41,14 @@ function harness(memory: FakeContactMemory | null = new FakeContactMemory()) {
 	 * Alice: the test would set up a collision that cannot happen and then pass on the
 	 * absence of it.
 	 */
-	const seed = (text: string, tags: string[] = ["fact"]) =>
-		memory?.remember({ text, entity: "Alice", tags });
+	const seed = async (text: string, tags: string[] = ["fact"], at = 0) => {
+		// `at` is when the memory LEARNED it, which is the axis a window reads — the
+		// engine stamps that itself and `validFrom` does not move it.
+		if (memory) memory.recordingAt = at;
+		const written = await memory?.remember({ text, entity: "Alice", tags });
+		if (memory) memory.recordingAt = null;
+		return written;
+	};
 	return { tools, ledger, memory, seed };
 }
 
@@ -304,6 +311,118 @@ describe("manager_recall", () => {
 			"Do not search again with a rephrased query",
 		);
 		expect(ledger.size()).toBe(3);
+	});
+});
+
+describe("manager_recall over time", () => {
+	// A day in the harness's zone (UTC), so the dates below are the instants they read as.
+	const day = (iso: string) => Date.parse(`${iso}T12:00:00Z`);
+
+	it("answers about a period the transcript no longer holds", async () => {
+		const { tools, seed } = harness();
+		await seed(
+			"agreed to ship on the 12th",
+			["fact", "agreement"],
+			day("2026-06-14"),
+		);
+		await seed("moved to a new flat", ["fact", "identity"], day("2026-08-02"));
+
+		const june = await tools.get("manager_recall")?.execute("t1", {
+			query: "what we agreed",
+			after: "2026-06-01",
+			before: "2026-07-01",
+		});
+		expect(text(june)).toContain("ship on the 12th");
+		expect(text(june)).not.toContain("new flat");
+	});
+
+	it("asks for the period alone, and says the query did not rank it", async () => {
+		// `range` is a source in the engine, not a filter: sent alongside a query or an
+		// entity anchor it adds the period to whatever those matched, so the tool sends
+		// it alone. That is a real difference in what comes back, and the model is told
+		// rather than left to assume its words did the ranking.
+		const asked: MemoryRecallQuery[] = [];
+		class Watching extends FakeContactMemory {
+			override async recall(
+				query: MemoryRecallQuery,
+			): Promise<MemoryRecallResult> {
+				asked.push(query);
+				return super.recall(query);
+			}
+		}
+		const memory = new Watching();
+		const { tools, seed } = harness(memory);
+		await seed(
+			"agreed to ship on the 12th",
+			["fact", "agreement"],
+			day("2026-06-14"),
+		);
+
+		const result = await tools.get("manager_recall")?.execute("t1", {
+			query: "shipping",
+			after: "2026-06-01",
+			before: "2026-07-01",
+		});
+		expect(asked[0].range).toEqual([
+			Date.parse("2026-06-01T00:00:00Z"),
+			Date.parse("2026-07-01T00:00:00Z"),
+		]);
+		expect(asked[0].query).toBeUndefined();
+		expect(asked[0].entities).toBeUndefined();
+		expect(text(result)).toContain("newest first");
+		expect(text(result)).toContain("ship on the 12th");
+	});
+
+	it("says the window is why it found nothing, not the memory", async () => {
+		// An empty answer from a bounded search says nothing about what is stored, and a
+		// model that reads it as "I know nothing about them" acts on that.
+		const { tools, seed } = harness();
+		await seed("moved to a new flat", ["fact", "identity"], day("2026-08-02"));
+		const result = await tools.get("manager_recall")?.execute("t1", {
+			query: "flat",
+			after: "2026-01-01",
+			before: "2026-02-01",
+		});
+		expect(text(result)).toContain("recorded 2026-01-01…2026-02-01");
+		expect(text(result)).toContain("Search again without the dates");
+	});
+
+	it("refuses a date it cannot read instead of searching without it", async () => {
+		const { tools, ledger } = harness();
+		const result = await tools
+			.get("manager_recall")
+			?.execute("t1", { query: "anything", after: "last month" });
+		expect((result as { isError?: boolean }).isError).toBe(true);
+		expect(text(result)).toContain("YYYY-MM-DD");
+		expect(ledger.size()).toBe(0);
+	});
+
+	it("refuses a window that cannot contain anything", async () => {
+		const { tools } = harness();
+		const result = await tools
+			.get("manager_recall")
+			?.execute("t1", { after: "2026-08-01", before: "2026-07-01" });
+		expect((result as { isError?: boolean }).isError).toBe(true);
+		expect(text(result)).toContain("window is empty");
+	});
+
+	it("counts two periods as two questions, not a repeated one", async () => {
+		// The pass's repeat detector compares argument signatures. Without the window in
+		// there, asking the same words about June and about August would look like the
+		// model looping on one query.
+		const { tools, ledger, seed } = harness();
+		await seed(
+			"agreed to ship on the 12th",
+			["fact", "agreement"],
+			day("2026-06-14"),
+		);
+		await tools
+			.get("manager_recall")
+			?.execute("t1", { query: "what we agreed", after: "2026-06-01" });
+		await tools
+			.get("manager_recall")
+			?.execute("t2", { query: "what we agreed", after: "2026-08-01" });
+		expect(ledger.repeatedLast()).toBe(false);
 	});
 });
 
