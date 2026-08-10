@@ -211,7 +211,7 @@ import { createNodeFs } from "./storage/fs";
 import type { MemoryWorkspace } from "./storage/memory";
 import { createPlugmemWorkspace } from "./storage/memory-plugmem";
 import { importLegacyFacts, migrateStorage } from "./storage/migrations";
-import { buildPlugmemConfig } from "./storage/plugmem-config";
+import { buildPlugmemConfig, embedderActive } from "./storage/plugmem-config";
 import { createSingletonStore } from "./storage/singleton-store";
 import { createUpdateCursor } from "./storage/update-cursor";
 import {
@@ -3808,6 +3808,119 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		handler: recoverTelegram,
 	});
 
+	/**
+	 * Rebuild every contact memory's vectors with the currently configured embedder.
+	 *
+	 * The owner's operation, and deliberately not an automatic one: it calls the model
+	 * once per batch of facts, for every contact, and how long that takes depends on a
+	 * provider this code does not manage. It is needed after two changes to
+	 * `memory.embedder`, and only one of them announces itself:
+	 *
+	 *  - **a different model** — plugmem records which model's vectors are in the file
+	 *    and refuses to mix two, so every read and write fails until this runs. Loud,
+	 *    and the failure says so;
+	 *  - **turning an embedder on** over memories that were built without one — silent.
+	 *    Facts learned from now on get vectors, facts learned before do not, and the
+	 *    memory answers meaning-based questions about the recent half of what it knows
+	 *    without ever mentioning the rest.
+	 */
+	/**
+	 * Rebuild every contact memory's vectors with the currently configured embedder.
+	 *
+	 * The owner's operation, and deliberately not an automatic one: it calls the model
+	 * once per batch of facts, for every contact, and how long that takes depends on a
+	 * provider this code does not manage. It is needed after two changes to
+	 * `memory.embedder`, and only one of them announces itself:
+	 *
+	 *  - **a different model** — plugmem records which model's vectors are in the file
+	 *    and refuses to mix two, so every read and write of that memory fails until
+	 *    this runs. Loud, and the failure says so;
+	 *  - **turning an embedder on** over memories that were built without one — silent.
+	 *    Facts learned from now on get vectors, facts learned before do not, and the
+	 *    memory answers meaning-based questions about the recent half of what it knows
+	 *    without ever mentioning the rest.
+	 *
+	 * **Running it with the bridge up is the normal case, not a hazard.** Settings are
+	 * read when a mode starts, so a live workspace is already using the configuration
+	 * in force — and every memory verb in this process goes through one queue, which
+	 * makes the rebuild atomic against a fact somebody is stating right now. What it
+	 * does cost is a pause: memory verbs wait behind it, so a turn taken mid-rebuild
+	 * answers a moment later.
+	 */
+	const reembedMemories = async (
+		report: (text: string, level?: "warning" | "error") => void | Promise<void>,
+	): Promise<void> => {
+		const live = memoryWorkspace;
+		// Without a running mode there is no workspace and no settings in hand, so both
+		// are made here — and the config file is rewritten first, because a rebuild that
+		// used a stale one would quietly re-embed with the model being replaced.
+		let settings = activeSettings;
+		if (!live) {
+			const loaded = await loadSettings(fs, paths.settingsPath);
+			for (const warning of loaded.warnings) await report(warning, "warning");
+			settings = loaded.settings;
+		}
+		if (!settings) {
+			await report("Telegram settings could not be read.", "error");
+			return;
+		}
+		if (!embedderActive(settings.memory.embedder)) {
+			await report(
+				"memory.embedder is off, so there is no model to rebuild vectors with. " +
+					"The memories still work — keyword, entity-graph and time retrieval " +
+					"need no embedder; only meaning-based recall does.",
+				"error",
+			);
+			return;
+		}
+		let workspace = live;
+		if (!workspace) {
+			await fs.mkdirp(paths.memoryDir);
+			await fs.writeTextAtomic(
+				paths.memoryConfigPath,
+				buildPlugmemConfig(settings.memory.embedder),
+			);
+			workspace = createPlugmemWorkspace(paths.memoryDir, {
+				configPath: paths.memoryConfigPath,
+				idleTimeoutMs: MEMORY_IDLE_TIMEOUT_MS,
+			});
+		}
+		try {
+			const reports = await workspace.reembed((name, index, total) =>
+				report(`Rebuilding memory vectors ${index + 1}/${total} (${name})…`),
+			);
+			if (reports.length === 0) {
+				await report("No contact memories yet — nothing to rebuild.");
+				return;
+			}
+			const facts = reports.reduce((total, entry) => total + entry.embedded, 0);
+			await report(
+				`Memory vectors rebuilt: ${facts} fact(s) across ${reports.length} ` +
+					`contact(s), now on ${reports[0].space}.`,
+			);
+		} catch (error) {
+			// Partial by construction: each memory is republished atomically on its own,
+			// so the ones already done are done. Saying so is what makes running it again
+			// obviously safe rather than something the owner has to reason about.
+			await report(
+				`Rebuilding memory vectors failed: ${String(error)}. Memories already ` +
+					"rebuilt keep their new vectors; run it again to finish the rest.",
+				"error",
+			);
+		} finally {
+			// Only ours. Closing the live one would take the running mode's memory with it.
+			if (!live) await workspace.close().catch(() => {});
+		}
+	};
+
+	pi.registerCommand(COMMANDS.memoryReembed, {
+		description:
+			"Rebuild contact memory vectors after changing memory.embedder.",
+		handler: async (_args, ctx) => {
+			await reembedMemories((text, level) => ctx.ui.notify(text, level));
+		},
+	});
+
 	// Start a specific mode using the captured command context.
 	const startMode = async (
 		target: SwitchTarget,
@@ -4208,6 +4321,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						text: "🗜 /compact and /clear apply to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is no history to compact or clear.",
 					})
 					.catch(() => {});
+				return true;
+			}
+			// /memory_reembed works in every mode, and from the phone on purpose: the
+			// failure it fixes ("this memory was written with a different embedding
+			// model") shows up while the owner is watching the bot answer people, not
+			// while they are sitting at the terminal. Progress goes back as it happens —
+			// it calls the embedding provider once per batch, for every contact, so a
+			// silent minute would read as a command that did nothing.
+			if (/^\/memory_reembed(@\w+)?$/i.test(text)) {
+				const thread = threadOf(event) ?? personalThread();
+				const owner = ownerUserId;
+				await reembedMemories(async (line, level) => {
+					await api
+						.sendMessage({
+							chat_id: owner,
+							message_thread_id: thread,
+							text: `${level === "error" ? "⚠️" : "🧠"} ${line}`,
+						})
+						.catch(() => {});
+				});
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own

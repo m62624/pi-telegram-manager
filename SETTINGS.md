@@ -307,41 +307,38 @@ first recall: an enabled embedder without a `url`, a `model` or a positive `dim`
 the mode start with the offending key named. A disabled embedder may retain all three
 values, which makes switching it back on safe for an existing database.
 
-Choose the model and its output width before the first use of a memory. The database
-does not record the model name, so changing `model` while keeping the same `dim` will
-still open the file, but it would mix vectors from two different models. Migrate the
-memory before changing the model. Changing only `url` is safe when it still serves the
-same model and dimension. To temporarily stop semantic embedding, set `enabled: false`
-and keep the existing `model` and `dim`.
+Changing only `url` is safe when it still serves the same model at the same width. To
+temporarily stop semantic embedding, set `enabled: false` and keep the existing `model`
+and `dim` — the stored vectors are left alone and switching back on costs nothing.
 
-> ⚠️ **`dim` cannot be changed on a memory that already has facts in it.** plugmem
-> writes the embedding width into each database at creation and refuses to open one
-> whose stored width disagrees. This is not an automatic model rebuild. To migrate
-> facts to a new model or dimension, use plugmem's supported JSONL export/import
-> around a stopped bot:
->
-> First restore the old `dim` (and, if necessary, set `enabled: false`), start and
-> stop the manager once so it regenerates the old `config.toml`, then export each
-> contact database you want to keep. After that, update the settings and move the
-> old memory directory aside before creating the new databases.
->
-> ```console
-> $ WS="<agent-dir returned by getAgentDir()>/extensions/pi-telegram-manager/memory"
-> $ CFG="$WS/config.toml"                 # the manager-generated config for the old database
-> $ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 export > u123456789.jsonl
-> $ # move the whole memory directory to a timestamped backup, then update settings
-> $ # and start/stop the manager once so it creates a fresh $WS and config.toml
-> $ CFG="$WS/config.toml"                 # now contains the new model and dimension
-> $ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 import u123456789.jsonl
-> ```
->
-> `getAgentDir()` above means the agent directory resolved by the Pi SDK; the actual
-> path is `<getAgentDir()>/extensions/pi-telegram-manager/memory/`. Move that whole
-> directory to a timestamped backup instead of deleting it. On the next start the
-> manager creates fresh per-contact databases. Import recomputes vectors using the
-> current embedder, but only currently open facts and edges are exported; closed
-> revisions do not survive this portable migration. For a complete backup, copy the
-> database files without changing their settings.
+#### Changing the embedding model
+
+Each database records not just the width but **which model's vectors are in it**. Two
+models' vectors cannot be compared, so rather than return quiet nonsense plugmem
+refuses: after a `model` change, every read and write of a memory that already has
+vectors fails with `vector space mismatch` until the vectors are rebuilt. The bot says
+so, and names the command.
+
+Rebuilding is one command, in place, and needs no export, no backup dance and no
+stopped bot:
+
+- in the chat — **`/memory_reembed`**;
+- in the terminal — **`/telegram-memory-reembed`**.
+
+It recomputes every retained fact with the model `memory.embedder` now names, one
+contact at a time, and publishes each memory atomically: closed revisions, edges and
+metadata all survive, which is what separates it from an export/import round trip.
+`dim` moves with it, so a model with a different output width needs only its own `dim`
+in the settings. If it fails partway, the memories already rebuilt keep their new
+vectors — run it again to finish the rest.
+
+> **Turning an embedder ON for the first time is the quiet case.** Memories built
+> without one keep working: nothing fails, facts learned from now on get vectors, and
+> facts learned before the change do not. Meaning-based recall then answers from the
+> newer half of what the bot knows without ever mentioning the older half. Run the
+> rebuild once after enabling, and the whole memory is searchable by meaning.
+
+For a complete backup, copy the database files without changing their settings.
 
 ### Reading your own memory
 

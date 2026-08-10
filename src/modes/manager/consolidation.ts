@@ -59,9 +59,9 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"time-bound. For example, 'wants to pursue a hobby without unwanted details' is a " +
 	"useful preference about this person; 'the conversation was about a hobby' is only a topic " +
 	"and is not a fact about them. Skip passing moods, today's location, and isolated " +
-	"details with no likely future use. Before storing, manager_remember performs a " +
-	"duplicate and similarity preflight; use manager_recall for a concrete inspection, " +
-	"then store only what is genuinely new, revise what this conversation overturned, " +
+	"details with no likely future use. manager_remember refuses on its own to write a " +
+	"fact the memory already holds, so store without searching first; use manager_recall " +
+	"only for a concrete inspection, revise what this conversation overturned, " +
 	"and forget only what was wrong or never about this person. The runtime carries a " +
 	"small pass state; after several recall checks without a memory action, stop " +
 	"inspecting and decide. You have your memory tools and as many turns as " +

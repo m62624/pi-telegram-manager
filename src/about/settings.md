@@ -102,11 +102,13 @@ said in any one turn.
   embedding service. With `enabled: false` (the default) recall still works: it
   matches on words, on the entity graph and on time. With it enabled, it also matches
   on MEANING; `url` is the complete endpoint and `model` selects the server model.
-  Choose the model and `dim` before first use: `dim` is stored in each database, while
-  the model name is not. Use plugmem-cli export/import to migrate before changing
-  either the model or dimension; moving the memory directory aside creates fresh
-  databases. Temporarily disabling the embedder is safe when its existing `dim` is
-  retained.
+  Each database records which model's vectors are in it, and two models' vectors are
+  never mixed: after the owner changes `model` (or `dim`), a memory that already has
+  vectors refuses every read and write until the vectors are rebuilt with
+  `/memory_reembed`. That command also matters in a quieter case — enabling an embedder
+  over memories built without one keeps working, but only the facts learned after the
+  change can be found by meaning until it has run. Temporarily disabling the embedder
+  is safe when its existing `dim` is retained.
 
 **What you may touch**
 

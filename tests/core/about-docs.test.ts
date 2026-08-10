@@ -60,9 +60,12 @@ describe("about pages match the code", () => {
 		// The terminal's own Pi commands are named on the page on purpose, as the thing
 		// the chat does NOT accept.
 		const terminal = new Set(Object.values(COMMANDS).map((name) => `/${name}`));
+		// Underscores included: a Telegram command may only be letters, digits and `_`,
+		// so a pattern that stopped at one would read `/memory_reembed` as `/memory` and
+		// fail a page that is right.
 		const claimed =
 			page("commands.md")
-				.match(/\/[a-z][a-z-]*/g)
+				.match(/\/[a-z][a-z0-9_-]*/g)
 				?.map((c) => c.toLowerCase()) ?? [];
 		for (const command of claimed) {
 			if (published.has(command) || terminal.has(command)) continue;

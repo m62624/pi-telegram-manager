@@ -20,8 +20,9 @@ import {
 	type ContactMemory,
 	FACT_KINDS,
 	type FactKind,
-	MEMORY_RECALL_SOURCE,
+	MEMORY_TAGS,
 	type MemorySimilar,
+	type MemoryWrite,
 } from "../../storage/memory";
 import { FACT_RELATIONS, type FactRelation } from "./decision";
 
@@ -313,64 +314,62 @@ function factKey(text: string): string {
 }
 
 /**
- * Check the live durable memory before a write.
+ * The three answers a write can get, once the engine has judged it.
  *
- * Plugmem also returns similar facts from `remember`, but that is after the new fact
- * already exists. The manager tool is a better boundary for the safer two-phase
- * behaviour: exact duplicates are ignored, and possible conflicts wait for an
- * explicit confirmation or a revise decision from the model.
+ * `duplicate` is a strict subset of `blocked`: the engine stopped the write AND one of
+ * the facts it stopped it with says the same sentence, so there is nothing for the
+ * model to decide.
  */
-async function preflightFact(
+type WriteVerdict =
+	| { kind: "stored"; id: number; similar: MemorySimilar[] }
+	| { kind: "duplicate"; existing: MemorySimilar }
+	| { kind: "blocked"; similar: MemorySimilar[] };
+
+/**
+ * Write a fact unless the memory already holds one close enough to it.
+ *
+ * **This used to be a `recall`, and that was the bug.** A recall returns the best
+ * context it can find for a query — and "best" on a memory with nothing relevant in it
+ * is still whatever ranked first. With an embedder configured, every new fact has a
+ * nearest vector neighbour by construction, so a recall ALWAYS came back with
+ * something, and the tool read anything it came back with as a conflict. The shape of
+ * the case that caught it: a note that somebody knows a series well, refused as a
+ * near-duplicate of a note that they want to play a game without spoilers, on a fused
+ * rank of 0.02 — a number that is not a similarity and has no threshold. The two share
+ * a topic and not a statement. Nothing was written, and the answer the tool gave ("Not
+ * stored yet — first review these close facts") was indistinguishable from a real
+ * collision.
+ *
+ * `rememberGuarded` asks the question the tool actually meant: the engine compares
+ * term sets and cosines against its own thresholds, over the live facts of THIS
+ * entity, and stores the fact in the same operation when nothing clears them — so
+ * there is no window between the check and the write for a second caller to slip
+ * through. A blocked result allocated no id and changed nothing.
+ */
+async function guardedWrite(
 	memory: ContactMemory,
-	text: string,
-): Promise<{ duplicate?: MemorySimilar; similar: MemorySimilar[] }> {
-	const result = await memory.recall({
-		query: text,
-		tags: ["fact"],
-		k: 8,
-		tokenBudget: 256,
-	});
-	const candidates: MemorySimilar[] = [];
-	const seen = new Set<number>();
-	const similaritySources =
-		MEMORY_RECALL_SOURCE.bm25 | MEMORY_RECALL_SOURCE.vector;
-	for (const hit of result.hits) {
-		// This is a similarity preflight, not a general memory lookup. Entity
-		// anchors and temporal expansion are useful for answering questions, but a
-		// graph/time-only hit is not evidence that the new statement is a duplicate
-		// or a contradiction. The adapter preserves sources from plugmem, and the
-		// port requires every implementation to provide that provenance.
-		if ((hit.sources & similaritySources) === 0) continue;
-		if (seen.has(hit.id)) continue;
-		seen.add(hit.id);
-		const existing = await memory.get(hit.id);
-		if (!existing) continue;
-		candidates.push({
-			id: existing.id,
-			text: existing.text,
-			score: hit.score,
-			reason: "PreflightRecall",
-		});
+	write: MemoryWrite,
+): Promise<WriteVerdict> {
+	const outcome = await memory.rememberGuarded(write);
+	if (outcome.status === "stored") {
+		return { kind: "stored", id: outcome.id as number, similar: [] };
 	}
-	const key = factKey(text);
-	const duplicate = candidates.find(
+	const key = factKey(write.text);
+	const duplicate = outcome.similar.find(
 		(candidate) => factKey(candidate.text) === key,
 	);
-	return {
-		duplicate,
-		similar: candidates.filter((candidate) => candidate !== duplicate),
-	};
+	if (duplicate) return { kind: "duplicate", existing: duplicate };
+	return { kind: "blocked", similar: outcome.similar };
 }
 
 /**
- * How a conflicting fact is reported back to the model.
+ * What a confirmed write is told it now sits beside.
  *
- * The engine surfaces collisions on write and refuses to resolve them, which is the
- * behaviour this whole design wanted: the model is told, at the moment it writes,
- * that something it already knows says nearly the same thing — with the id it would
- * need to revise it. Previously this took a whole extra inference (a step that read
- * the entire memory back and asked "what has gone stale"), and it only ran during a
- * consolidation pass.
+ * Only the confirmed path reaches this: an ordinary write that had a collision never
+ * became a fact, so there is nothing to report against. Here the model has already
+ * read these candidates and answered "both are true" — and the engine surfaces them
+ * again on the write itself, which is worth passing on, because the decision it just
+ * made is the one it may want to take back, and this carries the ids for doing so.
  */
 function conflictNote(
 	similar: { id: number; text: string }[],
@@ -416,7 +415,7 @@ export function createMemoryTools(
 		name: "manager_remember",
 		label: "Manager Remember",
 		description:
-			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. Before saving, the tool checks the person's existing durable facts. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both are true, or the listed candidate is unrelated/a false positive, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. The memory itself checks each fact against what it already holds about this person, and only stops a write when a stored fact genuinely says nearly the same thing; a merely related fact is stored without asking. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both statements are true, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -491,30 +490,43 @@ export function createMemoryTools(
 			const result = await withMemory(async (memory) => {
 				const notes: string[] = [];
 				for (const fact of keep) {
-					const preflight = await preflightFact(memory, fact.text);
-					if (preflight.duplicate) {
-						duplicates += 1;
-						notes.push(
-							`Already remembered [f${preflight.duplicate.id}]: ${preflight.duplicate.text}. Nothing new was written.`,
-						);
-						continue;
-					}
-					if (preflight.similar.length > 0 && !params.confirm_similar) {
-						blocked += 1;
-						notes.push(
-							`Not stored yet — first review these close facts:\n${preflight.similar
-								.map((similar) => `  [f${similar.id}] ${similar.text}`)
-								.join("\n")}\n` +
-								"Decision required: if the new statement replaces one, use manager_revise with that [fN] id; if both are true, or the candidate is unrelated, retry manager_remember with confirm_similar=true. No new fact was written in this call.",
-						);
-						continue;
-					}
-					const outcome = await memory.remember({
+					const write: MemoryWrite = {
 						text: fact.text,
+						// The subject entity, and also what scopes the similarity check: the
+						// engine compares a new fact against this entity's live facts, not
+						// against everything in the file.
 						entity: context.contactName(),
 						tags: ["fact", fact.kind],
 						validFrom: context.now(),
-					});
+					};
+					const verdict = await guardedWrite(memory, write);
+					if (verdict.kind === "duplicate") {
+						duplicates += 1;
+						notes.push(
+							`Already remembered [f${verdict.existing.id}]: ${verdict.existing.text}. Nothing new was written.`,
+						);
+						continue;
+					}
+					if (verdict.kind === "blocked" && !params.confirm_similar) {
+						blocked += 1;
+						notes.push(
+							`Not stored yet — first review these close facts:\n${verdict.similar
+								.map((similar) => `  [f${similar.id}] ${similar.text}`)
+								.join("\n")}\n` +
+								"Decision required: if the new statement replaces one, use manager_revise with that [fN] id; if both are true, retry manager_remember with confirm_similar=true. No new fact was written in this call.",
+						);
+						continue;
+					}
+					if (verdict.kind === "stored") {
+						stored += 1;
+						notes.push(`Stored [f${verdict.id}] ${fact.text}`);
+						continue;
+					}
+					// Confirmed: the model has read the close facts and decided both are true,
+					// so the guard is spent and the plain write commits. Its own `similar`
+					// hints are the same candidates it just reviewed, named again with the ids
+					// it would need to change its mind.
+					const outcome = await memory.remember(write);
 					stored += 1;
 					notes.push(
 						`Stored [f${outcome.id}] ${fact.text}${conflictNote(
@@ -525,7 +537,7 @@ export function createMemoryTools(
 				}
 				if (blocked > 0 && stored === 0) {
 					notes.unshift(
-						"The preflight check found existing facts, so nothing was committed until you decide whether this is a duplicate, a revision, or a compatible additional fact.",
+						"The memory already holds facts close enough to these that nothing was committed, until you decide whether this is a revision or a compatible additional fact.",
 					);
 				}
 				return notes.join("\n");
@@ -545,7 +557,7 @@ export function createMemoryTools(
 		name: "manager_recall",
 		label: "Manager Recall",
 		description:
-			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. manager_remember performs its own duplicate/similarity preflight before writing. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
+			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -556,9 +568,9 @@ export function createMemoryTools(
 				},
 				tags: {
 					type: "array",
-					items: { type: "string" },
+					items: { type: "string", enum: MEMORY_TAGS },
 					description:
-						"Optional filter; a fact must carry ALL of these. 'fact' = durable facts, 'episode' = what happened, plus identity/preference/agreement/context.",
+						"Optional filter; a memory must carry ALL of these, so pick one or two. 'fact' = durable facts, narrowed by identity/preference/agreement/context; 'episode' = what happened, narrowed by message (they said it), owner (the owner said it) or turn+reply/silent (what you did).",
 				},
 			},
 			additionalProperties: false,
@@ -576,6 +588,20 @@ export function createMemoryTools(
 			const tags = Array.isArray(params.tags)
 				? params.tags.filter((tag) => typeof tag === "string" && tag.trim())
 				: undefined;
+			// Tags are AND filters over a closed vocabulary, so one the memory has never
+			// written matches nothing — and an empty answer would read as "there is
+			// nothing about them", which is a different and much worse claim.
+			const unknown = tags?.filter(
+				(tag) => !(MEMORY_TAGS as readonly string[]).includes(tag),
+			);
+			if (unknown && unknown.length > 0) {
+				return fail(
+					`No memory is tagged ${unknown.join(" or ")}, and a memory must carry ` +
+						"every tag you ask for — so this search would match nothing whatever " +
+						`is stored. The tags in use are: ${MEMORY_TAGS.join(", ")}. Search ` +
+						"again with one of those, or with no tags at all.",
+				);
+			}
 			const result = await withMemory(async (memory) =>
 				memory.recall({ query, tags, entities: [context.contactName()] }),
 			);

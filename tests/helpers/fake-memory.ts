@@ -14,13 +14,15 @@
 import type {
 	ContactMemory,
 	MemoryFact,
+	MemoryGuardedOutcome,
 	MemoryRecallQuery,
 	MemoryRecallResult,
+	MemoryReembedReport,
+	MemorySimilar,
 	MemoryWorkspace,
 	MemoryWrite,
 	MemoryWriteOutcome,
 } from "../../src/storage/memory";
-import { MEMORY_RECALL_SOURCE } from "../../src/storage/memory";
 
 function words(text: string): Set<string> {
 	return new Set(
@@ -31,29 +33,36 @@ function words(text: string): Set<string> {
 	);
 }
 
+/**
+ * plugmem's lexical threshold, copied because the number is the behaviour.
+ *
+ * The engine blocks a guarded write when the term-set Jaccard of two facts is ABOVE
+ * `similar_jaccard`, which defaults to 0.5 — so "works at a bank" against "works at a
+ * bank in town" is 2/3 and stops, while two facts sharing one word out of nine do not.
+ * A fake that blocked on any shared word would be the very bug these tests exist to
+ * catch.
+ */
+const SIMILAR_JACCARD = 0.5;
+
+/** Term-set overlap of two statements, on the same scale plugmem measures it. */
+function jaccard(left: string, right: string): number {
+	const a = words(left);
+	const b = words(right);
+	if (a.size === 0 || b.size === 0) return 0;
+	let both = 0;
+	for (const word of a) if (b.has(word)) both += 1;
+	return both / (a.size + b.size - both);
+}
+
 /** One contact's fake memory, with the stored facts exposed for assertions. */
 export class FakeContactMemory implements ContactMemory {
 	readonly facts: MemoryFact[] = [];
 	private nextId = 0;
 
 	async remember(write: MemoryWrite): Promise<MemoryWriteOutcome> {
+		const similar = this.similarTo(write.text);
 		const id = this.nextId++;
 		const now = write.validFrom ?? 0;
-		// Same shape of hint the engine gives: anything sharing a word, so a test can
-		// exercise the conflict path without pretending to be BM25.
-		const similar = this.live()
-			.filter((fact) => {
-				const overlap = [...words(fact.text)].filter((word) =>
-					words(write.text).has(word),
-				);
-				return overlap.length > 0;
-			})
-			.map((fact) => ({
-				id: fact.id,
-				text: fact.text,
-				score: 1,
-				reason: "LexicalOverlap",
-			}));
 		this.facts.push({
 			id,
 			text: write.text,
@@ -63,6 +72,35 @@ export class FakeContactMemory implements ContactMemory {
 			validFrom: now,
 		});
 		return { id, similar };
+	}
+
+	/**
+	 * The write that refuses to duplicate — the engine's own two-in-one operation.
+	 *
+	 * The entity is ignored, and only here is that a simplification rather than a lie:
+	 * a fake memory IS one contact's, so every fact in it is already about the same
+	 * person. What is copied faithfully is the part that matters — a candidate has to
+	 * clear a threshold to stop a write, and one that does not clear it does not
+	 * appear at all.
+	 */
+	async rememberGuarded(write: MemoryWrite): Promise<MemoryGuardedOutcome> {
+		const similar = this.similarTo(write.text);
+		if (similar.length > 0) return { status: "blocked", similar };
+		const { id } = await this.remember(write);
+		return { status: "stored", id, similar: [] };
+	}
+
+	/** Live facts close enough to `text` to count as saying the same thing. */
+	private similarTo(text: string): MemorySimilar[] {
+		return this.live()
+			.map((fact) => ({ fact, score: jaccard(fact.text, text) }))
+			.filter(({ score }) => score > SIMILAR_JACCARD)
+			.map(({ fact, score }) => ({
+				id: fact.id,
+				text: fact.text,
+				score,
+				reason: "LexicalOverlap",
+			}));
 	}
 
 	async revise(id: number, write: MemoryWrite): Promise<MemoryWriteOutcome> {
@@ -97,7 +135,10 @@ export class FakeContactMemory implements ContactMemory {
 		const hits = matched.map((fact) => ({
 			id: fact.id,
 			score: 1,
-			sources: MEMORY_RECALL_SOURCE.bm25,
+			// The lexical bit, as plugmem sets it. Nothing reads it — it is provenance
+			// the port carries through — but a hit with no source at all would be a
+			// shape the engine never produces.
+			sources: 1,
 			recordedAt: fact.recordedAt,
 			validFrom: fact.validFrom,
 			validTo: fact.validTo,
@@ -130,6 +171,7 @@ export class FakeContactMemory implements ContactMemory {
 /** A workspace of fake memories, one per user id. */
 export class FakeMemoryWorkspace implements MemoryWorkspace {
 	readonly databases = new Map<string, FakeContactMemory>();
+	readonly reembedded: string[] = [];
 	closedIdle = 0;
 	closed = false;
 
@@ -149,6 +191,27 @@ export class FakeMemoryWorkspace implements MemoryWorkspace {
 	/** What one contact's memory holds, or [] when they have none. */
 	texts(userId: string): string[] {
 		return this.databases.get(userId)?.texts() ?? [];
+	}
+
+	async reembed(
+		onProgress?: (
+			name: string,
+			index: number,
+			total: number,
+		) => void | Promise<void>,
+	): Promise<MemoryReembedReport[]> {
+		const names = [...this.databases.keys()].sort();
+		const reports: MemoryReembedReport[] = [];
+		for (const [index, name] of names.entries()) {
+			await onProgress?.(name, index, names.length);
+			this.reembedded.push(name);
+			reports.push({
+				name,
+				embedded: this.databases.get(name)?.texts().length ?? 0,
+				space: "fake-embedder",
+			});
+		}
+		return reports;
 	}
 
 	closeIdle(): void {

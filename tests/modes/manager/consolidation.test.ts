@@ -212,8 +212,15 @@ describe("the consolidation system block", () => {
 		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
 			"the conversation was about a hobby",
 		);
+	});
+
+	it("sends the pass straight at the write instead of searching first", () => {
+		// A pass that recalls before every write spends its whole step budget looking at
+		// what the write itself would have told it — and the tool's own refusal is the
+		// only answer that is authoritative anyway.
 		expect(CONSOLIDATION_INSTRUCTIONS).toContain(
-			"manager_remember performs a duplicate and similarity preflight",
+			"refuses on its own to write a fact the memory already holds, so store " +
+				"without searching first",
 		);
 	});
 });

@@ -77,22 +77,40 @@ describe("a contact's memory", () => {
 		expect(seen.rendered).not.toContain("Almaty");
 	});
 
-	it("closes one contact's database before opening another's", async () => {
+	it("comes back to a contact after serving another one", async () => {
 		const { workspace } = fresh();
 		const alice = await workspace.for("111");
 		await alice.remember({ text: "first", entity: "Alice", tags: ["fact"] });
 		const bob = await workspace.for("222");
 		await bob.remember({ text: "second", entity: "Bob", tags: ["fact"] });
 
-		// This is the case that made the adapter own the invariant instead of leaving it
-		// to the pool's `maxOpen`. Evicting a database from the pool does NOT release its
-		// file lock while a handle to it is still alive — so coming back to a contact
-		// failed with "database u111 is in use by another process". Its own process.
+		// Switching contact and switching back was the case that used to break: a
+		// database evicted from the pool did NOT release its file lock while a handle to
+		// it was alive, so coming back failed with "database u111 is in use by another
+		// process" — its own process. plugmem 0.9 hands out references that own no
+		// handle, which is what makes this ordinary again.
 		const again = await workspace.for("111");
 		expect((await again.recall({ query: "first" })).rendered).toContain(
 			"first",
 		);
 		expect((await again.recall({ query: "second" })).rendered).toBe("");
+	});
+
+	it("answers nothing for a contact who has no memory yet", async () => {
+		const { workspace } = fresh();
+		const stranger = await workspace.for("111");
+
+		// A read verb on a name with no file rejects with "no database named u111",
+		// because a workspace is right to diagnose a misspelled name. Here every name
+		// came from a Telegram user id, so the only way to reach it is a contact nobody
+		// has stored anything about — and the answer to that is nothing, not an error
+		// that would take the whole turn down with it.
+		expect(await stranger.recall({ query: "anything" })).toEqual({
+			hits: [],
+			rendered: "",
+			truncated: false,
+		});
+		expect(await stranger.get(0)).toBeNull();
 	});
 
 	it("reuses the open database while the same contact keeps talking", async () => {
@@ -175,26 +193,29 @@ describe("a contact's memory", () => {
 		}
 	});
 
-	it("serialises concurrent opens instead of leaking a locked handle", async () => {
+	it("queues concurrent verbs instead of failing the second one", async () => {
 		const { workspace } = fresh();
-		// The manager reaches this from two directions at once: a turn building its
-		// context, and the polling loop recording an inbound message. Interleaved, both
-		// would pass the close and both would open — and the second assignment would
-		// orphan the first handle, holding that contact's file lock for the life of the
-		// process. Every later open of it then fails with "in use by another process",
-		// which is the shape of a deadlock even though nothing is waiting.
-		const [alice, bob, aliceAgain] = await Promise.all([
-			workspace.for("111"),
-			workspace.for("222"),
-			workspace.for("111"),
-		]);
-		await alice.remember({ text: "alpha", entity: "Alice", tags: ["fact"] });
-		await bob.remember({ text: "beta", entity: "Bob", tags: ["fact"] });
-		void aliceAgain;
+		const alice = await workspace.for("111");
+		const bob = await workspace.for("222");
 
-		// The proof is that both are still reachable afterwards, in either order.
+		// The manager reaches this from two directions at once: a turn building its
+		// context, and the polling loop recording an inbound message. `maxOpen: 1` is
+		// what keeps two people's memories from being open together — but a pool at its
+		// ceiling REFUSES the second caller ("workspace has 1 active databases") rather
+		// than waiting for the first, so without a queue of our own the second write —
+		// the fact a person just stated — is lost to an error about a limit nobody set.
+		const done = await Promise.all([
+			alice.remember({ text: "alpha", entity: "Alice", tags: ["fact"] }),
+			bob.remember({ text: "beta", entity: "Bob", tags: ["fact"] }),
+			alice.remember({ text: "alpha again", entity: "Alice", tags: ["fact"] }),
+			bob.recall({ query: "beta" }),
+		]);
+		expect(done).toHaveLength(4);
+
+		// Both landed, in their own memories, and neither is reachable from the other.
 		const back = await workspace.for("111");
 		expect((await back.recall({ query: "alpha" })).rendered).toContain("alpha");
+		expect((await back.recall({ query: "beta" })).rendered).toBe("");
 		const other = await workspace.for("222");
 		expect((await other.recall({ query: "beta" })).rendered).toContain("beta");
 	});
@@ -238,6 +259,55 @@ describe("a contact's memory", () => {
 		expect(both.hits).toHaveLength(2);
 	});
 
+	it("refuses to duplicate a fact, and allocates nothing when it refuses", async () => {
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		const first = await memory.remember({
+			text: "works at a bank",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+		});
+
+		const blocked = await memory.rememberGuarded({
+			text: "works at a bank in town",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+		});
+		expect(blocked.status).toBe("blocked");
+		expect(blocked.id).toBeUndefined();
+		expect(blocked.similar.map((hint) => hint.id)).toEqual([first.id]);
+		// The text, not just the id: a model cannot choose between revising and keeping
+		// both without being shown the sentence it may be contradicting.
+		expect(blocked.similar[0].text).toBe("works at a bank");
+		expect(blocked.similar[0].reason).toBe("LexicalOverlap");
+		// Nothing was written, so nothing has to be undone.
+		expect((await memory.recall({ query: "bank" })).hits).toHaveLength(1);
+	});
+
+	it("stores a fact that is merely related to one it already holds", async () => {
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "wants to play a new game without spoilers",
+			entity: "Alice",
+			tags: ["fact", "preference"],
+		});
+
+		// The distinction the whole guard exists for. A recall asked about the second
+		// statement returns the first — it is the closest thing in the memory, and a
+		// recall always answers with its closest thing. The detector compares them and
+		// says they are not the same statement, which is the truth: one is a request
+		// about how to talk to them, the other something they happen to know.
+		const stored = await memory.rememberGuarded({
+			text: "knows the lore of a long-running series well",
+			entity: "Alice",
+			tags: ["fact", "context"],
+		});
+		expect(stored.status).toBe("stored");
+		expect(stored.similar).toEqual([]);
+		expect((await memory.recall({ entities: ["Alice"] })).hits).toHaveLength(2);
+	});
+
 	it("closes a superseded fact instead of erasing it", async () => {
 		const { workspace } = fresh();
 		const memory = await workspace.for("111");
@@ -275,6 +345,11 @@ describe("a contact's memory", () => {
 		});
 		expect(await memory.forget(wrong.id)).toBe(true);
 		expect((await memory.recall({ query: "coffee" })).rendered).toBe("");
+		// Twice, and an id that was never there at all: the engine answers the first
+		// with `false` and rejects the second, and "was there anything to drop" has one
+		// answer for both.
+		expect(await memory.forget(wrong.id)).toBe(false);
+		expect(await memory.forget(4242)).toBe(false);
 	});
 
 	it("filters by tag, so episodes and facts can be asked for separately", async () => {
@@ -316,6 +391,36 @@ describe("a contact's memory", () => {
 		const nothing = await memory.recall({ query: "quite unrelated" });
 		expect(nothing.rendered).toBe("");
 		expect(nothing.hits).toEqual([]);
+	});
+
+	it("finds every memory to rebuild from the directory, not the registry", async () => {
+		const { workspace } = fresh();
+		for (const userId of ["222", "111"]) {
+			const memory = await workspace.for(userId);
+			await memory.remember({ text: "held", entity: "A", tags: ["fact"] });
+		}
+
+		// Two ways to discover nothing, both of which would report success. plugmem's own
+		// `entries()` reads a REGISTRY that `describe()` fills, and nothing here
+		// describes a contact — so it answers with an empty list however many memories
+		// exist. And on disk a memory that has just been written to is a journal and a
+		// lock: its snapshot is written at a checkpoint, so looking for `.plugmem` alone
+		// finds the idle memories and skips the busy ones.
+		const seen: string[] = [];
+		await expect(
+			workspace.reembed((name) => {
+				seen.push(name);
+			}),
+			// With no embedder configured there is nothing to rebuild WITH, and that is
+			// the engine's answer rather than a silent no-op — but it can only give it
+			// once it has been handed a memory that exists.
+		).rejects.toThrow(/embedding provider/);
+		expect(seen).toEqual(["u111"]);
+	});
+
+	it("has nothing to rebuild before anyone has a memory", async () => {
+		const { workspace } = fresh();
+		expect(await workspace.reembed()).toEqual([]);
 	});
 
 	it("refuses a name that is not a user id rather than inventing one", async () => {

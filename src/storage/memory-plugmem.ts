@@ -9,26 +9,41 @@
  * Three decisions are made here rather than left to a caller, because each of them is
  * a property the rest of the system is allowed to assume:
  *
- *  - **`maxOpen: 1`.** The manager answers one chat at a time and consolidates one
- *    contact at a time, so the pool never needs a second handle — and holding it to
- *    one makes "two people's memories are never open together" a fact about the
- *    process rather than a promise about the code. Reopening costs about two
- *    milliseconds.
+ *  - **`maxOpen: 1`, and one memory verb in flight at a time.** The manager answers
+ *    one chat and consolidates one contact at a time, so the pool never needs a second
+ *    slot — and holding it to one makes "two people's memories are never open
+ *    together" a fact about the process rather than a promise about the code. The pool
+ *    enforces the ceiling by REFUSING a second concurrent memory ("workspace has 1
+ *    active databases"), not by waiting for the first, so the queue below is what turns
+ *    that ceiling into a wait; see {@link createPlugmemWorkspace}.
  *  - **The database name comes from {@link memoryDbName}**, which takes a numeric
  *    Telegram user id and nothing else. No caller passes a name, and no tool has an
  *    argument that could become one.
- *  - **An open failure is not swallowed.** A memory that quietly does not work is a
- *    bot that answers strangers with confident amnesia, on the owner's behalf. It
- *    fails loudly, at start, with the command that fixes it.
+ *  - **A memory that will not answer is not swallowed.** A memory that quietly does
+ *    not work is a bot that answers strangers with confident amnesia, on the owner's
+ *    behalf. It fails loudly, with the command that fixes it.
+ *
+ * **What plugmem 0.9 changed.** `Workspace.open()` used to hand out a `Plugmem` handle
+ * that owned the file's lock for as long as anything referenced it, which is what the
+ * previous version of this file spent most of its length defending against: an evicted
+ * handle kept its lock, so coming back to a contact failed with "in use by another
+ * process" — its own process. 0.9 replaced handles with `Workspace.memory(name)`, a
+ * logical reference that owns nothing; each verb takes a scoped lease and gives it
+ * back. The bookkeeping that reference-counted handles by hand is gone with it.
  */
-import { type Plugmem, Workspace } from "plugmem";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { Workspace, type WorkspaceMemory } from "plugmem";
+import { COMMANDS } from "../constants";
 import {
 	type ContactMemory,
 	isOpenInterval,
 	type MemoryFact,
+	type MemoryGuardedOutcome,
 	type MemoryHit,
 	type MemoryRecallQuery,
 	type MemoryRecallResult,
+	type MemoryReembedReport,
 	type MemorySimilar,
 	type MemoryWorkspace,
 	type MemoryWrite,
@@ -37,12 +52,12 @@ import {
 } from "./memory";
 
 /**
- * A memory that will not open, explained in terms of what to do about it.
+ * A memory that will not answer, explained in terms of what to do about it.
  *
- * plugmem's own messages are accurate and terse ("config mismatch: stored dim
- * differs"); this adds the half the owner needs — which setting did that, and how to
- * move the data — because the alternative is a stack trace in a terminal they were
- * not looking at.
+ * plugmem's own messages are accurate and terse ("vector space mismatch: stored …");
+ * this adds the half the owner needs — which setting did that, and how to move the
+ * data — because the alternative is a stack trace in a terminal they were not looking
+ * at.
  */
 export class MemoryOpenError extends Error {
 	constructor(
@@ -65,42 +80,72 @@ export interface PlugmemWorkspaceOptions {
 	idleTimeoutMs: number;
 }
 
-/** Whether a thrown error is plugmem refusing a database whose vector width moved. */
-function isDimMismatch(error: unknown): boolean {
-	return (
-		error instanceof Error &&
-		error.message.includes("config mismatch: stored dim")
-	);
+/** Where the workspace keeps the databases themselves. */
+const DB_SUBDIR = "db";
+/** …and what one is called: `u123` + this, plus a journal, a lock and snapshots. */
+const DB_SUFFIX = ".plugmem";
+
+function message(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /**
- * Turn a failure to open into something the owner can act on.
+ * Whether the failure is simply "this contact has no memory file yet".
  *
- * The dim case is called out by name because it is the one failure that is not a
- * broken install but a legitimate settings change: changing the configured vector
- * width disagrees with the width stored in an existing database. plugmem refuses
- * rather than reinterpreting the file, which is right — and it leaves the owner
- * holding a memory they cannot open until they either migrate it, move it aside, or
- * put the previous setting back.
+ * In 0.9 a write verb creates the database and a READ verb does not: it rejects with
+ * `no database named u123 …`. That is right for a workspace where a misspelled name
+ * should be diagnosed, and wrong for us — every name here was built from a Telegram
+ * user id by {@link memoryDbName}, so the only way to reach this is a contact nobody
+ * has stored a fact about yet, and the honest answer to "what do you remember about
+ * them" is nothing. Matching the message is not ideal; the code is `PLUGMEM_ENGINE`,
+ * shared with every other engine failure, so there is nothing narrower to test.
  */
-function openFailure(name: string, error: unknown): MemoryOpenError {
-	if (isDimMismatch(error)) {
+function isMissingDatabase(error: unknown): boolean {
+	return message(error).includes("no database named");
+}
+
+/** Whether plugmem is refusing to mix two embedding models' vectors in one index. */
+function isVectorSpaceMismatch(error: unknown): boolean {
+	return message(error).includes("vector space mismatch");
+}
+
+/**
+ * Whether the failure is "there is no fact with that id".
+ *
+ * The engine distinguishes a tombstoned fact (`forget` answers `false`) from one that
+ * never existed (`forget` rejects). The port draws no such line — "was there anything
+ * there" has one answer, and both of these are no — so the rejection is folded back
+ * into the answer here, where the difference is still visible enough to explain.
+ */
+function isMissingFact(error: unknown): boolean {
+	return /^fact \d+ not found$/.test(message(error));
+}
+
+/**
+ * Turn a failure to answer into something the owner can act on.
+ *
+ * The vector-space case is called out by name because it is the one failure that is
+ * not a broken install but a legitimate settings change: pointing `memory.embedder` at
+ * a different model leaves every stored vector describing the old one. plugmem refuses
+ * to mix them rather than returning quiet nonsense, which is right — and it leaves the
+ * owner with a memory that answers nothing at all until the vectors are rebuilt. That
+ * is one command, and this says which.
+ */
+function memoryFailure(name: string, error: unknown): MemoryOpenError {
+	if (isVectorSpaceMismatch(error)) {
 		return new MemoryOpenError(
-			`memory "${name}" was created with a different embedding width than ` +
-				"memory.embedder.dim now asks for. plugmem stores the width in the " +
-				"database and will not reinterpret it. Either restore the previous " +
-				"memory.embedder settings, move the database aside, or migrate the facts:\n" +
-				`  plugmem-cli --workspace <memory dir> --config <memory dir>/config.toml --db ${name} export > ${name}.jsonl\n` +
-				`  # then, with the new settings in place, into a fresh database:\n` +
-				`  plugmem-cli --workspace <memory dir> --config <memory dir>/config.toml --db ${name} import ${name}.jsonl\n` +
-				"(vectors are recomputed on import; closed revisions do not survive it)",
+			`memory "${name}" was written with a different embedding model than ` +
+				"memory.embedder now asks for, and plugmem will not mix two models' " +
+				"vectors in one index. Nothing is lost, and nothing is read or written " +
+				"until the vectors are rebuilt with the new model:\n" +
+				`  /${COMMANDS.memoryReembed} — rebuilds every contact's vectors, in place\n` +
+				"Or put the previous memory.embedder settings back, and the memories " +
+				`answer again as they did. (${message(error)})`,
 			error,
 		);
 	}
 	return new MemoryOpenError(
-		`memory "${name}" could not be opened: ${
-			error instanceof Error ? error.message : String(error)
-		}`,
+		`memory "${name}" could not be opened: ${message(error)}`,
 		error,
 	);
 }
@@ -110,32 +155,65 @@ function closedAt(validTo: number): number | undefined {
 	return isOpenInterval(validTo) ? undefined : validTo;
 }
 
+/** The empty answer, for a contact whose memory has never been written to. */
+const NOTHING: MemoryRecallResult = {
+	hits: [],
+	rendered: "",
+	truncated: false,
+};
+
 /**
  * One contact's memory, mapped onto the port.
  *
- * `open()` resolves the database FOR EVERY CALL rather than closing over a handle, and
- * that is the difference between a reference to a person's memory and a reference to
- * an open file. Only one database is open at a time here, so a handle captured on one
- * turn is closed the moment another contact is served — and a caller still holding it
- * gets "this memory is closed", on a path where it did nothing wrong. Resolving per
- * call makes the object mean what the port says it means, and costs a map lookup in
- * the common case where nothing has changed.
+ * `lease` wraps every verb: it serialises against the rest of the workspace and
+ * translates a plugmem failure into something the owner can act on. What it does NOT
+ * do is hold anything — the reference underneath owns no file and no lock, so this
+ * object is safe to keep for the life of the process and safe to hold while another
+ * contact is being served.
  */
-function contactMemory(open: () => Promise<Plugmem>): ContactMemory {
+function contactMemory(
+	name: string,
+	db: WorkspaceMemory,
+	lease: <T>(work: () => Promise<T>) => Promise<T>,
+): ContactMemory {
+	/** Run one verb: serialised, with plugmem's error translated. */
+	const verb = <T>(work: () => Promise<T>): Promise<T> =>
+		lease(async () => {
+			try {
+				return await work();
+			} catch (error) {
+				throw memoryFailure(name, error);
+			}
+		});
+
+	/**
+	 * A read on a memory that may not exist yet, answered with `empty` if it does not.
+	 */
+	const read = <T>(work: () => Promise<T>, empty: T): Promise<T> =>
+		lease(async () => {
+			try {
+				return await work();
+			} catch (error) {
+				if (isMissingDatabase(error)) return empty;
+				throw memoryFailure(name, error);
+			}
+		});
+
 	/**
 	 * Attach each similar fact's text.
 	 *
 	 * The engine returns ids and scores — enough for a program, useless for a model,
 	 * which has to be shown the sentence it may be contradicting before it can decide
-	 * between revising and keeping both. `get` is an in-memory read on an open handle.
+	 * between revising and keeping both. Called from inside a lease, so these reads go
+	 * straight at the reference: routing them back through the queue would deadlock on
+	 * the verb that is already holding it.
 	 */
-	const withText = (
-		db: Plugmem,
+	const withText = async (
 		similar: { id: number; score: number; reason: string }[],
-	): MemorySimilar[] => {
+	): Promise<MemorySimilar[]> => {
 		const resolved: MemorySimilar[] = [];
 		for (const hint of similar) {
-			const snapshot = db.get(hint.id);
+			const snapshot = await db.get(hint.id);
 			if (!snapshot) continue;
 			resolved.push({
 				id: hint.id,
@@ -155,13 +233,13 @@ function contactMemory(open: () => Promise<Plugmem>): ContactMemory {
 		validFrom: input.validFrom,
 	});
 
-	const fact = (db: Plugmem, id: number): MemoryFact | null => {
-		const snapshot = db.get(id);
+	const fact = async (id: number): Promise<MemoryFact | null> => {
+		const snapshot = await db.get(id);
 		if (!snapshot) return null;
 		return {
 			id: snapshot.record.id,
 			text: snapshot.text,
-			tags: db.tagsOf(id),
+			tags: await db.tagsOf(id),
 			metadata: snapshot.metadata,
 			recordedAt: snapshot.record.recordedAt,
 			validFrom: snapshot.record.validFrom,
@@ -171,45 +249,68 @@ function contactMemory(open: () => Promise<Plugmem>): ContactMemory {
 
 	return {
 		async remember(input): Promise<MemoryWriteOutcome> {
-			const db = await open();
-			const outcome = await db.remember(write(input));
-			return { id: outcome.id, similar: withText(db, outcome.similar) };
+			return verb(async () => {
+				const outcome = await db.remember(write(input));
+				return { id: outcome.id, similar: await withText(outcome.similar) };
+			});
+		},
+
+		async rememberGuarded(input): Promise<MemoryGuardedOutcome> {
+			return verb(async () => {
+				const outcome = await db.rememberGuarded(write(input));
+				return {
+					status: outcome.status,
+					id: outcome.outcome?.id,
+					similar: await withText(outcome.similar),
+				};
+			});
 		},
 
 		async revise(id, input): Promise<MemoryWriteOutcome> {
-			const db = await open();
-			const outcome = await db.revise(id, write(input));
-			return { id: outcome.id, similar: withText(db, outcome.similar) };
+			return verb(async () => {
+				const outcome = await db.revise(id, write(input));
+				return { id: outcome.id, similar: await withText(outcome.similar) };
+			});
 		},
 
 		async forget(id): Promise<boolean> {
-			return (await open()).forget(id);
+			return lease(async () => {
+				try {
+					return await db.forget(id);
+				} catch (error) {
+					// Nothing to tombstone, whether the fact or the whole memory is what is
+					// missing. Both mean the same to a caller asking for it to be gone.
+					if (isMissingDatabase(error) || isMissingFact(error)) return false;
+					throw memoryFailure(name, error);
+				}
+			});
 		},
 
 		async recall(query: MemoryRecallQuery): Promise<MemoryRecallResult> {
-			const db = await open();
-			const result = await db.recall({
-				query: query.query,
-				tags: query.tags,
-				entities: query.entities,
-				asOf: query.asOf,
-				range: query.range,
-				k: query.k,
-				tokenBudget: query.tokenBudget,
-			});
-			const hits: MemoryHit[] = result.facts.map((hit) => ({
-				id: hit.id,
-				score: hit.score,
-				sources: hit.sources,
-				recordedAt: hit.recordedAt,
-				validFrom: hit.validFrom,
-				validTo: closedAt(hit.validTo),
-			}));
-			return { hits, rendered: result.rendered, truncated: result.truncated };
+			return read(async () => {
+				const result = await db.recall({
+					query: query.query,
+					tags: query.tags,
+					entities: query.entities,
+					asOf: query.asOf,
+					range: query.range,
+					k: query.k,
+					tokenBudget: query.tokenBudget,
+				});
+				const hits: MemoryHit[] = result.facts.map((hit) => ({
+					id: hit.id,
+					score: hit.score,
+					sources: hit.sources,
+					recordedAt: hit.recordedAt,
+					validFrom: hit.validFrom,
+					validTo: closedAt(hit.validTo),
+				}));
+				return { hits, rendered: result.rendered, truncated: result.truncated };
+			}, NOTHING);
 		},
 
 		async get(id): Promise<MemoryFact | null> {
-			return fact(await open(), id);
+			return read(() => fact(id), null);
 		},
 	};
 }
@@ -217,27 +318,20 @@ function contactMemory(open: () => Promise<Plugmem>): ContactMemory {
 /**
  * Open the workspace at `root`, creating memories on first write.
  *
- * **One database is held open at a time, and the previous one is CLOSED to make room.**
- * That sentence is the whole of this function, and it is not what the pool's `maxOpen`
- * does on its own: a pool evicts a database from its own bookkeeping, but the handle
- * stays alive — and holds the file's exclusive lock — for as long as anything still
- * references it. Measured: after evicting `u111` to open `u222`, the evicted handle
- * still answered queries, and asking the workspace for `u111` again failed with
- * "database u111 is in use by another process". Its own process.
+ * **One memory verb runs at a time, and that is a wait rather than a failure.** The
+ * pool is configured with `maxOpen: 1`, which is how "two people's memories are never
+ * open together" stops being a promise — but a pool at its ceiling REFUSES the second
+ * caller ("workspace has 1 active databases (the max_open limit); retry after one call
+ * finishes"), it does not queue them. And the manager reaches this from two directions
+ * at once by design: a turn building its context, and the Telegram polling loop
+ * recording an inbound message. Left alone, the second one loses its write — the fact
+ * a person just stated — to an error about a limit nobody set.
  *
- * So the invariant is enforced here, deterministically, rather than inferred from a
- * cache policy:
+ * So the ceiling is turned into a queue here. A promise chain makes the verbs run one
+ * after another, and the cost is nothing worth counting: a verb is a memory-mapped
+ * read or a journal append, and the manager is answering one person at a time anyway.
  *
- *  - switching contact closes the previous database before opening the next, which is
- *    what makes "two people's memories are never open together" true of the process
- *    and not merely of a data structure;
- *  - staying on the same contact reuses the open handle, so a live back-and-forth does
- *    not reopen a file per turn (an open is ~2 ms, but a needless one is still a lie
- *    about what the bot is doing);
- *  - {@link MemoryWorkspace.closeIdle} closes it outright once nothing has used it,
- *    which is what hands the lock back to the owner's own `plugmem-cli`.
- *
- * `maxOpen: 1` stays on the pool underneath as a second lock on the same door.
+ * The chain must survive a rejection, or one failed verb wedges every later call.
  */
 export function createPlugmemWorkspace(
 	root: string,
@@ -249,62 +343,18 @@ export function createPlugmemWorkspace(
 		idleTimeoutMs: options.idleTimeoutMs,
 		config: options.configPath,
 	});
-	/** The one database currently open, if any. */
-	let held: { name: string; db: Plugmem; usedAt: number } | null = null;
 	/** One `ContactMemory` per name, so repeat callers get the same object. */
 	const handles = new Map<string, ContactMemory>();
 
-	/** Close what is open, releasing its file lock. Safe to call twice. */
-	const release = (): void => {
-		held?.db.close();
-		held = null;
-	};
-
-	/**
-	 * Opens run one at a time, and this is not defensive tidiness — it is the fix for a
-	 * leak that would have been permanent.
-	 *
-	 * "Close the old one, then open the new one" is two steps with an `await` between
-	 * them, and the manager reaches this from two directions at once: a turn building
-	 * its context, and the Telegram polling loop recording an inbound message. Let two
-	 * of those interleave and both pass the close, both open, and the second assignment
-	 * overwrites the first — leaving a handle nothing references and nothing can close,
-	 * holding that contact's file lock for the life of the process. Every later attempt
-	 * to open that memory then fails with "in use by another process", which is exactly
-	 * the shape of a deadlock even though nothing is actually waiting.
-	 *
-	 * A promise chain makes the pair atomic. It cannot itself deadlock: the critical
-	 * section awaits only `workspace.open`, which per plugmem's own contract never waits
-	 * on a file lock — it succeeds or fails at once — and a failure rejects the chain's
-	 * caller while leaving the chain itself resolved for the next one.
-	 */
 	let queue: Promise<unknown> = Promise.resolve();
 	const serialized = <T>(work: () => Promise<T>): Promise<T> => {
 		const result = queue.then(work, work);
-		// The chain must survive a rejection, or one failed open wedges every later call.
 		queue = result.then(
 			() => undefined,
 			() => undefined,
 		);
 		return result;
 	};
-
-	/** The open database for `name`, opening it (and closing the other) if need be. */
-	const resolve = (name: string): Promise<Plugmem> =>
-		serialized(async () => {
-			if (held?.name === name) {
-				held.usedAt = Date.now();
-				return held.db;
-			}
-			release();
-			try {
-				const db = await workspace.open(name, true);
-				held = { name, db, usedAt: Date.now() };
-				return db;
-			} catch (error) {
-				throw openFailure(name, error);
-			}
-		});
 
 	return {
 		async for(userId: string): Promise<ContactMemory> {
@@ -318,28 +368,73 @@ export function createPlugmemWorkspace(
 				);
 			}
 			const existing = handles.get(name);
-			if (existing) {
-				// Resolve it now too, so a caller that only ever uses the returned object
-				// still finds a bad configuration at the point it asked, not three lines later.
-				await resolve(name);
-				return existing;
-			}
-			await resolve(name);
-			const memory = contactMemory(() => resolve(name));
+			if (existing) return existing;
+			// Nothing is opened here: `memory()` resolves a name into a reference, and the
+			// first verb is what touches the file. So a contact nobody has stored anything
+			// about costs no file, and a broken configuration is reported by the call that
+			// hit it rather than by whichever turn happened to ask first.
+			const memory = contactMemory(name, workspace.memory(name), serialized);
 			handles.set(name, memory);
 			return memory;
 		},
+
+		async reembed(onProgress): Promise<MemoryReembedReport[]> {
+			// The registry is not the index of what exists: `describe()` is what fills it,
+			// and nothing here describes a contact — so `entries()` answers with an empty
+			// list however many memories are on disk. The directory is the truth.
+			let files: string[];
+			try {
+				files = await readdir(join(root, DB_SUBDIR));
+			} catch {
+				// No directory means no memory has ever been written. Nothing to rebuild.
+				return [];
+			}
+			// A memory is a GROUP of files — `u1.plugmem` beside `.plugmem.journal`,
+			// `.plugmem.lock` and `.plugmem.snap.N` — and the snapshot is not the one that
+			// is always there: it is written at a checkpoint, so a memory written to a
+			// moment ago exists on disk as a journal and a lock and nothing else. Matching
+			// the snapshot alone would quietly skip exactly the memories that have just
+			// been used, and report success. So the name is whatever precedes the suffix,
+			// in any of them, deduplicated. (The workspace registry is not in here — it
+			// sits beside this directory, not inside it.)
+			const names = [
+				...new Set(
+					files
+						.map((file) => file.slice(0, file.indexOf(DB_SUFFIX)))
+						.filter((name) => name.length > 0),
+				),
+			].sort();
+			const reports: MemoryReembedReport[] = [];
+			for (const [index, name] of names.entries()) {
+				await onProgress?.(name, index, names.length);
+				const report = await serialized(async () => {
+					try {
+						return await workspace.memory(name).reembed();
+					} catch (error) {
+						throw memoryFailure(name, error);
+					}
+				});
+				reports.push({
+					name,
+					embedded: report.embedded,
+					space: report.newSpace,
+				});
+			}
+			return reports;
+		},
+
 		closeIdle(): void {
-			// BOTH handles have to go, and they are two different things: ours, and the
-			// pool's own. Measured — closing only ours leaves the file locked, because the
-			// pool is still holding it; sweeping only the pool leaves it locked too,
-			// because ours is. One real clock for both, so they cannot disagree.
-			if (held && Date.now() - held.usedAt >= options.idleTimeoutMs) release();
+			// Whatever the pool is still holding, released once nothing has used it — which
+			// is what hands the file lock back to the owner's own `plugmem-cli`. A memory
+			// with a verb in flight is skipped rather than interrupted, so this needs no
+			// coordination with the queue above.
 			workspace.closeIdle();
 		},
+
 		async close(): Promise<void> {
-			release();
-			workspace.close();
+			// After the last verb, not through it: `close()` invalidates every reference,
+			// and a verb still queued behind it would fail on a workspace that is gone.
+			await serialized(async () => workspace.close());
 		},
 	};
 }

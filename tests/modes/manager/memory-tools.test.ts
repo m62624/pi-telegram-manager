@@ -5,10 +5,9 @@ import {
 	MemoryLedger,
 	type MemoryToolContext,
 } from "../../../src/modes/manager/memory-tools";
-import {
-	MEMORY_RECALL_SOURCE,
-	type MemoryRecallQuery,
-	type MemoryRecallResult,
+import type {
+	MemoryRecallQuery,
+	MemoryRecallResult,
 } from "../../../src/storage/memory";
 import { FakeContactMemory } from "../../helpers/fake-memory";
 
@@ -41,28 +40,13 @@ const text = (result: unknown): string =>
 		.map((c) => c.text)
 		.join("");
 
-/** A general recall can surface a graph fact without textual similarity. */
-class GraphOnlyRecallMemory extends FakeContactMemory {
-	lastQuery?: MemoryRecallQuery;
+/** Counts the searches a write performs, which must be none. */
+class RecallCountingMemory extends FakeContactMemory {
+	recalls = 0;
 
 	override async recall(query: MemoryRecallQuery): Promise<MemoryRecallResult> {
-		this.lastQuery = query;
-		const fact = this.facts[0];
-		if (!fact) return { hits: [], rendered: "", truncated: false };
-		return {
-			hits: [
-				{
-					id: fact.id,
-					score: 1,
-					sources: MEMORY_RECALL_SOURCE.graph,
-					recordedAt: fact.recordedAt,
-					validFrom: fact.validFrom,
-					validTo: fact.validTo,
-				},
-			],
-			rendered: "",
-			truncated: false,
-		};
+		this.recalls += 1;
+		return super.recall(query);
 	}
 }
 
@@ -125,7 +109,7 @@ describe("manager_remember", () => {
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
-		// The preflight catches the collision BEFORE the new fact exists, with the id
+		// The guard catches the collision BEFORE the new fact exists, with the id
 		// needed to revise it or explicitly keep both.
 		expect(memory?.texts()).toEqual(["works at a bank"]);
 		expect(text(result)).toContain("Not stored yet");
@@ -134,8 +118,43 @@ describe("manager_remember", () => {
 		expect(ledger.steps().at(-1)?.summary).toContain("stored 0 fact(s)");
 	});
 
-	it("does not turn a graph-only recall hit into a similarity conflict", async () => {
-		const memory = new GraphOnlyRecallMemory();
+	it("stores a merely related fact instead of holding it for review", async () => {
+		// The regression this whole change exists for. A recall was used as the
+		// duplicate check, and a recall always returns its best candidate — so with an
+		// embedder configured, EVERY new fact had a nearest neighbour and every write
+		// was held. The shape of the case that caught it: a note that somebody knows a
+		// series well, refused as a near-duplicate of a note that they want to play a
+		// game without spoilers, on a fused rank of 0.02. They share a topic and not a
+		// statement, and the memory must simply keep both.
+		const { tools, memory } = harness();
+		await memory?.remember({
+			text: "wants to play a new game without spoilers",
+			tags: ["fact", "preference"],
+		});
+
+		const result = await tools.get("manager_remember")?.execute("t1", {
+			facts: [
+				{
+					text: "knows the lore of a long-running series well",
+					subject: "interlocutor",
+					kind: "context",
+				},
+			],
+		});
+
+		expect(memory?.texts()).toEqual([
+			"wants to play a new game without spoilers",
+			"knows the lore of a long-running series well",
+		]);
+		expect(text(result)).toContain("Stored [f1]");
+		expect(text(result)).not.toContain("Not stored yet");
+	});
+
+	it("asks the memory to judge similarity instead of searching for it", async () => {
+		// A recall answers "what is worth showing", which is a different question from
+		// "does this already exist" and has no threshold under which it says nothing.
+		// The tool must not ask the first question and read the answer as the second.
+		const memory = new RecallCountingMemory();
 		await memory.remember({ text: "works at a bank", tags: ["fact"] });
 		const { tools } = harness(memory);
 
@@ -145,9 +164,7 @@ describe("manager_remember", () => {
 
 		expect(memory.texts()).toEqual(["works at a bank", "likes tea"]);
 		expect(text(result)).toContain("Stored [f1]");
-		// Similarity preflight must not activate graph expansion. General recall still
-		// uses entity anchors when the model explicitly searches its memory.
-		expect(memory.lastQuery?.entities).toBeUndefined();
+		expect(memory.recalls).toBe(0);
 	});
 
 	it("skips an exact duplicate without creating another fact", async () => {
@@ -172,36 +189,53 @@ describe("manager_remember", () => {
 	it("writes a compatible close fact only after explicit confirmation", async () => {
 		const { tools, memory } = harness();
 		await memory?.remember({
+			text: "plays guitar every evening",
+			tags: ["fact", "preference"],
+		});
+		const fact = {
+			text: "plays guitar every evening with friends",
+			subject: "interlocutor",
+			kind: "preference",
+		};
+		const blocked = await tools
+			.get("manager_remember")
+			?.execute("t1", { facts: [fact] });
+		expect(memory?.texts()).toEqual(["plays guitar every evening"]);
+		expect(text(blocked)).toContain("confirm_similar=true");
+
+		const confirmed = await tools
+			.get("manager_remember")
+			?.execute("t2", { confirm_similar: true, facts: [fact] });
+		expect(memory?.texts()).toEqual([
+			"plays guitar every evening",
+			"plays guitar every evening with friends",
+		]);
+		expect(text(confirmed)).toContain("Stored [f1]");
+		// The candidate it just reviewed, named again with the id that takes the
+		// decision back — the confirmed write is the only path that still reports it.
+		expect(text(confirmed)).toContain("[f0]");
+	});
+
+	it("refuses an exact duplicate even when the model insists", async () => {
+		// confirm_similar answers "both statements are true", which the same sentence
+		// twice never is. Writing it again would cost a fact id and change nothing.
+		const { tools, memory } = harness();
+		await memory?.remember({
 			text: "enjoys a particular hobby",
 			tags: ["fact", "preference"],
 		});
-		const blocked = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("manager_remember")?.execute("t1", {
+			confirm_similar: true,
 			facts: [
 				{
-					text: "wants to pursue that hobby without unwanted details",
+					text: "Enjoys a particular hobby!",
 					subject: "interlocutor",
 					kind: "preference",
 				},
 			],
 		});
 		expect(memory?.texts()).toEqual(["enjoys a particular hobby"]);
-		expect(text(blocked)).toContain("confirm_similar=true");
-
-		const confirmed = await tools.get("manager_remember")?.execute("t2", {
-			confirm_similar: true,
-			facts: [
-				{
-					text: "wants to pursue that hobby without unwanted details",
-					subject: "interlocutor",
-					kind: "preference",
-				},
-			],
-		});
-		expect(memory?.texts()).toEqual([
-			"enjoys a particular hobby",
-			"wants to pursue that hobby without unwanted details",
-		]);
-		expect(text(confirmed)).toContain("Stored [f1]");
+		expect(text(result)).toContain("Already remembered [f0]");
 	});
 
 	it("stores nothing, and says why, when nothing was about them", async () => {

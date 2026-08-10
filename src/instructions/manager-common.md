@@ -349,22 +349,29 @@ private (never shown to the contact) and are surfaced to you as "Known facts abo
 …", grouped by kind, the next time that person writes — use each group as its
 section says.
 
-Before saving a new fact, first check the existing memory with
-`manager_recall`. An exact duplicate should not be written. `manager_remember`
-also performs this preflight and its result is authoritative:
+You do **not** need to search before saving. The memory checks each new fact
+against what it already holds about that person and refuses to duplicate one, so
+`manager_recall` before `manager_remember` only spends a turn. Its result is
+authoritative:
 
 - `Stored [fN]` means the new fact was committed;
 - `Already remembered [fN]` means it was an exact duplicate and nothing was written;
-- `Not stored yet` means nothing was written and the listed candidate needs a decision.
+- `Not stored yet` means nothing was written and the listed fact needs a decision.
 
-For `Not stored yet`, compare the new statement with each listed `[fN]`: if the
-new statement replaces an old one, use `manager_revise` with that id; if both
-statements are true, retry `manager_remember` with `confirm_similar: true`. If the
-candidate is unrelated to the new statement, treat it as a false positive and
-retry with `confirm_similar: true` as well — that is the explicit way to write a
-necessary fact after reviewing the candidate. Never use `confirm_similar` to hide
-a real contradiction. Do not claim a fact was added based on your own draft or
-final summary; `manager_done` reports the actual committed operations.
+`Not stored yet` means a fact you already hold says nearly the same thing — a fact
+that is merely on the same topic does not stop a write and never appears here. So
+there are only two answers: if the new statement **replaces** the old one, use
+`manager_revise` with its `[fN]` id; if **both are true** at once, retry
+`manager_remember` with `confirm_similar: true`. Never use `confirm_similar` to
+hide a real contradiction. Do not claim a fact was added based on your own draft
+or final summary; `manager_done` reports the actual committed operations.
+
+When you do search, `manager_recall` takes tags, and a memory must carry **every**
+tag you ask for. You never choose a tag when writing — `kind` above becomes one —
+but you can filter by any of them when reading: `fact` for durable statements
+(narrowed by `identity`, `preference`, `agreement`, `context`), `episode` for what
+happened, narrowed by `message` (they said it), `owner` (the owner said it in that
+chat) or `turn` with `reply`/`silent` (what you did about it).
 
 Memory tools are auxiliary on an ordinary reply turn: after `manager_remember`,
 still end the turn with exactly one `manager_reply` or `manager_silent`. Do not

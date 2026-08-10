@@ -57,19 +57,40 @@ export const FACT_KINDS: readonly FactKind[] = [
 ];
 
 /**
- * Provenance bits returned by plugmem for a recall hit.
+ * Every tag this project writes — the whole vocabulary, and it is closed.
  *
- * These are deliberately duplicated as a tiny port-level contract rather than
- * importing the SDK outside `storage/`: a graph or time hit explains why a fact
- * was useful to a prompt, but it is not evidence that a new statement is similar
- * enough to block a write.
+ * plugmem can list the tags a memory actually holds, and for a store whose tags come
+ * from its users that would be the only honest way to know them. Here nothing outside
+ * this codebase ever writes one: the model picks a `kind` from {@link FACT_KINDS} and
+ * code turns it into tags, episodes are tagged by the controller from a fixed set, and
+ * the legacy import adds `migrated`. So the catalogue is knowable without asking, and
+ * this is it:
+ *
+ *  - `fact` + one of {@link FACT_KINDS} — a durable statement (`memory-tools.ts`);
+ *  - `migrated` — a fact moved out of the pre-plugmem `contacts/*.json`;
+ *  - `episode` + `message` — something they said, as they said it;
+ *  - `episode` + `owner` — something the owner said in their chat;
+ *  - `episode` + `turn` + `reply`/`silent` — what the manager did about it.
+ *
+ * It matters that this is a LIST rather than a free string on the recall tool: tags
+ * are AND filters, so one invented tag returns nothing at all — and "nothing matched"
+ * and "that tag does not exist" read identically to a model that then concludes it
+ * knows nothing about the person.
  */
-export const MEMORY_RECALL_SOURCE = {
-	bm25: 1,
-	graph: 1 << 1,
-	time: 1 << 2,
-	vector: 1 << 3,
-} as const;
+export const MEMORY_TAGS = [
+	"fact",
+	"identity",
+	"preference",
+	"agreement",
+	"context",
+	"migrated",
+	"episode",
+	"message",
+	"owner",
+	"turn",
+	"reply",
+	"silent",
+] as const;
 
 /** What is written when a fact is remembered or revised. */
 export interface MemoryWrite {
@@ -112,9 +133,16 @@ export interface MemoryFact {
  */
 export interface MemoryHit {
 	id: number;
-	/** Fused rank across the lexical, graph, temporal and vector sources. */
+	/**
+	 * Fused rank across the lexical, graph, temporal and vector sources.
+	 *
+	 * A ranking number and nothing else. It is not a cosine, it is not a similarity,
+	 * and it has no threshold below which a hit stops meaning anything — retrieval
+	 * returns the best it has, which on a thin match is still something. Deciding
+	 * whether two statements say the same thing is {@link ContactMemory.rememberGuarded}.
+	 */
 	score: number;
-	/** Bitset of sources that surfaced this hit. */
+	/** Bitset of the sources that surfaced this hit, verbatim from the engine. */
 	sources: number;
 	recordedAt: number;
 	validFrom: number;
@@ -178,11 +206,54 @@ export interface MemoryWriteOutcome {
 }
 
 /**
+ * What a guarded write did — the engine's own answer to "is this already known?".
+ *
+ * The distinction this type exists to keep is the one that cost a whole fact: a
+ * RECALL returns the best context it can find and will hand back a weak nearest
+ * neighbour when there is nothing good, while the similarity DETECTOR compares term
+ * sets and cosines against fixed thresholds (`similar_jaccard`, `similar_cos`) and
+ * answers with nothing at all when nothing is close. Treating the first as the second
+ * is what refused "knows a series well" as a near-duplicate of "wants to play a game
+ * without spoilers": one shared vector neighbour, fused score 0.02, no similarity
+ * whatsoever.
+ *
+ * `blocked` means nothing was written and no id was allocated — the check and the
+ * conditional write are one operation inside the engine, so nothing can slip between
+ * them.
+ */
+export interface MemoryGuardedOutcome {
+	status: "stored" | "blocked";
+	/** The new fact's id. Absent when blocked, because none was allocated. */
+	id?: number;
+	/** What stopped it, above the engine's thresholds. Empty when stored. */
+	similar: MemorySimilar[];
+}
+
+/** What one memory's vector axis replacement did. */
+export interface MemoryReembedReport {
+	/** The contact database, as {@link memoryDbName} spells it. */
+	name: string;
+	/** Facts recomputed with the configured embedder. */
+	embedded: number;
+	/** The vector-space identity this memory now carries. */
+	space: string;
+}
+
+/**
  * The memory of ONE contact, already open. There is no database argument on any
  * method here — by the time a caller holds this, the choice has been made.
  */
 export interface ContactMemory {
 	remember(write: MemoryWrite): Promise<MemoryWriteOutcome>;
+	/**
+	 * Write only if the engine's similarity detector finds nothing close enough.
+	 *
+	 * This is what a caller wanting "do not create a duplicate" must use. The check is
+	 * scoped to the fact's own `entity` and bounded by that entity's most recent facts,
+	 * and it is the same code path `remember` reports its `similar` hints from — the
+	 * difference being that here the answer arrives BEFORE a fact exists.
+	 */
+	rememberGuarded(write: MemoryWrite): Promise<MemoryGuardedOutcome>;
 	recall(query: MemoryRecallQuery): Promise<MemoryRecallResult>;
 	/**
 	 * Supersede a fact: close the old interval, record the successor. The old fact
@@ -206,6 +277,32 @@ export interface MemoryWorkspace {
 	 * than cached by the caller.
 	 */
 	for(userId: string): Promise<ContactMemory>;
+	/**
+	 * Recompute every stored fact's vector with the configured embedder, one contact
+	 * at a time, and report what each memory did.
+	 *
+	 * The owner's operation, never an automatic one. Two settings changes need it, and
+	 * they fail differently:
+	 *
+	 *  - **turning an embedder on** over memories built without one: nothing breaks,
+	 *    and that is the trap. New facts get vectors, the facts learned before the
+	 *    change stay lexical-only, and the memory answers semantic questions about
+	 *    half of what it knows without ever saying so;
+	 *  - **changing the model** (or its `space_id`): every read and every write fails
+	 *    with a vector-space mismatch until this has run, because mixing two models'
+	 *    vectors in one index would silently return nonsense instead.
+	 *
+	 * `onProgress` is called before each memory and awaited, since this calls the
+	 * provider once per batch of facts and the owner is watching something — a
+	 * terminal, or a chat where two unawaited sends arrive in whichever order.
+	 */
+	reembed(
+		onProgress?: (
+			name: string,
+			index: number,
+			total: number,
+		) => void | Promise<void>,
+	): Promise<MemoryReembedReport[]>;
 	/**
 	 * Close whatever has sat unused past the idle timeout.
 	 *
