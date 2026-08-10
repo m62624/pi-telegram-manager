@@ -270,7 +270,7 @@ describe("manager_remember", () => {
 
 describe("manager_recall", () => {
 	it("returns the block, with the ids the other verbs take", async () => {
-		const { tools, memory, ledger, seed } = harness();
+		const { tools, ledger, seed } = harness();
 		await seed("prefers mornings");
 		const result = await tools
 			.get("manager_recall")
@@ -380,7 +380,7 @@ describe("manager_done", () => {
 	});
 
 	it("reports committed operations instead of trusting model prose", async () => {
-		const { tools, memory, seed } = harness();
+		const { tools, seed } = harness();
 		await seed("works at a bank");
 		await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
