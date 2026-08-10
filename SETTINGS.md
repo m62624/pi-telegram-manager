@@ -360,13 +360,18 @@ entity is the contact's display name. Tags **filter** a recall rather than being
 something it can rank by, so a query made only of tags has nothing to search on and
 comes back empty — always give it an entity, a query, or both.
 
-One database holds **two** subjects: the contact, who the durable facts are about, and
-`chat log`, which is every message and turn outcome, joined to them by a `said` edge.
-That is why the recall above answers with episodes while anchored on the contact — it
-walks one hop. They are kept apart because plugmem judges a new fact against the most
-recent facts of the subject it names: with the conversation filed under the person, a
-fact drawn from what they just said collides with their own message, and after a few
-dozen messages a fact the memory already holds stops being recognised at all.
+One database can hold **more than two** subjects: the contact, who the durable facts are
+about; `chat log`, which is every message and turn outcome, joined to them by a `said`
+edge; and, when the consolidation pass has used `manager_link`, any number of TOPIC
+entities (a hobby, a show, a recurring activity) joined to the contact — or to each other
+— by one of a closed set of relations (`interested_in`, `involved_in`, `part_of`,
+`related_to`, `mentioned_with`). That is why the recall above answers with episodes while
+anchored on the contact — it walks one hop, and a fact filed under a linked topic is
+reached the same way. They are kept apart from the contact's own facts because plugmem
+judges a new fact against the most recent facts of the subject it names: with the
+conversation filed under the person, a fact drawn from what they just said collides with
+their own message, and after a few dozen messages a fact the memory already holds stops
+being recognised at all.
 
 ## `forwards` (forwarded messages, all modes)
 

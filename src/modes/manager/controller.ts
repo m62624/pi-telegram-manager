@@ -110,10 +110,7 @@ export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
 	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
-	"observing. You may call manager_remember first only for a durable fact about " +
-	"the current contact when contact memory is open. The Owner's own chat has " +
-	"none; a summons in a contact chat still uses that contact's memory. Never " +
-	"store Owner facts under a contact. " +
+	"observing. " +
 	"Never write plain text and never write a tool name as text. No draft is held " +
 	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
 	"fails.]";
@@ -121,9 +118,9 @@ export const MANAGER_ACTION_TRIGGER =
 /**
  * Replaces the action trigger once the turn's terminal decision is already
  * recorded. If the agent loop re-samples the model before the turn-end abort
- * lands (a race, or after a non-terminal manager_remember), this tells the model
- * the decision is made so it ends the turn instead of repeating the same tool
- * call against otherwise-identical context.
+ * lands — a race — this tells the model the decision is made so it ends the
+ * turn instead of repeating the same tool call against otherwise-identical
+ * context.
  */
 export const MANAGER_TURN_DONE =
 	"[You have already decided this turn. Do not call any more tools. Reply with a " +
@@ -516,9 +513,13 @@ export class ManagerController {
 	private readonly decision = new DecisionState();
 	private readonly resolve = new DraftResolutionState();
 	/**
-	 * Where a memory tool called OUTSIDE a pass records itself — a `manager_remember`
-	 * while answering somebody. Written and never read: the write itself already
-	 * happened on disk, and only a pass has a budget to spend.
+	 * The ledger `memoryToolContext().ledger()` falls back to when no pass is running.
+	 *
+	 * Every memory verb is now consolidation-pass-only (`tool-gate.ts`), backed by a
+	 * runtime tool guard (`registerToolGuard` in `index.ts`) that refuses the call
+	 * before `execute()` ever runs — so this fallback should be unreachable in
+	 * practice. Kept anyway so `ledger()` never has to return `null`: a pure safety
+	 * net against a gate regression, not a working path.
 	 */
 	private readonly scratchLedger = new MemoryLedger();
 	/** Memory failures already announced — see {@link reportMemoryError}. */
@@ -699,9 +700,8 @@ export class ManagerController {
 	/**
 	 * Whether the model has made this turn's terminal decision, so the agent loop
 	 * can stop re-sampling instead of spinning on identical context. Terminality is
-	 * turn-type specific: a normal turn ends on reply/silent (a bare
-	 * manager_remember does NOT end it — the model may still reply); a memory pass
-	 * ends only when the model says it is finished.
+	 * turn-type specific: a normal turn ends on reply/silent; a memory pass ends
+	 * only when the model says it is finished.
 	 */
 	turnDecided(): boolean {
 		if (this.consolidating) {

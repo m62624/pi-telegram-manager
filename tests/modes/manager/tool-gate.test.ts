@@ -11,6 +11,8 @@ const base = {
 			"manager_recall",
 			"manager_revise",
 			"manager_forget",
+			"manager_link",
+			"manager_unlink",
 			"manager_done",
 			"manager_resolve_draft",
 			"about",
@@ -33,6 +35,8 @@ describe("managerToolGate", () => {
 		expect(gate.matches("manager_recall")).toBe(true);
 		expect(gate.matches("manager_revise")).toBe(true);
 		expect(gate.matches("manager_forget")).toBe(true);
+		expect(gate.matches("manager_link")).toBe(true);
+		expect(gate.matches("manager_unlink")).toBe(true);
 		expect(gate.matches("manager_done")).toBe(true);
 
 		expect(gate.matches("manager_reply")).toBe(false);
@@ -54,7 +58,6 @@ describe("managerToolGate", () => {
 		const gate = managerToolGate(base, ordinary);
 		expect(gate.matches("manager_reply")).toBe(true);
 		expect(gate.matches("manager_silent")).toBe(true);
-		expect(gate.matches("manager_remember")).toBe(true);
 		expect(gate.matches("about")).toBe(true);
 
 		// A tool from another kind of turn does not merely go unused — it tells the model
@@ -62,15 +65,16 @@ describe("managerToolGate", () => {
 		expect(gate.matches("manager_resolve_draft")).toBe(false);
 		expect(gate.matches("manager_recall")).toBe(false);
 		expect(gate.matches("manager_done")).toBe(false);
-		// `manager_remember` above is the deliberate exception: a fact is worth writing
-		// down the moment it is learned, and making the model wait for a background pass
-		// to record it is how a fact gets lost.
-		//
-		// And above all these two: a stranger writing into the chat must never be holding
-		// a conversation with a bot that can be talked into FORGETTING or REWRITING what
-		// it knows about them. Both belong to the pass, where nobody is being answered.
+		// Every memory verb, `manager_remember` included, belongs to the pass — reading
+		// is still automatic on this turn (the memory block is assembled before sampling,
+		// not through a tool call), but writing waits for the background pass. A live
+		// conversation must never be a turn a stranger can talk the bot into FORGETTING or
+		// REWRITING what it knows about them, either.
+		expect(gate.matches("manager_remember")).toBe(false);
 		expect(gate.matches("manager_forget")).toBe(false);
 		expect(gate.matches("manager_revise")).toBe(false);
+		expect(gate.matches("manager_link")).toBe(false);
+		expect(gate.matches("manager_unlink")).toBe(false);
 	});
 
 	it("offers the same tools at every step of a memory pass", () => {
@@ -86,6 +90,8 @@ describe("managerToolGate", () => {
 			"manager_recall",
 			"manager_revise",
 			"manager_forget",
+			"manager_link",
+			"manager_unlink",
 			"manager_done",
 			"manager_reply",
 			"manager_resolve_draft",
@@ -97,6 +103,8 @@ describe("managerToolGate", () => {
 			"manager_recall",
 			"manager_revise",
 			"manager_forget",
+			"manager_link",
+			"manager_unlink",
 			"manager_done",
 		]);
 	});

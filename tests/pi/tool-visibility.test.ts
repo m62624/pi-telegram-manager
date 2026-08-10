@@ -5,10 +5,7 @@ import {
 	MANAGER_RESOLVE_TOOL_NAME,
 	MANAGER_TOOL_NAMES,
 } from "../../src/modes/manager/decision";
-import {
-	MEMORY_REPLY_TOOL_NAME,
-	MEMORY_TOOL_NAMES,
-} from "../../src/modes/manager/memory-tools";
+import { MEMORY_TOOL_NAMES } from "../../src/modes/manager/memory-tools";
 import { managerHoldsSession } from "../../src/modes/manager/polarity";
 import { managerToolGate } from "../../src/modes/manager/tool-gate";
 import { createToolMatcher } from "../../src/pi/tool-allow";
@@ -298,12 +295,12 @@ describe("the real group wiring (index.ts)", () => {
 		visibility.setExclusive("manager", matcher);
 		visibility.setActive("manager", true);
 
+		// Reading is still automatic here (the memory block is assembled before
+		// sampling, not through a tool call) — but writing is pass-only now, so an
+		// ordinary turn gets none of `MEMORY_TOOL_NAMES` at all, `manager_remember`
+		// included.
 		expect(api.active.sort()).toEqual(
-			[
-				...MANAGER_TOOL_NAMES,
-				MEMORY_REPLY_TOOL_NAME,
-				...ABOUT_TOOL_NAMES,
-			].sort(),
+			[...MANAGER_TOOL_NAMES, ...ABOUT_TOOL_NAMES].sort(),
 		);
 
 		consolidating = true;

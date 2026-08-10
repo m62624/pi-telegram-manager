@@ -66,9 +66,6 @@ function asTopicRelation(value: unknown): TopicRelation | undefined {
 		: undefined;
 }
 
-/** The one memory verb that is also available while answering somebody. */
-export const MEMORY_REPLY_TOOL_NAME = "manager_remember";
-
 /** Ends a consolidation pass. Nothing else does. */
 export const MEMORY_DONE_TOOL_NAME = "manager_done";
 
@@ -289,10 +286,9 @@ export interface MemoryToolContext {
 	/**
 	 * The second queue — resolved per call, not held.
 	 *
-	 * A pass owns its ledger, and `manager_remember` is also callable while answering
-	 * somebody, between passes. Handing the tools one fixed ledger would let a reply
-	 * turn's write count against a paused pass's step budget, which is the sort of
-	 * bug that shows up as "the memory pass mysteriously ran out of turns".
+	 * Every memory verb is consolidation-pass-only (`tool-gate.ts`), so in practice this
+	 * always resolves to the running pass's own ledger. Still resolved per call rather
+	 * than held, so nothing here has to assume a pass is always running.
 	 */
 	ledger(): MemoryLedger;
 	/** Wall clock, injected so tests are not at the mercy of the real one. */

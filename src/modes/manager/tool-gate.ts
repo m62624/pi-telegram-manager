@@ -22,15 +22,22 @@
  *  - **revise** — `manager_resolve_draft` alone: a reply of the model's own is held, and
  *    resolving it is the only way the turn can end.
  *  - **ordinary** — the owner's sandbox allowlist, minus the tools that belong to the two
- *    turns above (except `manager_remember`, which belongs to both: see below). A turn
- *    where the others existed would be a turn the model could mistake for a pass.
+ *    turns above. That now includes EVERY memory verb, `manager_remember` included: a
+ *    live reply turn used to be allowed to write (the reasoning was that a fact learned
+ *    mid-conversation is worth saving before it is lost), and a real session showed the
+ *    cost of that — two extra inference round-trips writing to memory before the reply
+ *    ever went out, one of them a blocked near-duplicate nobody ever came back to
+ *    resolve. Reading is unaffected: the memory block a reply turn sees is assembled
+ *    automatically before sampling (`memory-block.ts`), never through a tool call, so
+ *    dropping `manager_remember` here costs nothing but latency. A turn where the other
+ *    verbs existed would be a turn the model could mistake for a pass.
  *
  * Pure, and separate from the composition root precisely so that it can be tested: the
  * bug this file exists to prevent was invisible in code review for exactly as long as the
  * rule lived inline in a wiring expression.
  */
 import { MANAGER_RESOLVE_TOOL_NAME } from "./decision";
-import { MEMORY_REPLY_TOOL_NAME, MEMORY_TOOL_NAMES } from "./memory-tools";
+import { MEMORY_TOOL_NAMES } from "./memory-tools";
 
 /** Matches a tool by name (structurally the runtime's `ToolMatcher`). */
 export interface ToolNameMatcher {
@@ -66,19 +73,6 @@ export function isMemoryTool(name: string): boolean {
 }
 
 /**
- * Whether `name` is a memory verb that only a consolidation pass may call.
- *
- * `manager_remember` is the exception, and deliberately so: learning something while
- * talking to somebody is the moment it is worth writing down, and making the model
- * wait for a background pass to record it is how a fact gets lost. Looking things up,
- * rewriting them and dropping them are a pass's work — on a reply turn they are three
- * more ways to spend an inference on something other than the answer.
- */
-function isPassOnlyMemoryTool(name: string): boolean {
-	return isMemoryTool(name) && name !== MEMORY_REPLY_TOOL_NAME;
-}
-
-/**
  * The tools available on the current turn. `base` is the owner's sandbox allowlist (the
  * manager's own tools plus whatever `manager.allowedTools` permits); the turn kind
  * decides which slice of it the model may see and call.
@@ -100,7 +94,7 @@ export function managerToolGate(
 			if (turn.revising) return name === MANAGER_RESOLVE_TOOL_NAME;
 			return (
 				name !== MANAGER_RESOLVE_TOOL_NAME &&
-				!isPassOnlyMemoryTool(name) &&
+				!isMemoryTool(name) &&
 				base.matches(name)
 			);
 		},
