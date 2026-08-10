@@ -92,6 +92,34 @@ export const MEMORY_TAGS = [
 	"silent",
 ] as const;
 
+/**
+ * The subject episodes are filed under — never the contact themselves.
+ *
+ * Facts and episodes go into the same database, because they are about the same
+ * person; what they must NOT share is the subject entity, and that is not a matter of
+ * tidiness. The engine's duplicate detector is scoped to the entity a write names and
+ * compares against its 32 most recent facts — so with episodes on the contact, a chat
+ * of ordinary length is enough for the window to hold nothing but messages. Two things
+ * break at once, and both were measured against the real engine:
+ *
+ *  - a durable fact drawn from what somebody just said is refused as a near-duplicate
+ *    OF THEIR OWN MESSAGE (a paraphrase scores 0.625 against it lexically, and higher
+ *    still through a vector), and the model is told to revise or confirm against an
+ *    episode it should never be editing;
+ *  - a fact the memory really does already hold is no longer seen at all, because the
+ *    32 most recent entries under that entity are messages — so `manager_remember`
+ *    stops catching duplicates, which is the whole reason the guard exists.
+ *
+ * A constant rather than a name derived from the contact: it is the same subject for
+ * the life of the database, so it survives a Telegram rename, and one database is one
+ * person anyway — there is nobody here to confuse it with. Episodes stay reachable
+ * from the contact through {@link MEMORY_EPISODE_RELATION}, one graph hop away.
+ */
+export const MEMORY_EPISODE_ENTITY = "chat log";
+
+/** The edge that leads from the contact to their episodes. */
+export const MEMORY_EPISODE_RELATION = "said";
+
 /** What is written when a fact is remembered or revised. */
 export interface MemoryWrite {
 	text: string;
@@ -263,6 +291,14 @@ export interface ContactMemory {
 	revise(id: number, write: MemoryWrite): Promise<MemoryWriteOutcome>;
 	/** Tombstone a fact. Returns false when there was nothing there. */
 	forget(id: number): Promise<boolean>;
+	/**
+	 * Join two subjects with a typed edge, creating it or refreshing it.
+	 *
+	 * The one use here is {@link MEMORY_EPISODE_ENTITY}: a recall anchored on the
+	 * contact walks their edges, so the link is what keeps their messages reachable
+	 * from their name once the episodes stopped being filed under it.
+	 */
+	link(src: string, relation: string, dst: string): Promise<void>;
 	/** One fact, whole — the only way to get a fact's text by id. */
 	get(id: number): Promise<MemoryFact | null>;
 }

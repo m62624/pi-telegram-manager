@@ -286,6 +286,12 @@ function contactMemory(
 			});
 		},
 
+		async link(src, relation, dst): Promise<void> {
+			return verb(async () => {
+				await db.link({ src, rel: relation, dst });
+			});
+		},
+
 		async recall(query: MemoryRecallQuery): Promise<MemoryRecallResult> {
 			return read(async () => {
 				const result = await db.recall({

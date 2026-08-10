@@ -9,6 +9,10 @@ import { createBusinessStore } from "../../../src/storage/business-store";
 import { createChatState } from "../../../src/storage/chat-state";
 import { createChatStore } from "../../../src/storage/chat-store";
 import { createContactStore } from "../../../src/storage/contact-store";
+import {
+	MEMORY_EPISODE_ENTITY,
+	MEMORY_EPISODE_RELATION,
+} from "../../../src/storage/memory";
 import { createTelegramPaths } from "../../../src/storage/paths";
 import { FakeFs } from "../../helpers/fake-fs";
 import { type TempMemory, tempMemory } from "../../helpers/temp-memory";
@@ -177,5 +181,12 @@ describe("the manager on a real memory", () => {
 		});
 		expect(episodes.rendered).toContain("invoice number is 7781");
 		expect((await stored.recall({ tags: ["episode"] })).rendered).toBe("");
+		// Reached through the edge, not because it is filed under her: the message is a
+		// `chat log` fact, and the recall above walked one hop to find it. Filed under
+		// the contact it would sit in the way of every guarded write about her.
+		expect(episodes.rendered).toContain(MEMORY_EPISODE_ENTITY);
+		expect(episodes.rendered).toContain(
+			`Someone —${MEMORY_EPISODE_RELATION}→ ${MEMORY_EPISODE_ENTITY}`,
+		);
 	});
 });

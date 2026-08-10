@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { isOpenInterval, memoryDbName } from "../../src/storage/memory";
+import {
+	isOpenInterval,
+	MEMORY_EPISODE_ENTITY,
+	MEMORY_EPISODE_RELATION,
+	memoryDbName,
+} from "../../src/storage/memory";
 import {
 	createPlugmemWorkspace,
 	MemoryOpenError,
@@ -306,6 +311,77 @@ describe("a contact's memory", () => {
 		expect(stored.status).toBe("stored");
 		expect(stored.similar).toEqual([]);
 		expect((await memory.recall({ entities: ["Alice"] })).hits).toHaveLength(2);
+	});
+
+	it("does not let a message block the fact drawn from it", async () => {
+		// Why episodes are filed under their own subject. The detector is scoped to the
+		// entity a write names, so an episode on the contact is a candidate for every
+		// fact about them — and a fact IS usually a paraphrase of what they just said.
+		// Filed together, this pair scores 0.625 and the write is refused, naming the
+		// person's own message as the fact to revise.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "I play guitar every evening with friends",
+			entity: MEMORY_EPISODE_ENTITY,
+			tags: ["episode", "message"],
+		});
+
+		const stored = await memory.rememberGuarded({
+			text: "plays guitar every evening with friends",
+			entity: "Alice",
+			tags: ["fact", "preference"],
+		});
+		expect(stored.status).toBe("stored");
+	});
+
+	it("still catches a duplicate after a long conversation", async () => {
+		// The other half, and the one that is silent. The detector compares against the
+		// entity's 32 most recent facts, so episodes on the contact push every earlier
+		// fact out of the window: after an ordinary chat, `manager_remember` stops
+		// recognising what it already holds and the memory quietly accumulates copies.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		const fact = {
+			text: "works as a paramedic in the north district",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+		};
+		await memory.rememberGuarded(fact);
+		for (let i = 0; i < 40; i += 1) {
+			await memory.remember({
+				text: `unrelated chatter number ${i}`,
+				entity: MEMORY_EPISODE_ENTITY,
+				tags: ["episode", "message"],
+			});
+		}
+
+		expect((await memory.rememberGuarded(fact)).status).toBe("blocked");
+	});
+
+	it("keeps the episodes reachable from the contact, one hop away", async () => {
+		// What the link buys. A recall anchored on the contact walks their edges, so
+		// asking by tag alone — with no words to search on — still answers with what
+		// they said, even though it is no longer filed under their name.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({
+			text: "Alice is a paramedic",
+			entity: "Alice",
+			tags: ["fact", "identity"],
+		});
+		await memory.remember({
+			text: "see you at the rehearsal",
+			entity: MEMORY_EPISODE_ENTITY,
+			tags: ["episode", "message"],
+		});
+		await memory.link("Alice", MEMORY_EPISODE_RELATION, MEMORY_EPISODE_ENTITY);
+
+		const found = await memory.recall({
+			entities: ["Alice"],
+			tags: ["episode", "message"],
+		});
+		expect(found.rendered).toContain("see you at the rehearsal");
 	});
 
 	it("closes a superseded fact instead of erasing it", async () => {

@@ -54,18 +54,29 @@ function jaccard(left: string, right: string): number {
 	return both / (a.size + b.size - both);
 }
 
+/** The engine's `SIMILAR_CANDIDATE_CAP`: how far back a guarded write looks. */
+const SIMILAR_CANDIDATE_CAP = 32;
+
+/** A stored fact plus the subject it was filed under, which the port does not read back. */
+interface FakeFact extends MemoryFact {
+	entity?: string;
+}
+
 /** One contact's fake memory, with the stored facts exposed for assertions. */
 export class FakeContactMemory implements ContactMemory {
-	readonly facts: MemoryFact[] = [];
+	readonly facts: FakeFact[] = [];
+	/** Edges written, rendered the way a recall shows them. */
+	readonly links: string[] = [];
 	private nextId = 0;
 
 	async remember(write: MemoryWrite): Promise<MemoryWriteOutcome> {
-		const similar = this.similarTo(write.text);
+		const similar = this.similarTo(write.text, write.entity);
 		const id = this.nextId++;
 		const now = write.validFrom ?? 0;
 		this.facts.push({
 			id,
 			text: write.text,
+			entity: write.entity,
 			tags: write.tags ?? [],
 			metadata: write.metadata ?? {},
 			recordedAt: now,
@@ -77,22 +88,32 @@ export class FakeContactMemory implements ContactMemory {
 	/**
 	 * The write that refuses to duplicate — the engine's own two-in-one operation.
 	 *
-	 * The entity is ignored, and only here is that a simplification rather than a lie:
-	 * a fake memory IS one contact's, so every fact in it is already about the same
-	 * person. What is copied faithfully is the part that matters — a candidate has to
-	 * clear a threshold to stop a write, and one that does not clear it does not
-	 * appear at all.
+	 * Scoped to the subject entity, and that is not a detail this fake may round off.
+	 * It used to compare against every fact in the database, on the reasoning that one
+	 * fake memory is one contact's anyway — which read as harmless and was not: the
+	 * engine compares a write only against the entity it names, so a database whose
+	 * entities are mixed behaves nothing like the fake. That gap is exactly the one
+	 * that let episodes be filed under the contact and hid what it did to the guard
+	 * (see `MEMORY_EPISODE_ENTITY`). The 32-candidate ceiling is copied for the same
+	 * reason — it is what made a duplicate stop being seen at all.
 	 */
 	async rememberGuarded(write: MemoryWrite): Promise<MemoryGuardedOutcome> {
-		const similar = this.similarTo(write.text);
+		const similar = this.similarTo(write.text, write.entity);
 		if (similar.length > 0) return { status: "blocked", similar };
 		const { id } = await this.remember(write);
 		return { status: "stored", id, similar: [] };
 	}
 
-	/** Live facts close enough to `text` to count as saying the same thing. */
-	private similarTo(text: string): MemorySimilar[] {
+	/**
+	 * Live facts of the same subject close enough to `text` to say the same thing.
+	 *
+	 * `SIMILAR_CANDIDATE_CAP` in the engine: the entity's most recent facts and no
+	 * more, so a subject that accumulates entries loses sight of its older ones.
+	 */
+	private similarTo(text: string, entity?: string): MemorySimilar[] {
 		return this.live()
+			.filter((fact) => fact.entity === entity)
+			.slice(-SIMILAR_CANDIDATE_CAP)
 			.map((fact) => ({ fact, score: jaccard(fact.text, text) }))
 			.filter(({ score }) => score > SIMILAR_JACCARD)
 			.map(({ fact, score }) => ({
@@ -101,6 +122,11 @@ export class FakeContactMemory implements ContactMemory {
 				score,
 				reason: "LexicalOverlap",
 			}));
+	}
+
+	async link(src: string, relation: string, dst: string): Promise<void> {
+		const edge = `${src} —${relation}→ ${dst}`;
+		if (!this.links.includes(edge)) this.links.push(edge);
 	}
 
 	async revise(id: number, write: MemoryWrite): Promise<MemoryWriteOutcome> {

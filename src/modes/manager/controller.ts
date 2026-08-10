@@ -46,7 +46,12 @@ import type {
 import type { ChatMessageRecord, ChatStore } from "../../storage/chat-store";
 import { ownWords } from "../../storage/chat-store";
 import type { ContactStore } from "../../storage/contact-store";
-import type { ContactMemory, MemoryWorkspace } from "../../storage/memory";
+import {
+	type ContactMemory,
+	MEMORY_EPISODE_ENTITY,
+	MEMORY_EPISODE_RELATION,
+	type MemoryWorkspace,
+} from "../../storage/memory";
 import { describeAttachments, isImage } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
@@ -518,6 +523,8 @@ export class ManagerController {
 	private readonly scratchLedger = new MemoryLedger();
 	/** Memory failures already announced — see {@link reportMemoryError}. */
 	private readonly memoryErrorsSeen = new Set<string>();
+	/** Contacts already joined to their episode log this run — see `recordEpisode`. */
+	private readonly episodesLinked = new Set<string>();
 	private readonly chats = new Map<string, ChatMeta>();
 	/** Chats with an interlocutor message the model has not answered yet. */
 	private readonly unserved = new Set<string>();
@@ -1767,6 +1774,12 @@ export class ManagerController {
 	 * Best-effort by design: an episode is a nicety, and a memory that will not write
 	 * must not stop a reply from going out. The failure surfaces on the next tool call
 	 * the model makes, which is where it can actually be acted on.
+	 *
+	 * The subject is {@link MEMORY_EPISODE_ENTITY} and never the contact — see there
+	 * for what filing a conversation under the person breaks. The edge that keeps the
+	 * two joined is written once per contact per run rather than per message: it is a
+	 * journal append like any other, and a message is the one thing here that arrives
+	 * in bulk.
 	 */
 	private async recordEpisode(
 		chatId: string,
@@ -1785,11 +1798,22 @@ export class ManagerController {
 			const memory = await this.deps.memory.for(meta.userId);
 			await memory.remember({
 				text: body,
-				entity: meta.contactName,
+				entity: MEMORY_EPISODE_ENTITY,
 				tags: ["episode", ...tags],
 				validFrom: at,
 				metadata: { chatId, ...metadata },
 			});
+			// Keyed by the name too, so a contact renamed in Telegram is joined to their
+			// own log under the name the facts about them now carry.
+			const edge = `${meta.userId} ${meta.contactName}`;
+			if (!this.episodesLinked.has(edge)) {
+				await memory.link(
+					meta.contactName,
+					MEMORY_EPISODE_RELATION,
+					MEMORY_EPISODE_ENTITY,
+				);
+				this.episodesLinked.add(edge);
+			}
 		} catch (error) {
 			// Never at the cost of the conversation — but not in silence either.
 			this.reportMemoryError(error);

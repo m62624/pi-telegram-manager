@@ -32,7 +32,17 @@ function harness(memory: FakeContactMemory | null = new FakeContactMemory()) {
 	const tools = new Map(
 		createMemoryTools(context).map((tool) => [tool.name, tool]),
 	);
-	return { tools, ledger, memory };
+	/**
+	 * Put a fact in the memory the way the tools do — under the contact's own subject.
+	 *
+	 * Not a convenience. The engine scopes its duplicate check to the entity a write
+	 * names, so a fact seeded under no subject is invisible to a guarded write about
+	 * Alice: the test would set up a collision that cannot happen and then pass on the
+	 * absence of it.
+	 */
+	const seed = (text: string, tags: string[] = ["fact"]) =>
+		memory?.remember({ text, entity: "Alice", tags });
+	return { tools, ledger, memory, seed };
 }
 
 const text = (result: unknown): string =>
@@ -118,8 +128,8 @@ describe("manager_remember", () => {
 	});
 
 	it("shows the model what a new fact may be contradicting", async () => {
-		const { tools, memory, ledger } = harness();
-		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools, memory, ledger, seed } = harness();
+		await seed("works at a bank");
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
@@ -140,11 +150,11 @@ describe("manager_remember", () => {
 		// series well, refused as a near-duplicate of a note that they want to play a
 		// game without spoilers, on a fused rank of 0.02. They share a topic and not a
 		// statement, and the memory must simply keep both.
-		const { tools, memory } = harness();
-		await memory?.remember({
-			text: "wants to play a new game without spoilers",
-			tags: ["fact", "preference"],
-		});
+		const { tools, memory, seed } = harness();
+		await seed("wants to play a new game without spoilers", [
+			"fact",
+			"preference",
+		]);
 
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [
@@ -169,8 +179,8 @@ describe("manager_remember", () => {
 		// "does this already exist" and has no threshold under which it says nothing.
 		// The tool must not ask the first question and read the answer as the second.
 		const memory = new RecallCountingMemory();
-		await memory.remember({ text: "works at a bank", tags: ["fact"] });
-		const { tools } = harness(memory);
+		const { tools, seed } = harness(memory);
+		await seed("works at a bank");
 
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "likes tea", subject: "interlocutor" }],
@@ -182,11 +192,8 @@ describe("manager_remember", () => {
 	});
 
 	it("skips an exact duplicate without creating another fact", async () => {
-		const { tools, memory } = harness();
-		await memory?.remember({
-			text: "enjoys a particular hobby",
-			tags: ["fact", "preference"],
-		});
+		const { tools, memory, seed } = harness();
+		await seed("enjoys a particular hobby", ["fact", "preference"]);
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			facts: [
 				{
@@ -201,11 +208,8 @@ describe("manager_remember", () => {
 	});
 
 	it("writes a compatible close fact only after explicit confirmation", async () => {
-		const { tools, memory } = harness();
-		await memory?.remember({
-			text: "plays guitar every evening",
-			tags: ["fact", "preference"],
-		});
+		const { tools, memory, seed } = harness();
+		await seed("plays guitar every evening", ["fact", "preference"]);
 		const fact = {
 			text: "plays guitar every evening with friends",
 			subject: "interlocutor",
@@ -233,11 +237,8 @@ describe("manager_remember", () => {
 	it("refuses an exact duplicate even when the model insists", async () => {
 		// confirm_similar answers "both statements are true", which the same sentence
 		// twice never is. Writing it again would cost a fact id and change nothing.
-		const { tools, memory } = harness();
-		await memory?.remember({
-			text: "enjoys a particular hobby",
-			tags: ["fact", "preference"],
-		});
+		const { tools, memory, seed } = harness();
+		await seed("enjoys a particular hobby", ["fact", "preference"]);
 		const result = await tools.get("manager_remember")?.execute("t1", {
 			confirm_similar: true,
 			facts: [
@@ -269,8 +270,8 @@ describe("manager_remember", () => {
 
 describe("manager_recall", () => {
 	it("returns the block, with the ids the other verbs take", async () => {
-		const { tools, memory, ledger } = harness();
-		await memory?.remember({ text: "prefers mornings", tags: ["fact"] });
+		const { tools, memory, ledger, seed } = harness();
+		await seed("prefers mornings");
 		const result = await tools
 			.get("manager_recall")
 			?.execute("t1", { query: "prefers" });
@@ -308,8 +309,8 @@ describe("manager_recall", () => {
 
 describe("manager_revise", () => {
 	it("supersedes a fact and says the old one is not erased", async () => {
-		const { tools, memory } = harness();
-		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools, memory, seed } = harness();
+		await seed("works at a bank");
 		const result = await tools
 			.get("manager_revise")
 			?.execute("t1", { id: 0, text: "freelances" });
@@ -321,8 +322,8 @@ describe("manager_revise", () => {
 		// What a pass actually did: it read `- [f0] Alice: … (2026-08; active) #fact
 		// #context` and handed the correction back with the decoration still on it, so
 		// the display string became part of the fact and would render twice next time.
-		const { tools, memory } = harness();
-		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools, memory, seed } = harness();
+		await seed("works at a bank");
 		await tools.get("manager_revise")?.execute("t1", {
 			id: 0,
 			text: "- [f0] Alice: freelances now (2026-08; active) #fact #context",
@@ -331,8 +332,8 @@ describe("manager_revise", () => {
 	});
 
 	it("keeps a parenthesis and a hashtag that belong to the sentence", async () => {
-		const { tools, memory } = harness();
-		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools, memory, seed } = harness();
+		await seed("works at a bank");
 		await tools
 			.get("manager_revise")
 			?.execute("t1", { id: 0, text: "works remotely (mostly) #teamgreen" });
@@ -352,8 +353,8 @@ describe("manager_revise", () => {
 
 describe("manager_forget", () => {
 	it("drops a fact and names what went", async () => {
-		const { tools, memory, ledger } = harness();
-		await memory?.remember({ text: "hates coffee", tags: ["fact"] });
+		const { tools, memory, ledger, seed } = harness();
+		await seed("hates coffee");
 		const result = await tools
 			.get("manager_forget")
 			?.execute("t1", { id: 0, reason: "never said that" });
@@ -379,8 +380,8 @@ describe("manager_done", () => {
 	});
 
 	it("reports committed operations instead of trusting model prose", async () => {
-		const { tools, memory } = harness();
-		await memory?.remember({ text: "works at a bank", tags: ["fact"] });
+		const { tools, memory, seed } = harness();
+		await seed("works at a bank");
 		await tools.get("manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
