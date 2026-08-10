@@ -255,6 +255,21 @@ function contactMemory(
 			});
 		},
 
+		async rememberMany(inputs): Promise<MemoryWriteOutcome[]> {
+			if (inputs.length === 0) return [];
+			return verb(async () => {
+				const outcomes = await db.rememberMany(inputs.map(write));
+				const resolved: MemoryWriteOutcome[] = [];
+				for (const outcome of outcomes) {
+					resolved.push({
+						id: outcome.id,
+						similar: await withText(outcome.similar),
+					});
+				}
+				return resolved;
+			});
+		},
+
 		async rememberGuarded(input): Promise<MemoryGuardedOutcome> {
 			return verb(async () => {
 				const outcome = await db.rememberGuarded(write(input));

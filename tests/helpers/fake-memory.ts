@@ -136,6 +136,12 @@ export class FakeContactMemory implements ContactMemory {
 			}));
 	}
 
+	async rememberMany(writes: MemoryWrite[]): Promise<MemoryWriteOutcome[]> {
+		const outcomes: MemoryWriteOutcome[] = [];
+		for (const write of writes) outcomes.push(await this.remember(write));
+		return outcomes;
+	}
+
 	async link(src: string, relation: string, dst: string): Promise<void> {
 		const edge = `${src} —${relation}→ ${dst}`;
 		if (!this.links.includes(edge)) this.links.push(edge);

@@ -491,6 +491,28 @@ describe("a contact's memory", () => {
 		).toBe("");
 	});
 
+	it("stores a batch in order, with an id for each", async () => {
+		// What the legacy import moves a contact's facts with: one operation, so either
+		// the whole contact arrives or none of it does and the JSON it came from is left
+		// alone for the next start to retry.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		const outcomes = await memory.rememberMany([
+			{ text: "lives in Almaty", entity: "Alice", tags: ["fact", "identity"] },
+			{
+				text: "prefers voice notes",
+				entity: "Alice",
+				tags: ["fact", "preference"],
+			},
+		]);
+		expect(outcomes.map((outcome) => outcome.id)).toEqual([0, 1]);
+		expect((await memory.recall({ entities: ["Alice"] })).hits).toHaveLength(2);
+		// An empty batch is not a write: it must not create the database.
+		const stranger = await workspace.for("222");
+		expect(await stranger.rememberMany([])).toEqual([]);
+		expect((await stranger.recall({ query: "anything" })).rendered).toBe("");
+	});
+
 	it("drops a forgotten fact from recall", async () => {
 		const { workspace } = fresh();
 		const memory = await workspace.for("111");

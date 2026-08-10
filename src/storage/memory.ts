@@ -274,6 +274,16 @@ export interface MemoryReembedReport {
 export interface ContactMemory {
 	remember(write: MemoryWrite): Promise<MemoryWriteOutcome>;
 	/**
+	 * Store a batch as one operation, in order, with an outcome each.
+	 *
+	 * For facts that arrive together and are already decided — the legacy import is the
+	 * case that exists. It is not a faster `remember` loop to reach for by default: a
+	 * batch is one journal append, so either all of it is durable or none of it is, and
+	 * the whole design elsewhere leans the other way, on each write landing the moment
+	 * its tool returns. Unguarded, like `remember`.
+	 */
+	rememberMany(writes: MemoryWrite[]): Promise<MemoryWriteOutcome[]>;
+	/**
 	 * Write only if the engine's similarity detector finds nothing close enough.
 	 *
 	 * This is what a caller wanting "do not create a duplicate" must use. The check is

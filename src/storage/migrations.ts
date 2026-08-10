@@ -515,8 +515,12 @@ export async function pendingFactImports(
  *
  * Order matters and is the file's standing rule: write the new home first, clear the
  * old one only once the write returned. Interrupted between the two, the next run
- * finds the facts still in the JSON and stores them again — and storing a fact twice
- * is free, because the engine reports the duplicate rather than doubling it.
+ * finds the facts still in the JSON and stores them again — a duplicate, and the
+ * deliberate choice between the two ways of being wrong here. The guarded write would
+ * refuse the second copy, and would equally refuse two legacy facts that merely read
+ * alike, dropping one of them on the floor during the one operation that is supposed
+ * to lose nothing. A duplicate is visible and removable; a fact silently not migrated
+ * is neither.
  *
  * A contact whose database will not open is SKIPPED, not emptied: their facts stay
  * exactly where they are, and the next start tries again. A migration that cannot do
@@ -539,16 +543,19 @@ export async function importLegacyFacts(
 		const entity = record?.profile?.displayName;
 		try {
 			const database = await memory.for(pending.userId);
-			for (const fact of pending.facts) {
-				await database.remember({
+			// One batch, so a contact's facts arrive together or not at all — which is
+			// what makes the clearing step below safe to run against "the write
+			// returned" rather than against a count of how many of them made it.
+			await database.rememberMany(
+				pending.facts.map((fact) => ({
 					text: fact.text,
 					entity,
 					tags: ["fact", fact.kind, "migrated"],
 					// The chronology survives the move: a fact learned in March keeps saying
 					// so, which is what makes an as-of question about March answerable.
 					validFrom: fact.timestamp > 0 ? fact.timestamp : undefined,
-				});
-			}
+				})),
+			);
 		} catch {
 			continue;
 		}
