@@ -64,10 +64,26 @@ export interface CompactionResultLike {
 	details?: unknown;
 }
 
-/** Credentials for the summarisation call (structurally `ResolvedRequestAuth`). */
+/**
+ * Credentials for the summarisation call (structurally `ResolvedRequestAuth`). A
+ * `null` header value is the SDK's way of suppressing a provider/API default header
+ * of the same name — `toCompactHeaders` below drops those before the headers reach
+ * `compact()`, which (unlike auth resolution) only accepts plain string values.
+ */
 export type CompactionAuth =
-	| { ok: true; apiKey?: string; headers?: Record<string, string> }
+	| { ok: true; apiKey?: string; headers?: Record<string, string | null> }
 	| { ok: false; error: string };
+
+/** Drop the `null`-suppressed entries `compact()` itself cannot accept. */
+function toCompactHeaders(
+	headers: Record<string, string | null> | undefined,
+): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const entries = Object.entries(headers).filter(
+		(entry): entry is [string, string] => entry[1] !== null,
+	);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
 
 /**
  * The material Pi picked for this compaction. We only ever read `messagesToSummarize`,
@@ -172,7 +188,7 @@ export async function runFocusedCompaction<
 				preparation,
 				model,
 				apiKey: auth.apiKey,
-				headers: auth.headers,
+				headers: toCompactHeaders(auth.headers),
 				customInstructions: compactionFocus(
 					input.thread,
 					input.callerInstructions,
