@@ -3,16 +3,16 @@
  * `[NONE]` text sentinels.
  *
  * The model must finish a manager turn by calling exactly one of:
- *  - `manager_reply({ text })`  — deliver `text` to the interlocutor (the ONLY
+ *  - `telegram_manager_reply({ text })`  — deliver `text` to the interlocutor (the ONLY
  *    delivery channel; the model's reasoning never reaches Telegram);
- *  - `manager_silent({ reason })` — deliberately say nothing.
+ *  - `telegram_manager_silent({ reason })` — deliberately say nothing.
  *
  * A HELD-DRAFT turn is the exception: reply/silent are hidden and blocked, and
- * `manager_resolve_draft` (send/refine/drop) is the only tool that ends it.
+ * `telegram_manager_resolve_draft` (send/refine/drop) is the only tool that ends it.
  *
  * The tools write into an injected {@link DecisionSink}; the runtime resets the
- * sink each turn and reads it on turn end. Policy: `manager_reply` → send its
- * text; `manager_silent` or no call at all → stay silent (the safe default). No
+ * sink each turn and reads it on turn end. Policy: `telegram_manager_reply` → send its
+ * text; `telegram_manager_silent` or no call at all → stay silent (the safe default). No
  * response-text parsing, so it is deterministic and unit-testable.
  */
 
@@ -66,7 +66,10 @@ function asCategory(value: unknown): MessageCategory {
 }
 
 /** Names of the tools defined here — fed to the visibility gate. */
-export const MANAGER_TOOL_NAMES = ["manager_reply", "manager_silent"] as const;
+export const MANAGER_TOOL_NAMES = [
+	"telegram_manager_reply",
+	"telegram_manager_silent",
+] as const;
 
 /** A per-turn holder the tools write their decision into. */
 export interface DecisionSink {
@@ -107,7 +110,7 @@ export class DecisionState implements DecisionSink {
 /**
  * Resolve the turn's outcome: reply text to send, or null to stay silent.
  *
- * Safe self-contradiction downgrade: if the model called `manager_reply` yet its
+ * Safe self-contradiction downgrade: if the model called `telegram_manager_reply` yet its
  * OWN self-check says no reply is needed (`needs_reply: false`) and it classified
  * the message as pure `chatter`, honour that judgement and stay silent. This cuts
  * the false-positive case (blurting into banter) without ever swallowing a reply
@@ -144,7 +147,7 @@ export interface DraftResolutionSink {
 }
 
 /** The resolve-draft tool name — revealed only on a revise turn (see the matcher). */
-export const MANAGER_RESOLVE_TOOL_NAME = "manager_resolve_draft";
+export const MANAGER_RESOLVE_TOOL_NAME = "telegram_manager_resolve_draft";
 
 /** A mutable resolve-draft holder: reset each turn, read on turn end. */
 export class DraftResolutionState implements DraftResolutionSink {
@@ -196,14 +199,14 @@ export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 	const needsReplyParam = {
 		type: "boolean",
 		description:
-			"Your own check: does this message actually require a reply? Reactions and banter usually do not. Setting false while calling manager_reply contradicts itself and your reply will be discarded — if you are replying, this is true.",
+			"Your own check: does this message actually require a reply? Reactions and banter usually do not. Setting false while calling telegram_manager_reply contradicts itself and your reply will be discarded — if you are replying, this is true.",
 	};
 
 	const managerReply = defineTool({
-		name: "manager_reply",
-		label: "Manager Reply",
+		name: "telegram_manager_reply",
+		label: "Telegram Manager Reply",
 		description:
-			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
+			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of telegram_manager_reply or telegram_manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and telegram_manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -232,7 +235,7 @@ export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 			},
 		) {
 			const text = params.text?.trim();
-			if (!text) return fail("manager_reply requires non-empty text.");
+			if (!text) return fail("telegram_manager_reply requires non-empty text.");
 			sink.record({
 				kind: "reply",
 				text,
@@ -246,10 +249,10 @@ export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 	});
 
 	const managerSilent = defineTool({
-		name: "manager_silent",
-		label: "Manager Silent",
+		name: "telegram_manager_silent",
+		label: "Telegram Manager Silent",
 		description:
-			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
+			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of telegram_manager_reply or telegram_manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and telegram_manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -291,9 +294,9 @@ export function createDraftResolveTool(
 ): ToolDefinition {
 	return defineTool({
 		name: MANAGER_RESOLVE_TOOL_NAME,
-		label: "Manager Resolve Draft",
+		label: "Telegram Manager Resolve Draft",
 		description:
-			"Resolve a reply of yours that is HELD instead of sent — because new messages arrived while you wrote it, or you wrote it as plain text (which never reaches Telegram). Available ONLY on such a turn, where manager_reply and manager_silent are disabled: this tool is the only way to end it. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that starts from the draft and folds in the new info (full final message in `text`), or 'drop' ONLY if the interlocutor retracted the question, answered it themselves, the owner already answered it, or your text was never meant as a message to them. A still-open question must be sent or refined, never dropped because of trailing small talk.",
+			"Resolve a reply of yours that is HELD instead of sent — because new messages arrived while you wrote it, or you wrote it as plain text (which never reaches Telegram). Available ONLY on such a turn, where telegram_manager_reply and telegram_manager_silent are disabled: this tool is the only way to end it. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that starts from the draft and folds in the new info (full final message in `text`), or 'drop' ONLY if the interlocutor retracted the question, answered it themselves, the owner already answered it, or your text was never meant as a message to them. A still-open question must be sent or refined, never dropped because of trailing small talk.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -322,7 +325,8 @@ export function createDraftResolveTool(
 		) {
 			if (params.action === "refine") {
 				const text = params.text?.trim();
-				if (!text) return fail("manager_resolve_draft 'refine' requires text.");
+				if (!text)
+					return fail("telegram_manager_resolve_draft 'refine' requires text.");
 				sink.record({ action: "refine", text });
 				return ok("Refined reply queued for delivery.");
 			}

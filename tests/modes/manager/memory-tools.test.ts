@@ -73,19 +73,21 @@ describe("the memory verbs", () => {
 		// Tool schemas are rendered into the head of the prompt, so the same tools in a
 		// different order are different bytes — a cache miss on the whole prompt.
 		expect(MEMORY_TOOL_NAMES).toEqual([
-			"manager_remember",
-			"manager_recall",
-			"manager_revise",
-			"manager_forget",
-			"manager_link",
-			"manager_unlink",
-			"manager_done",
+			"telegram_manager_remember",
+			"telegram_manager_recall",
+			"telegram_manager_revise",
+			"telegram_manager_forget",
+			"telegram_manager_link",
+			"telegram_manager_unlink",
+			"telegram_manager_done",
 		]);
 	});
 
 	it("say so, rather than failing silently, when there is no memory open", async () => {
 		const { tools } = harness(null);
-		const result = await tools.get("manager_recall")?.execute("t1", {});
+		const result = await tools
+			.get("telegram_manager_recall")
+			?.execute("t1", {});
 		expect((result as { isError?: boolean }).isError).toBe(true);
 		expect(text(result)).toContain("no contact memory open");
 		expect(text(result)).toContain(
@@ -94,10 +96,10 @@ describe("the memory verbs", () => {
 	});
 });
 
-describe("manager_remember", () => {
+describe("telegram_manager_remember", () => {
 	it("stores a fact and reports the id it can be revised by", async () => {
 		const { tools, memory, ledger } = harness();
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
 			],
@@ -109,7 +111,7 @@ describe("manager_remember", () => {
 
 	it("stores the sentence, not the way a recalled line was displayed", async () => {
 		const { tools, memory } = harness();
-		await tools.get("manager_remember")?.execute("t1", {
+		await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{
 					text: "- [f7] Alice: takes evening classes (2026-08; active) #fact #preference",
@@ -123,7 +125,7 @@ describe("manager_remember", () => {
 
 	it("keeps only what is about the person being talked to", async () => {
 		const { tools, memory } = harness();
-		await tools.get("manager_remember")?.execute("t1", {
+		await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{ text: "keeps this", subject: "interlocutor" },
 				{ text: "owner detail", subject: "owner" },
@@ -140,7 +142,7 @@ describe("manager_remember", () => {
 	it("shows the model what a new fact may be contradicting", async () => {
 		const { tools, memory, ledger, seed } = harness();
 		await seed("works at a bank");
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
 		// The guard catches the collision BEFORE the new fact exists, with the id
@@ -148,7 +150,7 @@ describe("manager_remember", () => {
 		expect(memory?.texts()).toEqual(["works at a bank"]);
 		expect(text(result)).toContain("Not stored yet");
 		expect(text(result)).toContain("works at a bank");
-		expect(text(result)).toContain("manager_revise");
+		expect(text(result)).toContain("telegram_manager_revise");
 		expect(ledger.steps().at(-1)?.summary).toContain("stored 0 fact(s)");
 	});
 
@@ -166,7 +168,7 @@ describe("manager_remember", () => {
 			"preference",
 		]);
 
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{
 					text: "knows the lore of a long-running series well",
@@ -192,7 +194,7 @@ describe("manager_remember", () => {
 		const { tools, seed } = harness(memory);
 		await seed("works at a bank");
 
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [{ text: "likes tea", subject: "interlocutor" }],
 		});
 
@@ -204,7 +206,7 @@ describe("manager_remember", () => {
 	it("skips an exact duplicate without creating another fact", async () => {
 		const { tools, memory, seed } = harness();
 		await seed("enjoys a particular hobby", ["fact", "preference"]);
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{
 					text: "Enjoys a particular hobby!",
@@ -226,13 +228,13 @@ describe("manager_remember", () => {
 			kind: "preference",
 		};
 		const blocked = await tools
-			.get("manager_remember")
+			.get("telegram_manager_remember")
 			?.execute("t1", { facts: [fact] });
 		expect(memory?.texts()).toEqual(["plays guitar every evening"]);
 		expect(text(blocked)).toContain("confirm_similar=true");
 
 		const confirmed = await tools
-			.get("manager_remember")
+			.get("telegram_manager_remember")
 			?.execute("t2", { confirm_similar: true, facts: [fact] });
 		expect(memory?.texts()).toEqual([
 			"plays guitar every evening",
@@ -249,7 +251,7 @@ describe("manager_remember", () => {
 		// twice never is. Writing it again would cost a fact id and change nothing.
 		const { tools, memory, seed } = harness();
 		await seed("enjoys a particular hobby", ["fact", "preference"]);
-		const result = await tools.get("manager_remember")?.execute("t1", {
+		const result = await tools.get("telegram_manager_remember")?.execute("t1", {
 			confirm_similar: true,
 			facts: [
 				{
@@ -266,7 +268,7 @@ describe("manager_remember", () => {
 	it("stores nothing, and says why, when nothing was about them", async () => {
 		const { tools, memory } = harness();
 		const result = await tools
-			.get("manager_remember")
+			.get("telegram_manager_remember")
 			?.execute("t1", { facts: [{ text: "owner detail", subject: "owner" }] });
 		expect(memory?.texts()).toEqual([]);
 		expect(text(result)).toContain(
@@ -278,21 +280,21 @@ describe("manager_remember", () => {
 	});
 });
 
-describe("manager_recall", () => {
+describe("telegram_manager_recall", () => {
 	it("returns the block, with the ids the other verbs take", async () => {
 		const { tools, ledger, seed } = harness();
 		await seed("prefers mornings");
 		const result = await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { query: "prefers" });
 		expect(text(result)).toContain("[f0]");
-		expect(ledger.steps()[0].tool).toBe("manager_recall");
+		expect(ledger.steps()[0].tool).toBe("telegram_manager_recall");
 	});
 
 	it("says plainly that a miss is a miss", async () => {
 		const { tools } = harness();
 		const result = await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { query: "anything" });
 		// "Nothing matched" has to be unambiguous, or a model fills the gap by inferring
 		// the answer from the conversation and reporting it as something it remembered.
@@ -302,11 +304,11 @@ describe("manager_recall", () => {
 	it("blocks a recall-only loop after several different searches", async () => {
 		const { tools, ledger } = harness();
 		for (const query of ["first point", "second point", "third point"]) {
-			await tools.get("manager_recall")?.execute("t1", { query });
+			await tools.get("telegram_manager_recall")?.execute("t1", { query });
 		}
 
 		const blocked = await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { query: "a rephrased point" });
 
 		expect((blocked as { isError?: boolean }).isError).toBe(true);
@@ -317,7 +319,7 @@ describe("manager_recall", () => {
 	});
 });
 
-describe("manager_recall over time", () => {
+describe("telegram_manager_recall over time", () => {
 	// A day in the harness's zone (UTC), so the dates below are the instants they read as.
 	const day = (iso: string) => Date.parse(`${iso}T12:00:00Z`);
 
@@ -330,7 +332,7 @@ describe("manager_recall over time", () => {
 		);
 		await seed("moved to a new flat", ["fact", "identity"], day("2026-08-02"));
 
-		const june = await tools.get("manager_recall")?.execute("t1", {
+		const june = await tools.get("telegram_manager_recall")?.execute("t1", {
 			query: "what we agreed",
 			after: "2026-06-01",
 			before: "2026-07-01",
@@ -361,7 +363,7 @@ describe("manager_recall over time", () => {
 			day("2026-06-14"),
 		);
 
-		const result = await tools.get("manager_recall")?.execute("t1", {
+		const result = await tools.get("telegram_manager_recall")?.execute("t1", {
 			query: "shipping",
 			after: "2026-06-01",
 			before: "2026-07-01",
@@ -381,7 +383,7 @@ describe("manager_recall over time", () => {
 		// model that reads it as "I know nothing about them" acts on that.
 		const { tools, seed } = harness();
 		await seed("moved to a new flat", ["fact", "identity"], day("2026-08-02"));
-		const result = await tools.get("manager_recall")?.execute("t1", {
+		const result = await tools.get("telegram_manager_recall")?.execute("t1", {
 			query: "flat",
 			after: "2026-01-01",
 			before: "2026-02-01",
@@ -393,7 +395,7 @@ describe("manager_recall over time", () => {
 	it("refuses a date it cannot read instead of searching without it", async () => {
 		const { tools, ledger } = harness();
 		const result = await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { query: "anything", after: "last month" });
 		expect((result as { isError?: boolean }).isError).toBe(true);
 		expect(text(result)).toContain("YYYY-MM-DD");
@@ -403,7 +405,7 @@ describe("manager_recall over time", () => {
 	it("refuses a window that cannot contain anything", async () => {
 		const { tools } = harness();
 		const result = await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { after: "2026-08-01", before: "2026-07-01" });
 		expect((result as { isError?: boolean }).isError).toBe(true);
 		expect(text(result)).toContain("window is empty");
@@ -420,21 +422,21 @@ describe("manager_recall over time", () => {
 			day("2026-06-14"),
 		);
 		await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t1", { query: "what we agreed", after: "2026-06-01" });
 		await tools
-			.get("manager_recall")
+			.get("telegram_manager_recall")
 			?.execute("t2", { query: "what we agreed", after: "2026-08-01" });
 		expect(ledger.repeatedLast()).toBe(false);
 	});
 });
 
-describe("manager_revise", () => {
+describe("telegram_manager_revise", () => {
 	it("supersedes a fact and says the old one is not erased", async () => {
 		const { tools, memory, seed } = harness();
 		await seed("works at a bank");
 		const result = await tools
-			.get("manager_revise")
+			.get("telegram_manager_revise")
 			?.execute("t1", { id: 0, text: "freelances" });
 		expect(memory?.texts()).toEqual(["freelances"]);
 		expect(text(result)).toContain("closed, not erased");
@@ -446,7 +448,7 @@ describe("manager_revise", () => {
 		// the display string became part of the fact and would render twice next time.
 		const { tools, memory, seed } = harness();
 		await seed("works at a bank");
-		await tools.get("manager_revise")?.execute("t1", {
+		await tools.get("telegram_manager_revise")?.execute("t1", {
 			id: 0,
 			text: "- [f0] Alice: freelances now (2026-08; active) #fact #context",
 		});
@@ -457,7 +459,7 @@ describe("manager_revise", () => {
 		const { tools, memory, seed } = harness();
 		await seed("works at a bank");
 		await tools
-			.get("manager_revise")
+			.get("telegram_manager_revise")
 			?.execute("t1", { id: 0, text: "works remotely (mostly) #teamgreen" });
 		expect(memory?.texts()).toEqual(["works remotely (mostly) #teamgreen"]);
 	});
@@ -465,20 +467,20 @@ describe("manager_revise", () => {
 	it("refuses an id that is not there, and says how to find one", async () => {
 		const { tools, ledger } = harness();
 		const result = await tools
-			.get("manager_revise")
+			.get("telegram_manager_revise")
 			?.execute("t1", { id: 99, text: "whatever" });
 		expect((result as { isError?: boolean }).isError).toBe(true);
-		expect(text(result)).toContain("manager_recall");
+		expect(text(result)).toContain("telegram_manager_recall");
 		expect(ledger.size()).toBe(0);
 	});
 });
 
-describe("manager_forget", () => {
+describe("telegram_manager_forget", () => {
 	it("drops a fact and names what went", async () => {
 		const { tools, memory, ledger, seed } = harness();
 		await seed("hates coffee");
 		const result = await tools
-			.get("manager_forget")
+			.get("telegram_manager_forget")
 			?.execute("t1", { id: 0, reason: "never said that" });
 		expect(memory?.texts()).toEqual([]);
 		expect(text(result)).toContain("hates coffee");
@@ -488,25 +490,27 @@ describe("manager_forget", () => {
 
 	it("refuses an id that is not there", async () => {
 		const { tools } = harness();
-		const result = await tools.get("manager_forget")?.execute("t1", { id: 7 });
+		const result = await tools
+			.get("telegram_manager_forget")
+			?.execute("t1", { id: 7 });
 		expect((result as { isError?: boolean }).isError).toBe(true);
 	});
 });
 
-describe("manager_link / manager_unlink", () => {
+describe("telegram_manager_link / telegram_manager_unlink", () => {
 	it("connects the contact to a topic by default", async () => {
 		const { tools, memory, ledger } = harness();
 		const result = await tools
-			.get("manager_link")
+			.get("telegram_manager_link")
 			?.execute("t1", { dst: "chess", relation: "involved_in" });
 		expect(memory?.links).toEqual(["Alice —involved_in→ chess"]);
 		expect(text(result)).toContain("Alice —involved_in→ chess");
-		expect(ledger.steps()[0].tool).toBe("manager_link");
+		expect(ledger.steps()[0].tool).toBe("telegram_manager_link");
 	});
 
 	it("chains topic to topic when src is another topic", async () => {
 		const { tools, memory } = harness();
-		await tools.get("manager_link")?.execute("t1", {
+		await tools.get("telegram_manager_link")?.execute("t1", {
 			src: "chess",
 			dst: "board games",
 			relation: "part_of",
@@ -517,7 +521,7 @@ describe("manager_link / manager_unlink", () => {
 	it("refuses an unknown relation", async () => {
 		const { tools } = harness();
 		const result = await tools
-			.get("manager_link")
+			.get("telegram_manager_link")
 			?.execute("t1", { dst: "chess", relation: "bogus" });
 		expect((result as { isError?: boolean }).isError).toBe(true);
 		expect(text(result)).toContain("must be one of");
@@ -526,10 +530,10 @@ describe("manager_link / manager_unlink", () => {
 	it("closes a link that exists", async () => {
 		const { tools, memory } = harness();
 		await tools
-			.get("manager_link")
+			.get("telegram_manager_link")
 			?.execute("t1", { dst: "chess", relation: "involved_in" });
 		const result = await tools
-			.get("manager_unlink")
+			.get("telegram_manager_unlink")
 			?.execute("t2", { dst: "chess", relation: "involved_in" });
 		expect(memory?.links).toEqual([]);
 		expect(text(result)).toContain("Unlinked");
@@ -538,7 +542,7 @@ describe("manager_link / manager_unlink", () => {
 	it("says plainly when there was nothing to unlink", async () => {
 		const { tools } = harness();
 		const result = await tools
-			.get("manager_unlink")
+			.get("telegram_manager_unlink")
 			?.execute("t1", { dst: "chess", relation: "involved_in" });
 		expect(text(result)).toContain("no");
 		expect(text(result)).toContain("link to close");
@@ -546,9 +550,9 @@ describe("manager_link / manager_unlink", () => {
 });
 
 describe("topic-filed facts", () => {
-	it("manager_remember files a fact under the topic entity, not the contact", async () => {
+	it("telegram_manager_remember files a fact under the topic entity, not the contact", async () => {
 		const { tools, memory } = harness();
-		await tools.get("manager_remember")?.execute("t1", {
+		await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [
 				{
 					text: "is a strategy game played on a checkered board",
@@ -561,14 +565,14 @@ describe("topic-filed facts", () => {
 		expect(memory?.facts[0]?.entity).toBe("chess");
 	});
 
-	it("manager_revise keeps a topic-filed fact under the same topic", async () => {
+	it("telegram_manager_revise keeps a topic-filed fact under the same topic", async () => {
 		const { tools, memory } = harness();
 		await memory?.remember({
 			text: "is a strategy game played on a checkered board",
 			entity: "chess",
 			tags: ["fact", "context"],
 		});
-		await tools.get("manager_revise")?.execute("t1", {
+		await tools.get("telegram_manager_revise")?.execute("t1", {
 			id: 0,
 			text: "is a two-player strategy game",
 			topic: "chess",
@@ -597,22 +601,22 @@ describe("stripRendering", () => {
 	});
 });
 
-describe("manager_done", () => {
+describe("telegram_manager_done", () => {
 	it("is the only thing that ends a pass", async () => {
 		const { tools, ledger } = harness();
 		expect(ledger.isFinished()).toBe(false);
-		await tools.get("manager_done")?.execute("t1", {});
+		await tools.get("telegram_manager_done")?.execute("t1", {});
 		expect(ledger.isFinished()).toBe(true);
 	});
 
 	it("reports committed operations instead of trusting model prose", async () => {
 		const { tools, seed } = harness();
 		await seed("works at a bank");
-		await tools.get("manager_remember")?.execute("t1", {
+		await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [{ text: "works at a bank in town", subject: "interlocutor" }],
 		});
 
-		const result = await tools.get("manager_done")?.execute("t1", {
+		const result = await tools.get("telegram_manager_done")?.execute("t1", {
 			summary: "the new fact was added",
 		});
 
@@ -623,11 +627,11 @@ describe("manager_done", () => {
 
 	it("reports a real write as stored", async () => {
 		const { tools } = harness();
-		await tools.get("manager_remember")?.execute("t1", {
+		await tools.get("telegram_manager_remember")?.execute("t1", {
 			facts: [{ text: "likes tea", subject: "interlocutor" }],
 		});
 
-		const result = await tools.get("manager_done")?.execute("t1", {});
+		const result = await tools.get("telegram_manager_done")?.execute("t1", {});
 		expect(text(result)).toContain("1 fact stored");
 	});
 });
@@ -635,11 +639,23 @@ describe("manager_done", () => {
 describe("MemoryLedger", () => {
 	it("tells a repeat from a fresh call", () => {
 		const ledger = new MemoryLedger();
-		ledger.record({ tool: "manager_recall", argsKey: "a", summary: "a" });
+		ledger.record({
+			tool: "telegram_manager_recall",
+			argsKey: "a",
+			summary: "a",
+		});
 		expect(ledger.repeatedLast()).toBe(false);
-		ledger.record({ tool: "manager_recall", argsKey: "a", summary: "a" });
+		ledger.record({
+			tool: "telegram_manager_recall",
+			argsKey: "a",
+			summary: "a",
+		});
 		expect(ledger.repeatedLast()).toBe(true);
-		ledger.record({ tool: "manager_recall", argsKey: "b", summary: "b" });
+		ledger.record({
+			tool: "telegram_manager_recall",
+			argsKey: "b",
+			summary: "b",
+		});
 		expect(ledger.repeatedLast()).toBe(false);
 	});
 
@@ -647,12 +663,12 @@ describe("MemoryLedger", () => {
 		const ledger = new MemoryLedger();
 		expect(ledger.digest()).toBe("");
 		ledger.record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "a",
 			summary: "recalled a",
 		});
 		ledger.record({
-			tool: "manager_forget",
+			tool: "telegram_manager_forget",
 			argsKey: "1",
 			summary: "forgot [f1]",
 		});
@@ -664,7 +680,7 @@ describe("MemoryLedger", () => {
 		expect(ledger.contextDraft()).toContain("no memory tool has run");
 		for (const argsKey of ["a", "b", "c"]) {
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey,
 				summary: "recalled a concrete point → 0 hit(s)",
 			});
@@ -674,7 +690,7 @@ describe("MemoryLedger", () => {
 		expect(ledger.contextDraft()).toContain("inspection is complete");
 
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "new",
 			summary: "remembered one useful fact",
 		});

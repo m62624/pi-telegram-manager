@@ -580,7 +580,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
 		// A blocked tool must be answered with the tool that CAN end this turn — otherwise
-		// a blocked manager_reply is answered with "call manager_reply", and the model
+		// a blocked telegram_manager_reply is answered with "call telegram_manager_reply", and the model
 		// spins until the turn is wasted. Each turn kind has its own way out.
 		endTurnHint: () =>
 			manager?.isConsolidationDone()
@@ -1692,7 +1692,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		//  2. We are not the only extension writing this list. `setActiveTools` is a global
 		//     setter with no notion of whose tools are whose, and `pi-planner` rebuilds the
 		//     whole thing from `getAllTools()` on `before_provider_request` — which
-		//     resurrected the manager tools we hide (the model could see `manager_reply` in
+		//     resurrected the manager tools we hide (the model could see `telegram_manager_reply` in
 		//     the owner's DM) and rewrote the head of the prompt mid-turn, so the backend
 		//     threw away its cache: 24 302 tokens of prefill where 97 would have done.
 		//

@@ -144,7 +144,7 @@ describe("consolidationMemoryBlock", () => {
 	it("tells the pass that the ids are actionable", () => {
 		const block = consolidationMemoryBlock("- [f3] Alice: works at a bank");
 		expect(block).toContain("[fN]");
-		expect(block).toContain("manager_revise");
-		expect(block).toContain("manager_forget");
+		expect(block).toContain("telegram_manager_revise");
+		expect(block).toContain("telegram_manager_forget");
 	});
 });

@@ -137,7 +137,7 @@ export interface TelegramSettings {
 		catchUpWindowMs: number;
 		/**
 		 * Regex patterns of tool names the model may call in manager mode, on top of
-		 * the built-in `manager_reply`/`manager_silent`. Empty = telegram-sandbox
+		 * the built-in `telegram_manager_reply`/`telegram_manager_silent`. Empty = telegram-sandbox
 		 * (only the messaging tools; no computer access). Anchored full-name match.
 		 */
 		allowedTools: string[];

@@ -338,7 +338,7 @@ describe("a contact's memory", () => {
 	it("still catches a duplicate after a long conversation", async () => {
 		// The other half, and the one that is silent. The detector compares against the
 		// entity's 32 most recent facts, so episodes on the contact push every earlier
-		// fact out of the window: after an ordinary chat, `manager_remember` stops
+		// fact out of the window: after an ordinary chat, `telegram_manager_remember` stops
 		// recognising what it already holds and the memory quietly accumulates copies.
 		const { workspace } = fresh();
 		const memory = await workspace.for("111");
@@ -612,7 +612,7 @@ describe("a contact's memory", () => {
 			tags: ["fact", "preference"],
 		});
 		// A block the model can act on: `[fN]` in the text IS the argument for
-		// manager_revise and manager_forget, so it can point at what it wants changed.
+		// telegram_manager_revise and telegram_manager_forget, so it can point at what it wants changed.
 		expect((await memory.recall({ query: "mornings" })).rendered).toContain(
 			`[f${stored.id}]`,
 		);

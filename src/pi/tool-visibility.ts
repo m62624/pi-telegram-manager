@@ -2,7 +2,7 @@
  * Gate this extension's tools so the model only sees a mode's tools while that
  * mode is active — and never sees the *other* mode's tools.
  *
- * Tools are grouped (`connect` → `telegram_*`, `manager` → `manager_*`). Pi has
+ * Tools are grouped (`connect` → `telegram_*`, `manager` → `telegram_manager_*`). Pi has
  * no per-turn unregister; instead `pi.setActiveTools(names)` sets the whole
  * active list. So we register every tool at load, then keep each group's gated
  * names and, on refresh, recompute the active list.
@@ -13,7 +13,7 @@
  *    the rest.
  *  - **Exclusive** (`manager`, the telegram-sandbox): when active, the active
  *    list is *only* the tools its {@link ToolMatcher} allows — the group's own
- *    `manager_*` tools plus any `manager.allowedTools` regex matches. Every other
+ *    `telegram_manager_*` tools plus any `manager.allowedTools` regex matches. Every other
  *    tool (built-in `read`/`write`/`bash`, `ask_user`, foreign extensions') is
  *    hidden. The matcher is injected at activation via {@link setExclusive}
  *    because the allowlist comes from settings, loaded after extension load.
@@ -60,8 +60,8 @@ export function claimedToolNames(
  * not a race — it is a war, and the owner's prompt was the battlefield:
  *
  *   - our list resurrected the 54 `planner_*` tools the planner had just hidden;
- *   - the planner's list resurrected the 8 `manager_*` tools we had just hidden — so in
- *     PERSONAL mode the model could see `manager_reply`;
+ *   - the planner's list resurrected the 8 `telegram_manager_*` tools we had just hidden — so in
+ *     PERSONAL mode the model could see `telegram_manager_reply`;
  *   - and the head of the prompt, where the tool schemas live, changed between two calls
  *     of one turn: ~24k tokens, then ~10k. The backend threw away everything it had read.
  *     Measured in the owner's session: prefill 24 302 → 11 653, cache 24 348 → 0.
@@ -71,7 +71,7 @@ export function claimedToolNames(
  *   next = (what is active now  ∪  what our active groups claim)  \  what we hide
  *
  * Nobody's tools are resurrected by us again. And it CONVERGES: the planner sets
- * `all − planner_*`; we subtract `manager_*`; next turn the planner computes the same
+ * `all − planner_*`; we subtract `telegram_manager_*`; next turn the planner computes the same
  * thing and we subtract the same thing. A fixed point — which is what a prefix cache
  * needs, because a stable set of tools is a stable head, and a stable head is a prompt
  * the backend does not have to read twice.

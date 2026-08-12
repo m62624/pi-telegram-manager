@@ -187,7 +187,7 @@ export class FakeContactMemory implements ContactMemory {
 			// of the four retrieval sources, so a windowed recall that also carries a
 			// query or an entity anchor comes back with the window PLUS whatever those
 			// matched. The caller is expected to send a window on its own, and then the
-			// two behave alike; `manager_recall` is what makes sure of it.
+			// two behave alike; `telegram_manager_recall` is what makes sure of it.
 			.filter(
 				(fact) =>
 					query.range === undefined ||

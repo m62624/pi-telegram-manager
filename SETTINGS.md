@@ -362,7 +362,7 @@ comes back empty — always give it an entity, a query, or both.
 
 One database can hold **more than two** subjects: the contact, who the durable facts are
 about; `chat log`, which is every message and turn outcome, joined to them by a `said`
-edge; and, when the consolidation pass has used `manager_link`, any number of TOPIC
+edge; and, when the consolidation pass has used `telegram_manager_link`, any number of TOPIC
 entities (a hobby, a show, a recurring activity) joined to the contact — or to each other
 — by one of a closed set of relations (`interested_in`, `involved_in`, `part_of`,
 `related_to`, `mentioned_with`). That is why the recall above answers with episodes while

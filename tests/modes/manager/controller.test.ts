@@ -141,7 +141,7 @@ describe("ManagerController", () => {
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
 	});
 
-	it("delivers manager_reply text on turn end, labelled + bot-tagged + recorded", async () => {
+	it("delivers telegram_manager_reply text on turn end, labelled + bot-tagged + recorded", async () => {
 		const { controller, sendReply, deps, clock } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -285,11 +285,11 @@ describe("ManagerController", () => {
 		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
 
 		// The reconsider turn is a REVISE turn: it surfaces the draft + the newer
-		// message and asks the model to resolve it with manager_resolve_draft.
+		// message and asks the model to resolve it with telegram_manager_resolve_draft.
 		const ctx = await controller.buildContextForActive();
 		const directive = ctx?.at(-1)?.content ?? "";
 		expect(directive).toContain("answer to first");
-		expect(directive).toContain("manager_resolve_draft");
+		expect(directive).toContain("telegram_manager_resolve_draft");
 		expect(ctx?.some((m) => m.content.includes("wait, also this"))).toBe(true);
 		expect(controller.isReviseTurn()).toBe(true);
 
@@ -399,11 +399,11 @@ describe("ManagerController", () => {
 		expect(controller.isReviseTurn()).toBe(true);
 		// The revise turn must not be prompted for the tools it has disabled.
 		const revisePrompt = triggerAgent.mock.calls.at(-1)?.[0] as string;
-		expect(revisePrompt).toContain("manager_resolve_draft");
-		expect(revisePrompt).not.toContain("manager_reply");
+		expect(revisePrompt).toContain("telegram_manager_resolve_draft");
+		expect(revisePrompt).not.toContain("telegram_manager_reply");
 		const ctx = await controller.buildContextForActive();
 		expect(ctx?.at(-1)?.content).toContain("plain text");
-		expect(ctx?.at(-1)?.content).toContain("manager_resolve_draft");
+		expect(ctx?.at(-1)?.content).toContain("telegram_manager_resolve_draft");
 
 		// The model resolves the held draft with 'send' → delivered despite the strict
 		// guard (it is treated as a considered reply, never as chatter).
@@ -706,7 +706,9 @@ describe("ManagerController", () => {
 		setIdle(true);
 		await controller.onTick();
 		expect(triggerAgent).toHaveBeenCalledTimes(2);
-		expect(triggerAgent.mock.calls[1][0]).toContain("manager_resolve_draft");
+		expect(triggerAgent.mock.calls[1][0]).toContain(
+			"telegram_manager_resolve_draft",
+		);
 	});
 
 	// Same in mixed mode, where `isIdle` also carries the polarity: the owner's coding
@@ -821,7 +823,7 @@ describe("ManagerController", () => {
 		expect(triggerAgent).not.toHaveBeenCalled();
 	});
 
-	it("stays silent when the model chooses manager_silent (no send)", async () => {
+	it("stays silent when the model chooses telegram_manager_silent (no send)", async () => {
 		const { controller, sendReply } = await setup();
 		await controller.onBusinessMessage({
 			connectionId: CONN,
@@ -967,7 +969,7 @@ describe("ManagerController", () => {
 			ctx?.some((m) => m.content === "[#1] Interlocutor (Alice): hi there"),
 		).toBe(true);
 		// The turn ends with the action directive that forces a tool call.
-		expect(ctx?.at(-1)?.content).toContain("manager_reply");
+		expect(ctx?.at(-1)?.content).toContain("telegram_manager_reply");
 		expect(ctx?.at(-1)?.content).toContain(
 			"State: batch #1; last=interlocutor",
 		);
@@ -1285,7 +1287,7 @@ describe("ManagerController", () => {
 		expect(memory.texts(String(OWNER_ID))).toEqual([]);
 	});
 
-	it("gates a revise turn on resolve-draft: manager_silent cannot drop a held answer", async () => {
+	it("gates a revise turn on resolve-draft: telegram_manager_silent cannot drop a held answer", async () => {
 		const { controller, sendReply, setIdle, clock } = await setup();
 		// A real question arrives and a turn starts.
 		await controller.onBusinessMessage({
@@ -1313,14 +1315,14 @@ describe("ManagerController", () => {
 		expect(sendReply).not.toHaveBeenCalled();
 		expect(controller.isReviseTurn()).toBe(true);
 
-		// The model reflexively calls manager_silent on the trailing chatter — the gate
+		// The model reflexively calls telegram_manager_silent on the trailing chatter — the gate
 		// must NOT let that end the turn or drop the drafted answer (the Valheim bug).
 		controller
 			.decisionSink()
 			.record({ kind: "silent", category: "chatter", needsReply: false });
 		expect(controller.turnDecided()).toBe(false);
 
-		// Only manager_resolve_draft ends a revise turn; the model sends the draft.
+		// Only telegram_manager_resolve_draft ends a revise turn; the model sends the draft.
 		controller.resolveSink().record({ action: "send" });
 		expect(controller.turnDecided()).toBe(true);
 		await controller.onAgentEnd();
@@ -1380,7 +1382,7 @@ describe("ManagerController", () => {
 		await controller.onTick();
 	}
 
-	it("runs a memory pass as a loop the model drives, ending only on manager_done", async () => {
+	it("runs a memory pass as a loop the model drives, ending only on telegram_manager_done", async () => {
 		const harness = await setup();
 		const { controller, memory } = harness;
 		await intoMemoryPass(harness);
@@ -1391,11 +1393,11 @@ describe("ManagerController", () => {
 		const first =
 			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
 		expect(first).toContain("Memory pass");
-		expect(first).toContain("manager_done");
+		expect(first).toContain("telegram_manager_done");
 
 		// A tool call is not a terminal decision: the loop carries on.
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "laptop",
 			summary: "remembered 1 fact(s): ordered a laptop",
 		});
@@ -1405,7 +1407,7 @@ describe("ManagerController", () => {
 		});
 		expect(await controller.stepConsolidation()).toBe("continue");
 
-		// Only manager_done ends it.
+		// Only telegram_manager_done ends it.
 		ledger.finish();
 		expect(await controller.stepConsolidation()).toBe("abort");
 		await controller.onAgentEnd();
@@ -1441,7 +1443,7 @@ describe("ManagerController", () => {
 		await intoMemoryPass(harness);
 		const ledger = controller.memoryToolContext().ledger();
 		const step = {
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "where they work",
 			summary: "recalled where they work → 0 hit(s)",
 		};
@@ -1464,7 +1466,7 @@ describe("ManagerController", () => {
 
 		for (const argsKey of ["first", "second", "third"]) {
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey,
 				summary: "recalled a concrete point → 0 hit(s)",
 			});
@@ -1476,7 +1478,7 @@ describe("ManagerController", () => {
 			(await controller.buildContextForActive())?.at(-1)?.content ?? "";
 		expect(trailing).toContain("Memory pass state");
 		expect(trailing).toContain("inspection is complete");
-		expect(trailing).toContain("Do not call manager_recall again");
+		expect(trailing).toContain("Do not call telegram_manager_recall again");
 	});
 
 	it("stops a pass that will not stop itself, one sample past its budget", async () => {
@@ -1486,7 +1488,7 @@ describe("ManagerController", () => {
 		const ledger = controller.memoryToolContext().ledger();
 		for (let i = 0; i < 12; i += 1) {
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey: `q${i}`,
 				summary: `recalled q${i}`,
 			});
@@ -1497,7 +1499,7 @@ describe("ManagerController", () => {
 			(await controller.buildContextForActive())?.at(-1)?.content ?? "",
 		).toContain("used this pass's budget");
 		ledger.record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "q12",
 			summary: "one more",
 		});
@@ -1510,7 +1512,7 @@ describe("ManagerController", () => {
 		await intoMemoryPass(harness);
 		const ledger = controller.memoryToolContext().ledger();
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "a",
 			summary: "remembered 1 fact(s): a",
 		});
@@ -1563,7 +1565,7 @@ describe("ManagerController", () => {
 
 		const pausedLedger = controller.memoryToolContext().ledger();
 		pausedLedger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "a-progress",
 			summary: "remembered a fact for the first contact",
 		});
@@ -1625,11 +1627,11 @@ describe("ManagerController", () => {
 		});
 		const ledger = controller.memoryToolContext().ledger();
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "logistics",
 			summary: "remembered 1 fact(s): works in logistics",
 		});
-		// Abandoned without ever calling manager_done.
+		// Abandoned without ever calling telegram_manager_done.
 		await controller.stepConsolidation();
 		await controller.stepConsolidation();
 		await controller.stepConsolidation();
@@ -1683,7 +1685,7 @@ describe("ManagerController", () => {
 		// Storing a fact mid-conversation is NOT terminal — the model may still reply,
 		// and making it choose between remembering and answering is how a fact gets lost.
 		controller.memoryToolContext().ledger().record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "bob",
 			summary: "remembered 1 fact(s): name is Bob",
 		});
@@ -1705,13 +1707,13 @@ describe("ManagerController", () => {
 		await controller.onTick();
 		// Before deciding, the trigger asks for a tool call.
 		const before = await controller.buildContextForActive();
-		expect(before?.at(-1)?.content).toContain("manager_reply");
+		expect(before?.at(-1)?.content).toContain("telegram_manager_reply");
 		// After a decision, a re-sampled context tells the model to stop instead of
 		// presenting byte-identical input that would repeat the same tool call.
 		controller.decisionSink().record({ kind: "silent" });
 		const after = await controller.buildContextForActive();
 		expect(after?.at(-1)?.content).toContain("already decided");
-		expect(after?.at(-1)?.content).not.toContain("manager_reply");
+		expect(after?.at(-1)?.content).not.toContain("telegram_manager_reply");
 	});
 
 	it("persists a business connection with the owner id", async () => {
@@ -1770,7 +1772,7 @@ describe("consolidation pause/resume under live work", () => {
 		// The pass takes a step. While it runs, a live, addressed message lands.
 		setIdle(false);
 		controller.memoryToolContext().ledger().record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "who",
 			summary: "recalled who they are → 0 hit(s)",
 		});
@@ -1921,7 +1923,7 @@ describe("consolidation pause/resume under live work", () => {
 		clock.advance(1_800_001);
 		await controller.onTick();
 		controller.memoryToolContext().ledger().record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "laptop",
 			summary: "remembered 1 fact(s): ordered a laptop",
 		});
@@ -2412,7 +2414,7 @@ describe("ManagerController — the owner steps into a live chat", () => {
 		expect(sendReply).not.toHaveBeenCalled();
 		expect(triggerAgent.mock.calls.length).toBe(triggersAfterStart + 1);
 		const ctx = await controller.buildContextForActive();
-		expect(ctx?.at(-1)?.content).toContain("manager_resolve_draft");
+		expect(ctx?.at(-1)?.content).toContain("telegram_manager_resolve_draft");
 		expect(ctx?.at(-1)?.content).toContain("the price is 200");
 
 		// The model sees the owner already answered and drops it.

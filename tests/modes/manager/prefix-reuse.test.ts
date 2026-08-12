@@ -374,7 +374,7 @@ describe("prompt prefix reuse, when the transcript is the big part", () => {
  *
  *  - BETWEEN turn kinds (a reply turn, then a memory pass) the tool set genuinely
  *    changes — reply tools out, probes in — and the head changes with it. That is a full
- *    re-read, and it is the price of the sandbox: a pass that could see `manager_reply`
+ *    re-read, and it is the price of the sandbox: a pass that could see `telegram_manager_reply`
  *    talks to people it is only supposed to be remembering. Paid once, when the pass
  *    starts.
  *  - WITHIN the pass — and this is what must hold — the set does not move. The gate is a
@@ -415,7 +415,11 @@ describe("what a memory pass re-reads", () => {
 					serializePrompt(await env.controller.buildContextForActive()),
 				).reread,
 			);
-			ledger.record({ tool: "manager_recall", argsKey: summary, summary });
+			ledger.record({
+				tool: "telegram_manager_recall",
+				argsKey: summary,
+				summary,
+			});
 			await env.controller.stepConsolidation();
 		};
 

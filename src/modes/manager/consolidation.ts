@@ -59,28 +59,28 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"time-bound. For example, 'wants to pursue a hobby without unwanted details' is a " +
 	"useful preference about this person; 'the conversation was about a hobby' is only a topic " +
 	"and is not a fact about them. Skip passing moods, today's location, and isolated " +
-	"details with no likely future use. manager_remember refuses on its own to write a " +
-	"fact the memory already holds, so store without searching first; use manager_recall " +
+	"details with no likely future use. telegram_manager_remember refuses on its own to write a " +
+	"fact the memory already holds, so store without searching first; use telegram_manager_recall " +
 	"only for a concrete inspection, revise what this conversation overturned, " +
 	"and forget only what was wrong or never about this person.\n\n" +
 	"If a stored fact bundles several statements into one sentence, split it: write " +
-	"each atomic statement as its own manager_remember fact FIRST, and only once every " +
-	"piece has been stored (or is already known), manager_forget the bundled original — " +
+	"each atomic statement as its own telegram_manager_remember fact FIRST, and only once every " +
+	"piece has been stored (or is already known), telegram_manager_forget the bundled original — " +
 	"in that order, never the reverse. A run cut off between the two steps then leaves " +
 	"the original AND the split pieces both standing, which is redundant but nothing is " +
 	"lost; a run cut off the other way around would lose whatever had not been split out " +
 	"yet. For the same reason, if you ever see a stored fact whose text is a superset of " +
 	"other stored facts that already say the same things atomically (yours or a previous " +
-	"pass's), manager_forget the superset — never the atomic facts it restates.\n\n" +
+	"pass's), telegram_manager_forget the superset — never the atomic facts it restates.\n\n" +
 	"A dated agreement/context fact whose date has already passed (compare it to the " +
 	"[Now: …] line) is not automatically worth keeping: if nothing suggests it will " +
-	"recur, manager_forget it outright — a past appointment has no future use once it " +
+	"recur, telegram_manager_forget it outright — a past appointment has no future use once it " +
 	"has happened. If it is at least the second fact you can find about the same " +
 	"recurring activity, replace them with ONE dateless fact stating the pattern (e.g. " +
 	"'plays a game with the Owner regularly, evenings' rather than a string of specific " +
-	"dates) via manager_revise on the most recent instance, then manager_forget the " +
+	"dates) via telegram_manager_revise on the most recent instance, then telegram_manager_forget the " +
 	"older dated instances it now replaces.\n\n" +
-	"You also have manager_link and manager_unlink, for connecting this person to a " +
+	"You also have telegram_manager_link and telegram_manager_unlink, for connecting this person to a " +
 	"TOPIC — a hobby, a show, a recurring activity — as its own entry in the graph, " +
 	"reachable even when a later conversation uses different words. Reach for a topic " +
 	"only once it looks durable (it has come up more than once, or this pass just " +
@@ -90,7 +90,7 @@ export const CONSOLIDATION_INSTRUCTIONS =
 	"something the person actively and repeatedly does, part_of when one topic is a " +
 	"narrower piece of a broader one, related_to for a plain association with no " +
 	"hierarchy, and mentioned_with — used sparingly — for the weakest case, where " +
-	"something merely came up alongside something else. manager_unlink closes a " +
+	"something merely came up alongside something else. telegram_manager_unlink closes a " +
 	"relation that has stopped holding; it does not delete any fact.\n\n" +
 	"The runtime carries a " +
 	"small pass state; after several recall checks without a memory action, stop " +
@@ -115,12 +115,12 @@ function workDirective(ledger: MemoryLedger): string {
 	return (
 		"[Memory pass. Call ONE memory tool now, or " +
 		`${MEMORY_DONE_TOOL_NAME} if the memory already matches the conversation.\n` +
-		"  manager_recall — inspect one concrete unresolved point; do not loop;\n" +
-		"  manager_remember — store something durable this conversation established;\n" +
-		"  manager_revise — replace a fact this conversation overturned (its [fN] id);\n" +
-		"  manager_forget — drop a fact that was wrong or was never about this person;\n" +
-		"  manager_link — connect this person to a durable topic, or one topic to another;\n" +
-		"  manager_unlink — close a topic relation that has stopped holding;\n" +
+		"  telegram_manager_recall — inspect one concrete unresolved point; do not loop;\n" +
+		"  telegram_manager_remember — store something durable this conversation established;\n" +
+		"  telegram_manager_revise — replace a fact this conversation overturned (its [fN] id);\n" +
+		"  telegram_manager_forget — drop a fact that was wrong or was never about this person;\n" +
+		"  telegram_manager_link — connect this person to a durable topic, or one topic to another;\n" +
+		"  telegram_manager_unlink — close a topic relation that has stopped holding;\n" +
 		`  ${MEMORY_DONE_TOOL_NAME} — finish.\n` +
 		"Do not write plain text: it goes nowhere and ends nothing. Nothing here is " +
 		`sent to anybody.${soFar}]`
@@ -180,9 +180,9 @@ function repeatDirective(ledger: MemoryLedger): string {
 /** The directive after several different recalls made no memory progress. */
 function recallLimitDirective(ledger: MemoryLedger): string {
 	return (
-		"[Memory pass — inspection is complete for now. Do not call manager_recall " +
+		"[Memory pass — inspection is complete for now. Do not call telegram_manager_recall " +
 		"again with another wording. Decide from the conversation and the memory block: " +
-		"call manager_remember, manager_revise, manager_forget, or manager_done.\n\n" +
+		"call telegram_manager_remember, telegram_manager_revise, telegram_manager_forget, or telegram_manager_done.\n\n" +
 		`This pass so far:\n${ledger.digest()}]`
 	);
 }

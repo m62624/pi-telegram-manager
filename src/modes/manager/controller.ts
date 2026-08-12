@@ -15,8 +15,8 @@
  *
  * A chat is only handed a turn while it has an unanswered interlocutor message
  * (`unserved`), so the agent never spins on an already-answered chat. On turn end
- * the model's `manager_reply` text is delivered on behalf of the owner (tagged so
- * the bot never mistakes its own send for the owner); `manager_silent` releases
+ * the model's `telegram_manager_reply` text is delivered on behalf of the owner (tagged so
+ * the bot never mistakes its own send for the owner); `telegram_manager_silent` releases
  * the chat to the next in line.
  *
  * Every Pi/grammY specific arrives as a port, so the coordination is unit-testable
@@ -109,10 +109,10 @@ export interface ManagerMediaPolicy {
 export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
-	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
+	"one tool — telegram_manager_reply to answer, or telegram_manager_silent to stay quiet and keep " +
 	"observing. " +
 	"Never write plain text and never write a tool name as text. No draft is held " +
-	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
+	"right now, so telegram_manager_resolve_draft does NOT apply this turn — calling it " +
 	"fails.]";
 
 /**
@@ -136,14 +136,14 @@ export function reviseDirective(draft: string): string {
 		`[HELD-DRAFT TURN. You drafted this reply: «${draft}». Since then new message(s) ` +
 		"landed — from the interlocutor, or the Owner answering themselves — so it was " +
 		"NOT sent yet. Read them above before you decide.\n" +
-		"manager_reply and manager_silent are DISABLED this turn — calling either " +
+		"telegram_manager_reply and telegram_manager_silent are DISABLED this turn — calling either " +
 		"fails and wastes the turn. The ONE tool that ends this turn is " +
-		"manager_resolve_draft (it IS available, whatever you assume about your tool " +
+		"telegram_manager_resolve_draft (it IS available, whatever you assume about your tool " +
 		"list):\n" +
-		'  manager_resolve_draft {"action": "send"} — deliver the draft unchanged;\n' +
-		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		'  telegram_manager_resolve_draft {"action": "send"} — deliver the draft unchanged;\n' +
+		'  telegram_manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
 		"deliver a rewrite that starts from the draft and folds in the new info;\n" +
-		'  manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
+		'  telegram_manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
 		"question, answered it themselves, or the Owner has now answered it (or your " +
 		"draft merely repeats what the Owner said).\n" +
 		"A still-open question must be sent or refined — never dropped just because a " +
@@ -167,14 +167,14 @@ export function proseResolveDirective(draft: string): string {
 		"draft, and this turn decides what happens to it. It is a reply to the active " +
 		"chat — do not re-analyse who it is for or open a fresh decision; this turn is " +
 		"only send / refine / drop.\n" +
-		"manager_reply and manager_silent are DISABLED this turn — calling either fails " +
-		"and wastes the turn. The ONE tool that ends this turn is manager_resolve_draft " +
+		"telegram_manager_reply and telegram_manager_silent are DISABLED this turn — calling either fails " +
+		"and wastes the turn. The ONE tool that ends this turn is telegram_manager_resolve_draft " +
 		"(it IS available, whatever you assume about your tool list):\n" +
-		'  manager_resolve_draft {"action": "send"} — deliver that text as-is (usually ' +
+		'  telegram_manager_resolve_draft {"action": "send"} — deliver that text as-is (usually ' +
 		"the right call);\n" +
-		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		'  telegram_manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
 		"deliver a corrected version of it;\n" +
-		'  manager_resolve_draft {"action": "drop"} — ONLY if it was not meant as a ' +
+		'  telegram_manager_resolve_draft {"action": "drop"} — ONLY if it was not meant as a ' +
 		"message to the interlocutor (e.g. it was just your own reasoning).\n" +
 		"A real question deserves its answer — do not drop it as chatter.]"
 	);
@@ -687,7 +687,7 @@ export class ManagerController {
 	 * Whether the active chat is on a REVISE turn: a reply is held (either drafted
 	 * last turn and held because new interlocutor messages landed, or recovered from a
 	 * plain-text turn) and the model must now resolve it (send/refine/drop). Public so
-	 * the tool matcher can reveal manager_resolve_draft only on these turns (and hide it
+	 * the tool matcher can reveal telegram_manager_resolve_draft only on these turns (and hide it
 	 * everywhere else).
 	 */
 	isReviseTurn(): boolean {
@@ -706,12 +706,12 @@ export class ManagerController {
 	turnDecided(): boolean {
 		if (this.consolidating) {
 			// A pass spans a whole agent run, however many tool calls it takes. Only
-			// manager_done ends it — see `consolidation.ts` for what stops a pass that
+			// telegram_manager_done ends it — see `consolidation.ts` for what stops a pass that
 			// will not say so itself.
 			return this.consolidating.ledger.isFinished();
 		}
 		// Revise turn: the gate ends the turn ONLY when the model resolved the held
-		// draft — a plain manager_reply/manager_silent must not complete it, so a
+		// draft — a plain telegram_manager_reply/telegram_manager_silent must not complete it, so a
 		// ready answer can never be dropped by calling silent on trailing chatter.
 		if (this.isReviseTurn()) {
 			return this.resolve.current().action !== "none";
@@ -919,7 +919,7 @@ export class ManagerController {
 			// chat. The draft is now stale — the owner may have answered the question
 			// themselves — so it must NOT be sent blind: flag the turn dirty and leave
 			// the chat unserved, which is what makes turn end HOLD the draft and give the
-			// model a revise turn (`manager_resolve_draft`: send / refine / drop). Note
+			// model a revise turn (`telegram_manager_resolve_draft`: send / refine / drop). Note
 			// the chat deliberately stays unserved: `triggerTurn` needs it to run that
 			// revise turn, and clearing it here would strand the draft forever.
 			if (this.scheduler.activeChat() === chatId && !this.deps.isIdle()) {
@@ -1138,7 +1138,7 @@ export class ManagerController {
 	async onAgentEnd(finalText?: string): Promise<ManagerTurnLog | null> {
 		// agent_end is not terminal: Pi may retry, compact, or continue the same run
 		// after this event. Keep the memory pass and its tool gate alive until
-		// onAgentSettled, otherwise the continuation would see manager_reply/silent and
+		// onAgentSettled, otherwise the continuation would see telegram_manager_reply/silent and
 		// mistake a background pass for a conversation turn.
 		if (this.consolidating) {
 			return null;
@@ -1152,7 +1152,7 @@ export class ManagerController {
 		let silentReason: string | undefined;
 		let needsReply: boolean | undefined;
 		// A REVISE turn: a held draft is pending, so the resolve-draft tool — not
-		// manager_reply/manager_silent — carries the outcome (the gate guaranteed it
+		// telegram_manager_reply/telegram_manager_silent — carries the outcome (the gate guaranteed it
 		// was called, or an unresolved run falls back to sending the draft as-is).
 		const pending = this.pendingReply.get(active);
 		if (pending) {
@@ -1654,8 +1654,8 @@ export class ManagerController {
 		// and blocked while a draft is held, so prompting for them wastes the turn.
 		await this.deps.triggerAgent(
 			this.pendingReply.has(active)
-				? "A drafted reply is held for review in the active Telegram chat. Resolve it by calling manager_resolve_draft."
-				: "Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
+				? "A drafted reply is held for review in the active Telegram chat. Resolve it by calling telegram_manager_resolve_draft."
+				: "Respond to the latest messages in the active Telegram chat by calling telegram_manager_reply or telegram_manager_silent.",
 		);
 		return true;
 	}
@@ -1668,7 +1668,7 @@ export class ManagerController {
 	 *  - an interlocutor message nobody has answered (`analyzeChat`);
 	 *  - a chat the owner summoned with a wake-word — the one case where the model
 	 *    may answer the owner at all;
-	 *  - a held draft awaiting `manager_resolve_draft`.
+	 *  - a held draft awaiting `telegram_manager_resolve_draft`.
 	 *
 	 * `unserved` already implies this, but only by construction: every path that
 	 * sets it would have to stay correct forever. Checking the transcript makes it
@@ -1983,7 +1983,7 @@ export class ManagerController {
 	 * sample at `turn_end`), so by the time the run stops there are only three things
 	 * it can mean:
 	 *
-	 *  - the model called `manager_done`, or the runtime stopped a pass that would not
+	 *  - the model called `telegram_manager_done`, or the runtime stopped a pass that would not
 	 *    stop itself → finalize;
 	 *  - live conversation work appeared → PARK the pass, ledger and all, and serve the
 	 *    person who is waiting; it resumes from exactly here once idle;

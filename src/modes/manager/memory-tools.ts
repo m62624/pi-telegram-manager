@@ -35,13 +35,13 @@ import { FACT_RELATIONS, type FactRelation } from "./decision";
  * miss on the whole prompt. Fixed here so it cannot drift.
  */
 export const MEMORY_TOOL_NAMES = [
-	"manager_remember",
-	"manager_recall",
-	"manager_revise",
-	"manager_forget",
-	"manager_link",
-	"manager_unlink",
-	"manager_done",
+	"telegram_manager_remember",
+	"telegram_manager_recall",
+	"telegram_manager_revise",
+	"telegram_manager_forget",
+	"telegram_manager_link",
+	"telegram_manager_unlink",
+	"telegram_manager_done",
 ] as const;
 
 /**
@@ -67,7 +67,7 @@ function asTopicRelation(value: unknown): TopicRelation | undefined {
 }
 
 /** Ends a consolidation pass. Nothing else does. */
-export const MEMORY_DONE_TOOL_NAME = "manager_done";
+export const MEMORY_DONE_TOOL_NAME = "telegram_manager_done";
 
 /** Maximum inspection-only recall calls before the pass must make a decision. */
 export const MAX_RECALLS_WITHOUT_PROGRESS = 3;
@@ -142,7 +142,7 @@ export class MemoryLedger {
 		for (const key of Object.keys(this.outcome) as (keyof MemoryOutcome)[]) {
 			this.outcome[key] += step.outcome?.[key] ?? 0;
 		}
-		if (step.tool === "manager_recall") {
+		if (step.tool === "telegram_manager_recall") {
 			this.recallsSinceProgress += 1;
 		} else {
 			this.recallsSinceProgress = 0;
@@ -211,11 +211,11 @@ export class MemoryLedger {
 		if (this.entries.length === 0) {
 			return (
 				"[Memory pass state: no memory tool has run in this pass yet. " +
-				"Inspect only what is needed, make useful changes, or call manager_done.]"
+				"Inspect only what is needed, make useful changes, or call telegram_manager_done.]"
 			);
 		}
 		const next = this.recallBlocked()
-			? "inspection is complete; choose manager_remember, manager_revise, manager_forget, or manager_done"
+			? "inspection is complete; choose telegram_manager_remember, telegram_manager_revise, telegram_manager_forget, or telegram_manager_done"
 			: "decide whether another concrete inspection or a memory action is needed";
 		return (
 			`[Memory pass state: ${this.recallCountSinceProgress()}/${MAX_RECALLS_WITHOUT_PROGRESS} ` +
@@ -556,9 +556,9 @@ function conflictNote(
 		.join("\n");
 	return (
 		`\nThis is close to what you already remember:\n${lines}\n` +
-		`If one of those is now WRONG, replace it: manager_revise with its id. ` +
+		`If one of those is now WRONG, replace it: telegram_manager_revise with its id. ` +
 		`If both are true, leave them. If the NEW one was the mistake, ` +
-		`manager_forget ${newId}.`
+		`telegram_manager_forget ${newId}.`
 	);
 }
 
@@ -580,17 +580,17 @@ export function createMemoryTools(
 					"There is no contact memory open for this conversation, so nothing can " +
 					"be stored or looked up. Owner chats deliberately have no personal " +
 					"memory; an unidentified chat has no contact either. Do not retry the " +
-					"memory tool here. Continue with manager_reply or manager_silent.",
+					"memory tool here. Continue with telegram_manager_reply or telegram_manager_silent.",
 			};
 		}
 		return run(memory);
 	};
 
 	const remember = defineTool({
-		name: "manager_remember",
-		label: "Manager Remember",
+		name: "telegram_manager_remember",
+		label: "Telegram Manager Remember",
 		description:
-			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. Do not merge an appointment, a topic, and an opinion from one exchange into one sentence either — 'plans to play a game with the Owner at 21:30 tonight; talked about a movie and two other games' is at least three separate facts, not one, and the dated appointment itself is usually not worth keeping at all once it has happened (nothing about a passed one-off event helps a later conversation). Pass every atomic fact from one exchange as its own entry in the SAME facts array rather than calling this tool once per fact or writing one blended sentence. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. The memory itself checks each fact against what it already holds about this person, and only stops a write when a stored fact genuinely says nearly the same thing; a merely related fact is stored without asking. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use manager_revise with its [fN] id. If both statements are true, retry manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
+			"Save a durable or meaningfully useful personal fact to your private long-term memory about the person you are talking to. One fact = one statement: split 'lives in Berlin and prefers voice notes' into two. Do not merge an appointment, a topic, and an opinion from one exchange into one sentence either — 'plans to play a game with the Owner at 21:30 tonight; talked about a movie and two other games' is at least three separate facts, not one, and the dated appointment itself is usually not worth keeping at all once it has happened (nothing about a passed one-off event helps a later conversation). Pass every atomic fact from one exchange as its own entry in the SAME facts array rather than calling this tool once per fact or writing one blended sentence. For EACH fact set subject — 'interlocutor' (about them), 'owner' (about your operator) or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored. Memory follows the contact chat: an Owner-summoned turn inside a contact chat still uses that contact's memory. An explicit Owner instruction in that chat may authorize a fact about the contact; casual Owner remarks do not. The Owner's own direct chat has no contact memory, so do not call this tool there; never file Owner facts under a contact. The memory itself checks each fact against what it already holds about this person, and only stops a write when a stored fact genuinely says nearly the same thing; a merely related fact is stored without asking. Read the result as a decision: 'Stored [fN]' means committed; 'Already remembered [fN]' means exact duplicate and no write; 'Not stored yet' means no write and requires review. If the new fact replaces a listed fact, use telegram_manager_revise with its [fN] id. If both statements are true, retry telegram_manager_remember with confirm_similar=true to write the new fact. Never use confirm_similar to override a real contradiction. A personal interest, future intention, recurring activity or spoiler/style preference is worth remembering even when the subject is time-bound — for example, 'wants to pursue a hobby without unwanted details'. Do not save the topic of a conversation by itself, a passing mood, today's location, or a one-off detail with no future use.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -626,7 +626,7 @@ export function createMemoryTools(
 				confirm_similar: {
 					type: "boolean",
 					description:
-						"Only after manager_remember answered 'Not stored yet' and you decided both statements are true; allows this new fact to be committed alongside the one it is close to.",
+						"Only after telegram_manager_remember answered 'Not stored yet' and you decided both statements are true; allows this new fact to be committed alongside the one it is close to.",
 				},
 			},
 			required: ["facts"],
@@ -664,7 +664,7 @@ export function createMemoryTools(
 				);
 			if (keep.length === 0) {
 				context.ledger().record({
-					tool: "manager_remember",
+					tool: "telegram_manager_remember",
 					argsKey: "none",
 					summary: "stored 0 facts (no interlocutor facts)",
 				});
@@ -686,7 +686,7 @@ export function createMemoryTools(
 						// The subject entity, and also what scopes the similarity check: the
 						// engine compares a new fact against this entity's live facts, not
 						// against everything in the file. A topic entity files the fact as its
-						// own graph node instead of under the contact — see manager_link.
+						// own graph node instead of under the contact — see telegram_manager_link.
 						entity: fact.topic ?? context.contactName(),
 						tags: ["fact", fact.kind],
 						validFrom: context.now(),
@@ -705,7 +705,7 @@ export function createMemoryTools(
 							`Not stored yet — first review these close facts:\n${verdict.similar
 								.map((similar) => `  [f${similar.id}] ${similar.text}`)
 								.join("\n")}\n` +
-								"Decision required: if the new statement replaces one, use manager_revise with that [fN] id; if both are true, retry manager_remember with confirm_similar=true. No new fact was written in this call.",
+								"Decision required: if the new statement replaces one, use telegram_manager_revise with that [fN] id; if both are true, retry telegram_manager_remember with confirm_similar=true. No new fact was written in this call.",
 						);
 						continue;
 					}
@@ -736,7 +736,7 @@ export function createMemoryTools(
 			});
 			if (typeof result !== "string") return fail(result.error);
 			context.ledger().record({
-				tool: "manager_remember",
+				tool: "telegram_manager_remember",
 				argsKey: keep.map((fact) => fact.text).join("|"),
 				summary: `stored ${stored} fact(s); ${blocked} held for review; ${duplicates} duplicate(s) skipped`,
 				outcome: { stored, blocked, duplicates },
@@ -746,10 +746,10 @@ export function createMemoryTools(
 	});
 
 	const recall = defineTool({
-		name: "manager_recall",
-		label: "Manager Recall",
+		name: "telegram_manager_recall",
+		label: "Telegram Manager Recall",
 		description:
-			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: manager_remember refuses on its own to write a fact the memory already holds. Always give a query in words — that is what the search ranks on. Tags only NARROW that search and every one you add must be on the fact, so 'fact'+'preference' cannot return an identity or a context fact and an empty answer means only that nothing carries all of them: prefer no tags, or one. The memory also remembers WHEN. 'after'/'before' (YYYY-MM-DD) ask a different question from a query: they list everything recorded in that period, newest first, which is how to answer 'what did we discuss last month' about a conversation the transcript no longer holds — so use words OR a period, not both. 'as_of' is neither: it rewinds the memory to what it believed on that day, and combines with a query normally. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which manager_revise and manager_forget take.",
+			"Search your own long-term memory about this person for one concrete unresolved point. Use it to inspect what a conversation may have made obsolete or to answer a question from memory rather than guessing. Do NOT use it to check before writing: telegram_manager_remember refuses on its own to write a fact the memory already holds. Always give a query in words — that is what the search ranks on. Tags only NARROW that search and every one you add must be on the fact, so 'fact'+'preference' cannot return an identity or a context fact and an empty answer means only that nothing carries all of them: prefer no tags, or one. The memory also remembers WHEN. 'after'/'before' (YYYY-MM-DD) ask a different question from a query: they list everything recorded in that period, newest first, which is how to answer 'what did we discuss last month' about a conversation the transcript no longer holds — so use words OR a period, not both. 'as_of' is neither: it rewinds the memory to what it believed on that day, and combines with a query normally. Do not repeat recall with rephrased queries when the answer is already available. Returns a ranked block; each line starts with the fact's id in [fN], which telegram_manager_revise and telegram_manager_forget take.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -797,7 +797,7 @@ export function createMemoryTools(
 				return fail(
 					"Recall is paused for this memory pass: several inspections produced no " +
 						"memory action. Do not search again with a rephrased query. Choose " +
-						"manager_remember, manager_revise, manager_forget, or manager_done.",
+						"telegram_manager_remember, telegram_manager_revise, telegram_manager_forget, or telegram_manager_done.",
 				);
 			}
 			const query = params.query?.trim() || undefined;
@@ -839,7 +839,7 @@ export function createMemoryTools(
 			);
 			if ("error" in result) return fail(result.error);
 			context.ledger().record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				// The window is part of the call: two searches for the same words over
 				// different periods are different questions, and a repeat detector that
 				// could not tell them apart would call the second one a loop.
@@ -873,8 +873,8 @@ export function createMemoryTools(
 	});
 
 	const revise = defineTool({
-		name: "manager_revise",
-		label: "Manager Revise",
+		name: "telegram_manager_revise",
+		label: "Telegram Manager Revise",
 		description:
 			"Replace a fact that has stopped being true with what is true now — they changed job, moved, cancelled the plan. Give the id from its [fN] tag and the corrected statement. Write the statement alone: the '(2026-08; active)' after a recalled line and the '#tags' at its end are how the memory displays a fact, not part of it, and copying them in stores them as text. One fact = one statement — do not merge several updates into one line; revise them one at a time, and drop what is no longer true instead of carrying it along. The old version is closed rather than erased, so the memory still knows what it used to believe and when. If the recalled line reads '<Topic>: …' instead of the person's name, the fact is filed under that topic — pass the same name as topic here, or the correction moves back onto the person. Prefer this over forget whenever there is a successor: forget is for a fact that was simply wrong.",
 		parameters: {
@@ -911,8 +911,9 @@ export function createMemoryTools(
 				? stripRendering(params.text, topic ?? context.contactName())
 				: "";
 			if (!Number.isFinite(target))
-				return fail("manager_revise needs a fact id.");
-			if (!text) return fail("manager_revise needs the corrected text.");
+				return fail("telegram_manager_revise needs a fact id.");
+			if (!text)
+				return fail("telegram_manager_revise needs the corrected text.");
 			const kind = asKind(params.kind) ?? "context";
 			const result = await withMemory(async (memory) => {
 				const before = await memory.get(target as number);
@@ -928,11 +929,11 @@ export function createMemoryTools(
 			if ("error" in result) return fail(result.error);
 			if (result.missing) {
 				return fail(
-					`There is no fact [f${target}] to revise. Run manager_recall to see what ids exist.`,
+					`There is no fact [f${target}] to revise. Run telegram_manager_recall to see what ids exist.`,
 				);
 			}
 			context.ledger().record({
-				tool: "manager_revise",
+				tool: "telegram_manager_revise",
 				argsKey: `${target}#${text}`,
 				summary: `revised [f${target}] "${brief(result.before, 40)}" → "${brief(text, 40)}"`,
 				outcome: { revised: 1 },
@@ -944,10 +945,10 @@ export function createMemoryTools(
 	});
 
 	const forget = defineTool({
-		name: "manager_forget",
-		label: "Manager Forget",
+		name: "telegram_manager_forget",
+		label: "Telegram Manager Forget",
 		description:
-			"Drop a fact you should not be carrying: it was wrong, it was never about this person, or it is stale with no successor. Give the id from its [fN] tag. If there IS a successor — the thing changed rather than being false — use manager_revise instead, so the memory keeps what it used to believe.",
+			"Drop a fact you should not be carrying: it was wrong, it was never about this person, or it is stale with no successor. Give the id from its [fN] tag. If there IS a successor — the thing changed rather than being false — use telegram_manager_revise instead, so the memory keeps what it used to believe.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -966,7 +967,7 @@ export function createMemoryTools(
 		async execute(_id, params: { id?: number; reason?: string }) {
 			const target = params.id;
 			if (!Number.isFinite(target))
-				return fail("manager_forget needs a fact id.");
+				return fail("telegram_manager_forget needs a fact id.");
 			const result = await withMemory(async (memory) => {
 				const before = await memory.get(target as number);
 				if (!before) return { gone: true as const };
@@ -976,12 +977,12 @@ export function createMemoryTools(
 			if ("error" in result) return fail(result.error);
 			if (result.gone) {
 				return fail(
-					`There is no fact [f${target}] to forget. Run manager_recall to see what ids exist.`,
+					`There is no fact [f${target}] to forget. Run telegram_manager_recall to see what ids exist.`,
 				);
 			}
 			const reason = params.reason?.trim();
 			context.ledger().record({
-				tool: "manager_forget",
+				tool: "telegram_manager_forget",
 				argsKey: String(target),
 				summary: `forgot [f${target}] "${brief(result.text, 40)}"${
 					reason ? ` — ${brief(reason, 40)}` : ""
@@ -993,8 +994,8 @@ export function createMemoryTools(
 	});
 
 	const link = defineTool({
-		name: "manager_link",
-		label: "Manager Link",
+		name: "telegram_manager_link",
+		label: "Telegram Manager Link",
 		description:
 			"Connect this person to a durable TOPIC — a hobby, a show, a recurring activity — as its own entry in your memory's graph, or connect one topic to another. Reserve this for something that has come up more than once or that you just generalized into a durable fact; never for a single passing mention. dst is the topic name — reuse the exact spelling of an existing linked topic when there is one (the memory block shows any 'links:' line). src defaults to this person; pass another topic's name there instead to chain topic to topic. provenance, when given, is the [fN] id of the fact that justifies the edge.",
 		parameters: {
@@ -1031,7 +1032,10 @@ export function createMemoryTools(
 		) {
 			const dst = params.dst?.trim();
 			const relation = asTopicRelation(params.relation);
-			if (!dst) return fail("manager_link needs dst, the topic to connect to.");
+			if (!dst)
+				return fail(
+					"telegram_manager_link needs dst, the topic to connect to.",
+				);
 			if (!relation)
 				return fail(`relation must be one of: ${TOPIC_RELATIONS.join(", ")}.`);
 			const src = params.src?.trim() || context.contactName();
@@ -1044,7 +1048,7 @@ export function createMemoryTools(
 			if (result && typeof result === "object" && "error" in result)
 				return fail(result.error);
 			context.ledger().record({
-				tool: "manager_link",
+				tool: "telegram_manager_link",
 				argsKey: `${src}#${relation}#${dst}`,
 				summary: `linked ${src} —${relation}→ ${dst}`,
 			});
@@ -1053,10 +1057,10 @@ export function createMemoryTools(
 	});
 
 	const unlink = defineTool({
-		name: "manager_unlink",
-		label: "Manager Unlink",
+		name: "telegram_manager_unlink",
+		label: "Telegram Manager Unlink",
 		description:
-			"Close a topic relation that has stopped holding — the interest faded, the connection was wrong. This does not delete any fact, only the edge; a past recall of what was connected then still works. Same src/dst/relation as manager_link.",
+			"Close a topic relation that has stopped holding — the interest faded, the connection was wrong. This does not delete any fact, only the edge; a past recall of what was connected then still works. Same src/dst/relation as telegram_manager_link.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -1081,7 +1085,9 @@ export function createMemoryTools(
 			const dst = params.dst?.trim();
 			const relation = asTopicRelation(params.relation);
 			if (!dst)
-				return fail("manager_unlink needs dst, the topic to disconnect.");
+				return fail(
+					"telegram_manager_unlink needs dst, the topic to disconnect.",
+				);
 			if (!relation)
 				return fail(`relation must be one of: ${TOPIC_RELATIONS.join(", ")}.`);
 			const src = params.src?.trim() || context.contactName();
@@ -1090,7 +1096,7 @@ export function createMemoryTools(
 			);
 			if (typeof result !== "boolean") return fail(result.error);
 			context.ledger().record({
-				tool: "manager_unlink",
+				tool: "telegram_manager_unlink",
 				argsKey: `${src}#${relation}#${dst}`,
 				summary: result
 					? `unlinked ${src} —${relation}→ ${dst}`
@@ -1106,9 +1112,9 @@ export function createMemoryTools(
 
 	const done = defineTool({
 		name: MEMORY_DONE_TOOL_NAME,
-		label: "Manager Done",
+		label: "Telegram Manager Done",
 		description:
-			"End the memory pass. Call this when the memory matches the conversation — everything durable is stored, nothing stale is left standing — or when there was nothing worth changing at all. The returned completion status is authoritative and is calculated from completed memory operations; do not claim a fact was stored when manager_remember said 'Not stored yet' or 'Already remembered'. This is the ONLY way a memory pass ends; nothing is sent to anyone either way.",
+			"End the memory pass. Call this when the memory matches the conversation — everything durable is stored, nothing stale is left standing — or when there was nothing worth changing at all. The returned completion status is authoritative and is calculated from completed memory operations; do not claim a fact was stored when telegram_manager_remember said 'Not stored yet' or 'Already remembered'. This is the ONLY way a memory pass ends; nothing is sent to anyone either way.",
 		parameters: {
 			type: "object",
 			properties: {},

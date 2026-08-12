@@ -107,7 +107,7 @@ export const MEMORY_TAGS = [
  *    still through a vector), and the model is told to revise or confirm against an
  *    episode it should never be editing;
  *  - a fact the memory really does already hold is no longer seen at all, because the
- *    32 most recent entries under that entity are messages — so `manager_remember`
+ *    32 most recent entries under that entity are messages — so `telegram_manager_remember`
  *    stops catching duplicates, which is the whole reason the guard exists.
  *
  * A constant rather than a name derived from the contact: it is the same subject for
@@ -307,7 +307,7 @@ export interface ContactMemory {
 	 * The original use is {@link MEMORY_EPISODE_ENTITY}: a recall anchored on the
 	 * contact walks their edges, so the link is what keeps their messages reachable
 	 * from their name once the episodes stopped being filed under it. The topic graph
-	 * (`manager_link`) is the second: `provenance`, when given, is the fact id the edge
+	 * (`telegram_manager_link`) is the second: `provenance`, when given, is the fact id the edge
 	 * follows from — the answer to "why does the memory think this edge exists", surfaced
 	 * back by a graph recall.
 	 */

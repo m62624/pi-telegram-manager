@@ -130,7 +130,7 @@ export function memoryBlock(rendered: string, contactName: string): string {
  * reply but the working material of the pass itself.
  *
  * It says what the reply-turn wording must not: the ids are actionable. `[f3]` in the
- * block is the `3` that `manager_forget` and `manager_revise` take, and a model that
+ * block is the `3` that `telegram_manager_forget` and `telegram_manager_revise` take, and a model that
  * is not told so will describe what it wants to change instead of changing it.
  */
 export function consolidationMemoryBlock(rendered: string): string {
@@ -140,11 +140,11 @@ export function consolidationMemoryBlock(rendered: string): string {
 	}
 	return (
 		`What you currently remember about this person:\n\n${body}\n\n` +
-		"The number in each [fN] tag is that fact's id: pass it to manager_revise to " +
-		"replace it, or manager_forget to drop it. Each line is FORMATTED for you: the " +
+		"The number in each [fN] tag is that fact's id: pass it to telegram_manager_revise to " +
+		"replace it, or telegram_manager_forget to drop it. Each line is FORMATTED for you: the " +
 		"fact itself is the sentence, while `(2026-08; active)` is when it has held and " +
 		"`#tags` are how it is filed — never copy those into a fact you write. Use " +
-		"manager_recall only for a concrete unresolved point; manager_remember refuses " +
+		"telegram_manager_recall only for a concrete unresolved point; telegram_manager_remember refuses " +
 		"on its own to write a fact the memory already holds."
 	);
 }

@@ -19,10 +19,10 @@ const groupMap = (obj: Record<string, string[]>) =>
 	new Map(Object.entries(obj).map(([g, names]) => [g, new Set(names)]));
 
 describe("visibleToolNames", () => {
-	const all = ["read", "write", "telegram_message", "manager_reply"];
+	const all = ["read", "write", "telegram_message", "telegram_manager_reply"];
 	const groups = groupMap({
 		connect: ["telegram_message"],
-		manager: ["manager_reply"],
+		manager: ["telegram_manager_reply"],
 	});
 
 	it("hides every group's tools when nothing is active", () => {
@@ -38,7 +38,7 @@ describe("visibleToolNames", () => {
 		expect(visibleToolNames(all, groups, new Set(["manager"]))).toEqual([
 			"read",
 			"write",
-			"manager_reply",
+			"telegram_manager_reply",
 		]);
 	});
 
@@ -47,10 +47,10 @@ describe("visibleToolNames", () => {
 		// must work in every mode. Hiding by group alone let the INACTIVE group win —
 		// in personal mode the manager group hid a tool connect had just claimed, and
 		// the model reported it "not registered in this session".
-		const shared = ["read", "telegram_bot_about", "manager_reply"];
+		const shared = ["read", "telegram_bot_about", "telegram_manager_reply"];
 		const bothGroups = groupMap({
 			connect: ["telegram_bot_about"],
-			manager: ["telegram_bot_about", "manager_reply"],
+			manager: ["telegram_bot_about", "telegram_manager_reply"],
 		});
 
 		expect(visibleToolNames(shared, bothGroups, new Set(["connect"]))).toEqual([
@@ -89,20 +89,20 @@ describe("createToolVisibility", () => {
 	}
 
 	it("hides all gated groups on first refresh", () => {
-		const api = fakeApi(["read", "telegram_message", "manager_reply"]);
+		const api = fakeApi(["read", "telegram_message", "telegram_manager_reply"]);
 		const visibility = createToolVisibility(api, {
 			connect: ["telegram_message"],
-			manager: ["manager_reply"],
+			manager: ["telegram_manager_reply"],
 		});
 		visibility.refresh();
 		expect(api.active).toEqual(["read"]);
 	});
 
 	it("reveals only the active group and never the other mode's tools", () => {
-		const api = fakeApi(["read", "telegram_message", "manager_reply"]);
+		const api = fakeApi(["read", "telegram_message", "telegram_manager_reply"]);
 		const visibility = createToolVisibility(api, {
 			connect: ["telegram_message"],
-			manager: ["manager_reply"],
+			manager: ["telegram_manager_reply"],
 		});
 
 		visibility.setActive("connect", true);
@@ -112,7 +112,7 @@ describe("createToolVisibility", () => {
 
 		visibility.setActive("connect", false);
 		visibility.setActive("manager", true);
-		expect(api.active).toEqual(["read", "manager_reply"]);
+		expect(api.active).toEqual(["read", "telegram_manager_reply"]);
 	});
 
 	it("exclusive manager collapses to only its allowlist (telegram-sandbox)", () => {
@@ -122,19 +122,22 @@ describe("createToolVisibility", () => {
 			"bash",
 			"ask_user",
 			"telegram_message",
-			"manager_reply",
-			"manager_silent",
+			"telegram_manager_reply",
+			"telegram_manager_silent",
 		]);
 		const visibility = createToolVisibility(api, {
 			connect: ["telegram_message"],
-			manager: ["manager_reply", "manager_silent"],
+			manager: ["telegram_manager_reply", "telegram_manager_silent"],
 		});
 		visibility.setExclusive(
 			"manager",
-			createToolMatcher(["manager_reply", "manager_silent"]),
+			createToolMatcher(["telegram_manager_reply", "telegram_manager_silent"]),
 		);
 		visibility.setActive("manager", true);
-		expect(api.active).toEqual(["manager_reply", "manager_silent"]);
+		expect(api.active).toEqual([
+			"telegram_manager_reply",
+			"telegram_manager_silent",
+		]);
 	});
 
 	it("manager allowedTools regex re-enables specific tools only", () => {
@@ -142,18 +145,25 @@ describe("createToolVisibility", () => {
 			"read",
 			"bash",
 			"grep",
-			"manager_reply",
-			"manager_silent",
+			"telegram_manager_reply",
+			"telegram_manager_silent",
 		]);
 		const visibility = createToolVisibility(api, {
-			manager: ["manager_reply", "manager_silent"],
+			manager: ["telegram_manager_reply", "telegram_manager_silent"],
 		});
 		visibility.setExclusive(
 			"manager",
-			createToolMatcher(["manager_reply", "manager_silent"], ["^grep$"]),
+			createToolMatcher(
+				["telegram_manager_reply", "telegram_manager_silent"],
+				["^grep$"],
+			),
 		);
 		visibility.setActive("manager", true);
-		expect(api.active).toEqual(["grep", "manager_reply", "manager_silent"]);
+		expect(api.active).toEqual([
+			"grep",
+			"telegram_manager_reply",
+			"telegram_manager_silent",
+		]);
 	});
 
 	// The owner's rule: telegram_attach is the personal side's tool. It exists while
@@ -162,12 +172,15 @@ describe("createToolVisibility", () => {
 	// to push files at anyone. In mixed both groups are active at once, so this is
 	// the only place the rule is actually decided.
 	it("hides telegram_attach whenever the manager holds the session (mixed)", () => {
-		const api = fakeApi(["read", "telegram_attach", "manager_reply"]);
+		const api = fakeApi(["read", "telegram_attach", "telegram_manager_reply"]);
 		const visibility = createToolVisibility(api, {
 			connect: [...TELEGRAM_TOOL_NAMES],
-			manager: ["manager_reply"],
+			manager: ["telegram_manager_reply"],
 		});
-		visibility.setExclusive("manager", createToolMatcher(["manager_reply"]));
+		visibility.setExclusive(
+			"manager",
+			createToolMatcher(["telegram_manager_reply"]),
+		);
 		visibility.setActive("connect", true);
 
 		for (const polarity of ["coding", "telegram"] as const) {
@@ -179,15 +192,18 @@ describe("createToolVisibility", () => {
 	});
 
 	it("clearing exclusive returns to additive visibility", () => {
-		const api = fakeApi(["read", "manager_reply"]);
+		const api = fakeApi(["read", "telegram_manager_reply"]);
 		const visibility = createToolVisibility(api, {
-			manager: ["manager_reply"],
+			manager: ["telegram_manager_reply"],
 		});
-		visibility.setExclusive("manager", createToolMatcher(["manager_reply"]));
+		visibility.setExclusive(
+			"manager",
+			createToolMatcher(["telegram_manager_reply"]),
+		);
 		visibility.setActive("manager", true);
-		expect(api.active).toEqual(["manager_reply"]);
+		expect(api.active).toEqual(["telegram_manager_reply"]);
 		visibility.setExclusive("manager", null);
-		expect(api.active).toEqual(["read", "manager_reply"]);
+		expect(api.active).toEqual(["read", "telegram_manager_reply"]);
 	});
 });
 
@@ -195,8 +211,8 @@ describe("the real group wiring (index.ts)", () => {
 	// Exactly what index.ts registers, so the sandbox is tested as it actually runs.
 	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
 	const MANAGER_GROUP = [
-		"manager_reply",
-		"manager_silent",
+		"telegram_manager_reply",
+		"telegram_manager_silent",
 		...MEMORY_TOOL_NAMES,
 		MANAGER_RESOLVE_TOOL_NAME,
 		...ABOUT_TOOL_NAMES,
@@ -208,8 +224,8 @@ describe("the real group wiring (index.ts)", () => {
 		"ask_user",
 		...TELEGRAM_TOOL_NAMES,
 		...ABOUT_TOOL_NAMES,
-		"manager_reply",
-		"manager_silent",
+		"telegram_manager_reply",
+		"telegram_manager_silent",
 		...MEMORY_TOOL_NAMES,
 		MANAGER_RESOLVE_TOOL_NAME,
 	];
@@ -243,7 +259,7 @@ describe("the real group wiring (index.ts)", () => {
 		// The owner's own coding tools stay available: this is their machine.
 		expect(api.active).toContain("bash");
 		// The other mode's tools do not leak in.
-		expect(api.active).not.toContain("manager_reply");
+		expect(api.active).not.toContain("telegram_manager_reply");
 		for (const memoryTool of MEMORY_TOOL_NAMES) {
 			expect(api.active).not.toContain(memoryTool);
 		}
@@ -297,7 +313,7 @@ describe("the real group wiring (index.ts)", () => {
 
 		// Reading is still automatic here (the memory block is assembled before
 		// sampling, not through a tool call) — but writing is pass-only now, so an
-		// ordinary turn gets none of `MEMORY_TOOL_NAMES` at all, `manager_remember`
+		// ordinary turn gets none of `MEMORY_TOOL_NAMES` at all, `telegram_manager_remember`
 		// included.
 		expect(api.active.sort()).toEqual(
 			[...MANAGER_TOOL_NAMES, ...ABOUT_TOOL_NAMES].sort(),
@@ -306,8 +322,8 @@ describe("the real group wiring (index.ts)", () => {
 		consolidating = true;
 		visibility.refresh();
 		expect(api.active.sort()).toEqual([...MEMORY_TOOL_NAMES].sort());
-		expect(api.active).not.toContain("manager_reply");
-		expect(api.active).not.toContain("manager_silent");
+		expect(api.active).not.toContain("telegram_manager_reply");
+		expect(api.active).not.toContain("telegram_manager_silent");
 
 		consolidationDone = true;
 		visibility.refresh();
@@ -347,8 +363,8 @@ describe("the real group wiring (index.ts)", () => {
  * It is a war, and it was fought in the owner's prompt:
  *
  *   - our list resurrected the 54 `planner_*` tools the planner had just hidden;
- *   - the planner's list resurrected the 8 `manager_*` tools we had just hidden — so in
- *     PERSONAL mode the model was shown `manager_reply`;
+ *   - the planner's list resurrected the 8 `telegram_manager_*` tools we had just hidden — so in
+ *     PERSONAL mode the model was shown `telegram_manager_reply`;
  *   - and the head of the prompt (where the tool schemas live, ahead of every message)
  *     changed between two calls of ONE turn. Measured: prefill 24 302 → 11 653,
  *     cache 24 348 → 0. The backend threw away everything it had read.
@@ -361,8 +377,8 @@ describe("living with another extension that also owns the tool list", () => {
 	const PLANNER = ["planner_status", "planner_reason", "planner_exec"];
 	const CONNECT_GROUP = [...TELEGRAM_TOOL_NAMES, ...ABOUT_TOOL_NAMES];
 	const MANAGER_GROUP = [
-		"manager_reply",
-		"manager_silent",
+		"telegram_manager_reply",
+		"telegram_manager_silent",
 		...ABOUT_TOOL_NAMES,
 	];
 	const ALL = [
@@ -372,8 +388,8 @@ describe("living with another extension that also owns the tool list", () => {
 		...PLANNER,
 		...TELEGRAM_TOOL_NAMES,
 		...ABOUT_TOOL_NAMES,
-		"manager_reply",
-		"manager_silent",
+		"telegram_manager_reply",
+		"telegram_manager_silent",
 	];
 
 	/**
@@ -411,19 +427,19 @@ describe("living with another extension that also owns the tool list", () => {
 		});
 
 	it("never lets a rival resurrect the manager tools into the owner's DM", () => {
-		// The live symptom: `/context` reported the head had `gained manager_reply,
-		// manager_silent, …` in PERSONAL mode. The planner put them back, because it does
+		// The live symptom: `/context` reported the head had `gained telegram_manager_reply,
+		// telegram_manager_silent, …` in PERSONAL mode. The planner put them back, because it does
 		// not know they are ours to hide.
 		const { api, rivalRefresh } = world();
 		const visibility = gate(api);
 		visibility.setActive("connect", true);
 
 		rivalRefresh(); // the planner writes during the request
-		expect(api.active).toContain("manager_reply"); // …and it really does resurrect them
+		expect(api.active).toContain("telegram_manager_reply"); // …and it really does resurrect them
 
 		visibility.refresh(); // we write at turn_end — after it, and last
-		expect(api.active).not.toContain("manager_reply");
-		expect(api.active).not.toContain("manager_silent");
+		expect(api.active).not.toContain("telegram_manager_reply");
+		expect(api.active).not.toContain("telegram_manager_silent");
 		expect(api.active).toContain("telegram_attach");
 		expect(api.active).toContain("bash"); // the owner's own machine, untouched
 	});
@@ -474,7 +490,7 @@ describe("living with another extension that also owns the tool list", () => {
 			for (const forbidden of ["read", "write", "bash", ...PLANNER]) {
 				expect(api.active).not.toContain(forbidden);
 			}
-			expect(api.active).toContain("manager_reply");
+			expect(api.active).toContain("telegram_manager_reply");
 			expect(api.active).toContain("telegram_bot_about");
 		}
 	});

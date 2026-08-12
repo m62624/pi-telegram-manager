@@ -23,7 +23,7 @@ function ledgerWith(steps: number): MemoryLedger {
 	for (let i = 0; i < steps; i += 1) {
 		ledger.startTurn();
 		ledger.record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: `q${i}`,
 			summary: `recalled q${i}`,
 		});
@@ -36,7 +36,7 @@ describe("consolidationVerdict", () => {
 		const ledger = new MemoryLedger();
 		ledger.startTurn();
 		ledger.record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "a",
 			summary: "recalled a",
 		});
@@ -68,7 +68,7 @@ describe("consolidationVerdict", () => {
 		consolidationVerdict(ledger, limits); // one nudge
 		ledger.startTurn();
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "x",
 			summary: "stored x",
 		});
@@ -82,7 +82,7 @@ describe("consolidationVerdict", () => {
 		expect(consolidationVerdict(ledger, limits)).toBe("continue");
 		ledger.startTurn();
 		ledger.record({
-			tool: "manager_recall",
+			tool: "telegram_manager_recall",
 			argsKey: "q4",
 			summary: "one more",
 		});
@@ -93,8 +93,8 @@ describe("consolidationVerdict", () => {
 describe("consolidationDirective", () => {
 	it("leads with the way out, so exploring is not the only option offered", () => {
 		const directive = consolidationDirective(new MemoryLedger(), limits);
-		expect(directive).toContain("manager_done");
-		expect(directive).toContain("manager_recall");
+		expect(directive).toContain("telegram_manager_done");
+		expect(directive).toContain("telegram_manager_recall");
 		expect(directive).toContain("Do not write plain text");
 	});
 
@@ -102,7 +102,7 @@ describe("consolidationDirective", () => {
 		const ledger = new MemoryLedger();
 		ledger.startTurn();
 		ledger.record({
-			tool: "manager_remember",
+			tool: "telegram_manager_remember",
 			argsKey: "berlin",
 			summary: "remembered 1 fact(s): moved to Berlin",
 		});
@@ -132,7 +132,7 @@ describe("consolidationDirective", () => {
 		for (let i = 0; i < 2; i += 1) {
 			ledger.startTurn();
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey: "where they work",
 				summary: "recalled where they work → 0 hit(s)",
 			});
@@ -146,7 +146,7 @@ describe("consolidationDirective", () => {
 		const ledger = new MemoryLedger();
 		for (const argsKey of ["one", "two", "three"]) {
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey,
 				summary: `recalled ${argsKey}`,
 			});
@@ -157,9 +157,9 @@ describe("consolidationDirective", () => {
 			maxNudges: limits.maxNudges,
 		});
 		expect(directive).toContain("inspection is complete");
-		expect(directive).toContain("Do not call manager_recall again");
-		expect(directive).toContain("manager_remember");
-		expect(directive).toContain("manager_done");
+		expect(directive).toContain("Do not call telegram_manager_recall again");
+		expect(directive).toContain("telegram_manager_remember");
+		expect(directive).toContain("telegram_manager_done");
 	});
 
 	it("asks the model to wrap up once the budget is spent", () => {
@@ -185,7 +185,7 @@ describe("consolidationDirective", () => {
 		for (let i = 0; i < 3; i += 1) {
 			ledger.startTurn();
 			ledger.record({
-				tool: "manager_recall",
+				tool: "telegram_manager_recall",
 				argsKey: "same",
 				summary: "same",
 			});

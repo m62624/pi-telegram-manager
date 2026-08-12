@@ -34,7 +34,9 @@ describe("buildManagerFeed", () => {
 			},
 			{
 				thinking: "She asked a direct question, so I answer briefly.",
-				tools: [{ name: "manager_reply", args: '{"text":"Hello there!"}' }],
+				tools: [
+					{ name: "telegram_manager_reply", args: '{"text":"Hello there!"}' },
+				],
 			},
 		);
 		expect(html).toContain("Alice");
@@ -51,7 +53,7 @@ describe("buildManagerFeed", () => {
 		expect(html).toContain("Model thinking");
 		expect(html).toContain("She asked a direct question");
 		// Tool calls are listed.
-		expect(html).toContain("manager_reply");
+		expect(html).toContain("telegram_manager_reply");
 		// The delivered reply is quoted.
 		expect(html).toContain("<blockquote>");
 		expect(html).toContain("Hello there!");
