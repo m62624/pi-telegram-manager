@@ -5,6 +5,7 @@ import {
 	dispatchUpdate,
 	fetchBytesFromUrl,
 	fileBaseUrl,
+	TELEGRAM_STOP_TIMEOUT_MS,
 	TelegramClient,
 } from "../../src/telegram/client";
 import type { TelegramEvent } from "../../src/telegram/updates";
@@ -121,6 +122,25 @@ describe("TelegramClient update de-duplication", () => {
 		await client.bot.handleUpdate({ update_id: 7, message } as Update);
 		await client.bot.handleUpdate({ update_id: 7, message } as Update);
 		expect(events).toHaveLength(2);
+	});
+
+	it("does not let a stuck Telegram request block stop", async () => {
+		vi.useFakeTimers();
+		const client = new TelegramClient({
+			token: "123:ABC",
+			onEvent: () => {},
+		});
+		vi.spyOn(client.bot, "stop").mockImplementation(
+			() => new Promise<void>(() => {}),
+		);
+
+		try {
+			const stopped = client.stop();
+			await vi.advanceTimersByTimeAsync(TELEGRAM_STOP_TIMEOUT_MS);
+			await expect(stopped).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

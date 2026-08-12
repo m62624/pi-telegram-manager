@@ -12,8 +12,16 @@
  * tested; the grammY `Bot` wiring itself is glue.
  */
 import { Bot, InputFile, type PollingOptions, type RawApi } from "grammy";
+import { withTimeout } from "../core/with-timeout";
 import type { UpdateCursor } from "../storage/update-cursor";
 import { classifyUpdate, type TelegramEvent } from "./updates";
+
+/**
+ * grammY confirms the last polling offset during stop(). Telegram can leave
+ * that request pending when the network is unavailable, so teardown must have
+ * a finite boundary and release the local mode lock regardless.
+ */
+export const TELEGRAM_STOP_TIMEOUT_MS = 5_000;
 
 /** A classified event handler; may be async. Thrown errors go to `onError`. */
 export type EventHandler = (event: TelegramEvent) => void | Promise<void>;
@@ -169,6 +177,6 @@ export class TelegramClient {
 
 	/** Stop long polling. */
 	async stop(): Promise<void> {
-		await this.bot.stop();
+		await withTimeout(() => this.bot.stop(), TELEGRAM_STOP_TIMEOUT_MS);
 	}
 }

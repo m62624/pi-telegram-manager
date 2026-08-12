@@ -50,6 +50,10 @@ export const COMMANDS = {
 	stop: "telegram-stop",
 	/** Print the active bridge status. */
 	status: "telegram-status",
+	/** Recover a bridge held by an inaccessible or wedged Pi instance. */
+	recover: "telegram-recover",
+	/** Rebuild every contact memory's vectors after an embedding model change. */
+	memoryReembed: "telegram-memory-reembed",
 } as const;
 
 /**
@@ -86,6 +90,10 @@ export const TELEGRAM_BOT_COMMANDS: { command: string; description: string }[] =
 			command: "resume",
 			description:
 				"Pick which session personal runs in (current / new / resume)",
+		},
+		{
+			command: "memory_reembed",
+			description: "Rebuild memory vectors after an embedder change",
 		},
 		{ command: "stop", description: "Stop the bot entirely" },
 		{ command: "help", description: "Show available commands" },

@@ -129,14 +129,14 @@ describe("stripTelegramTurns", () => {
 	});
 });
 
-/** A manager turn's tool call and its result — what a `manager_*` turn looks like. */
+/** A manager turn's tool call and its result — what a `telegram_manager_*` turn looks like. */
 const managerToolUse = (): Msg => ({
 	role: "assistant",
-	content: [{ type: "toolCall", name: "manager_reply" }],
+	content: [{ type: "toolCall", name: "telegram_manager_reply" }],
 });
 const managerToolResult = (): Msg => ({
 	role: "toolResult",
-	toolName: "manager_reply",
+	toolName: "telegram_manager_reply",
 	content: [{ type: "text", text: "sent" }],
 });
 const codingToolUse = (): Msg => ({

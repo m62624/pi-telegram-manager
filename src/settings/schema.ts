@@ -4,6 +4,17 @@
  * fail parsing (collected as warnings); present-but-wrong-typed keys throw a
  * `TypeError` with the offending path so misconfig is loud but recoverable.
  */
+import {
+	type EmbedderSettings,
+	validateEmbedder,
+} from "../storage/plugmem-config";
+
+/** Validate an embedder block the way plugmem will, and return it unchanged. */
+function validatedEmbedder(embedder: EmbedderSettings): EmbedderSettings {
+	validateEmbedder(embedder);
+	return embedder;
+}
+
 export interface TelegramSettings {
 	botToken?: string;
 	allowedUserId?: number;
@@ -126,7 +137,7 @@ export interface TelegramSettings {
 		catchUpWindowMs: number;
 		/**
 		 * Regex patterns of tool names the model may call in manager mode, on top of
-		 * the built-in `manager_reply`/`manager_silent`. Empty = telegram-sandbox
+		 * the built-in `telegram_manager_reply`/`telegram_manager_silent`. Empty = telegram-sandbox
 		 * (only the messaging tools; no computer access). Anchored full-name match.
 		 */
 		allowedTools: string[];
@@ -159,18 +170,11 @@ export interface TelegramSettings {
 		 */
 		maxCharsPerMessage: number;
 		maxContextChars: number;
-		/** Last-N durable facts kept + injected per contact. Default 20. */
-		factsLimit: number;
 		/**
 		 * Quiet period (ms) after a chat's last activity before the manager may run
 		 * an idle memory-consolidation pass on it. Default 1800000 (30 min).
 		 */
 		factConsolidationQuietMs: number;
-		/**
-		 * Max candidate facts individually verified in the consolidation
-		 * interrogation (caps its per-fact question loop). Default 8.
-		 */
-		verifyLimit: number;
 		/**
 		 * How late a message may arrive and still be treated as live.
 		 *
@@ -272,6 +276,63 @@ export interface TelegramSettings {
 		strictReplyGuard: boolean;
 	};
 	/**
+	 * The manager's long-term memory: one plugmem database per contact, under
+	 * `<extension dir>/memory/`.
+	 *
+	 * There is no size limit in here, and that is the change these settings encode.
+	 * The old `manager.factsLimit` capped how much could be REMEMBERED, so a new fact
+	 * evicted an old one; what is capped now is how much may be SAID — how much of a
+	 * turn's prompt a recall is allowed to spend. The store keeps everything.
+	 */
+	memory: {
+		/**
+		 * Record each inbound message and each finished turn as an episode, alongside
+		 * the durable facts. This is what makes "what did we agree on last month"
+		 * answerable at all: the JSONL transcript is pruned to twice the reading
+		 * window, so without episodes the older conversation is simply gone.
+		 *
+		 * Costs nothing in the prompt (episodes are only ever retrieved by a recall
+		 * that ranks them highly) and microseconds on the write. Default true.
+		 */
+		episodes: boolean;
+		/**
+		 * How many tokens one recall may put into the turn's prompt. Default 512.
+		 *
+		 * This is the successor to `factsLimit` and the only cap on memory that
+		 * survives. It rides in the trailing message, below the transcript, so it is
+		 * charged for itself alone and never re-reads the conversation above it.
+		 */
+		recallTokenBudget: number;
+		/** Max facts one recall may select; `0` uses plugmem's own default. */
+		recallK: number;
+		/**
+		 * How many memory tool calls one idle consolidation pass may make before it is
+		 * told to wrap up. The pass runs only while nothing is waiting and yields
+		 * instantly to a live message, so this bounds a confused model, not a busy one.
+		 * Default 12.
+		 */
+		consolidationMaxSteps: number;
+		/**
+		 * How many times a consolidation pass may be prodded after the model answers
+		 * with no tool call at all, before the pass is abandoned. Default 2.
+		 */
+		consolidationMaxNudges: number;
+		/**
+		 * The single OpenAI-compatible embedder, passed through to plugmem verbatim.
+		 *
+		 * Leave `enabled` false and everything still works: three of plugmem's four
+		 * recall sources — keyword (BM25), entity graph and time — need no model, no API
+		 * key and no network. What an embedder adds is matching by MEANING, so that a
+		 * fact reading "prefers to be called in the evening" answers a question about
+		 * when to reach them, and not only a question containing the word "evening".
+		 *
+		 * `dim` is written INTO each database at creation and cannot be changed on one
+		 * that already holds facts — see SETTINGS.md before changing it. Disabling the
+		 * embedder keeps the URL, model and dimension so it can be enabled again safely.
+		 */
+		embedder: EmbedderSettings;
+	};
+	/**
 	 * FORWARDED messages get their own budget, because they are not what someone
 	 * wrote to you — they are arbitrary text pasted in from elsewhere, delivered as
 	 * one message each. Applies in every mode, to your own forwards and a stranger's
@@ -332,9 +393,7 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		rememberMessages: 20,
 		maxCharsPerMessage: 4000,
 		maxContextChars: 40000,
-		factsLimit: 20,
 		factConsolidationQuietMs: 1_800_000,
-		verifyLimit: 8,
 		liveFreshnessMs: 600_000,
 		reopenAfterMs: 86_400_000,
 		reviseThreshold: 2,
@@ -346,6 +405,16 @@ export const DEFAULT_SETTINGS: TelegramSettings = {
 		labelerRule: "────────────",
 		mentionWords: ["llm", "manager"],
 		instructionFiles: [],
+	},
+	memory: {
+		episodes: true,
+		recallTokenBudget: 512,
+		recallK: 0,
+		consolidationMaxSteps: 12,
+		consolidationMaxNudges: 2,
+		// No embedder by default: keyword, graph and time answer without one, so the
+		// bot works on a machine with no embedding service and no key.
+		embedder: { enabled: false, dim: 0 },
 	},
 	forwards: { maxChars: 2000, maxMessages: 5, groupWindowMs: 3000 },
 	files: { maxBytes: 52_428_800, maxImagesPerTurn: 10 },
@@ -454,9 +523,25 @@ const KNOWN_TOP_LEVEL = new Set([
 	"instructionFiles",
 	"connect",
 	"manager",
+	"memory",
 	"forwards",
 	"files",
 ]);
+
+/**
+ * Keys that used to mean something and no longer do, with what replaced them.
+ *
+ * A retired key is not an unknown key. Silently ignoring it leaves the owner with a
+ * settings file that reads as if it were still tuning something — which is how
+ * somebody spends an afternoon adjusting a number nothing reads. Named here, they get
+ * told once, in the same warnings list as a typo.
+ */
+const RETIRED_MANAGER_KEYS: Record<string, string> = {
+	factsLimit:
+		"memory is no longer capped — set memory.recallTokenBudget to bound how much of it enters a turn",
+	verifyLimit:
+		"the four-step consolidation interrogation is gone — see memory.consolidationMaxSteps",
+};
 
 /**
  * Validate + normalize raw JSON into {@link TelegramSettings}, layering over
@@ -482,6 +567,13 @@ export function normalizeSettings(
 	const connect = asRecord(root.connect, "connect");
 	const manager = asRecord(root.manager, "manager");
 	const media = asRecord(manager.media, "manager.media");
+	for (const [key, replacement] of Object.entries(RETIRED_MANAGER_KEYS)) {
+		if (manager[key] !== undefined) {
+			warnings.push(`Setting "manager.${key}" is retired — ${replacement}`);
+		}
+	}
+	const memory = asRecord(root.memory, "memory");
+	const embedder = asRecord(memory.embedder, "memory.embedder");
 	const forwards = asRecord(root.forwards, "forwards");
 	const files = asRecord(root.files, "files");
 
@@ -622,20 +714,10 @@ export function normalizeSettings(
 				"manager.maxContextChars",
 				d.manager.maxContextChars,
 			),
-			factsLimit: asPositiveInt(
-				manager.factsLimit,
-				"manager.factsLimit",
-				d.manager.factsLimit,
-			),
 			factConsolidationQuietMs: asPositiveInt(
 				manager.factConsolidationQuietMs,
 				"manager.factConsolidationQuietMs",
 				d.manager.factConsolidationQuietMs,
-			),
-			verifyLimit: asPositiveInt(
-				manager.verifyLimit,
-				"manager.verifyLimit",
-				d.manager.verifyLimit,
 			),
 			liveFreshnessMs: asPositiveInt(
 				manager.liveFreshnessMs,
@@ -693,6 +775,55 @@ export function normalizeSettings(
 				"manager.strictReplyGuard",
 				d.manager.strictReplyGuard,
 			),
+		},
+		memory: {
+			episodes: asBoolean(
+				memory.episodes,
+				"memory.episodes",
+				d.memory.episodes,
+			),
+			recallTokenBudget: asPositiveInt(
+				memory.recallTokenBudget,
+				"memory.recallTokenBudget",
+				d.memory.recallTokenBudget,
+			),
+			recallK: asNonNegativeInt(
+				memory.recallK,
+				"memory.recallK",
+				d.memory.recallK,
+			),
+			consolidationMaxSteps: asPositiveInt(
+				memory.consolidationMaxSteps,
+				"memory.consolidationMaxSteps",
+				d.memory.consolidationMaxSteps,
+			),
+			consolidationMaxNudges: asNonNegativeInt(
+				memory.consolidationMaxNudges,
+				"memory.consolidationMaxNudges",
+				d.memory.consolidationMaxNudges,
+			),
+			// Checked here rather than at the first recall: plugmem rejects an incoherent
+			// `[embedder]` when it opens a database, which would be somewhere in the middle
+			// of the first turn taken for a stranger. `validateEmbedder` is a deliberate
+			// copy of its rules — see `storage/plugmem-config.ts`.
+			embedder: validatedEmbedder({
+				enabled: asBoolean(
+					embedder.enabled,
+					"memory.embedder.enabled",
+					d.memory.embedder.enabled,
+				),
+				url: asOptionalString(embedder.url, "memory.embedder.url"),
+				model: asOptionalString(embedder.model, "memory.embedder.model"),
+				apiKeyEnv: asOptionalString(
+					embedder.apiKeyEnv,
+					"memory.embedder.apiKeyEnv",
+				),
+				dim: asNonNegativeInt(
+					embedder.dim,
+					"memory.embedder.dim",
+					d.memory.embedder.dim,
+				),
+			}),
 		},
 		forwards: {
 			maxChars: asNonNegativeInt(

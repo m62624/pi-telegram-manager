@@ -4,14 +4,12 @@ import {
 	createManagerTools,
 	DecisionState,
 	DraftResolutionState,
-	FactState,
 	MANAGER_TOOL_NAMES,
 	resolveDecision,
 } from "../../../src/modes/manager/decision";
 
-function toolMap(sink: DecisionState, facts: FactState = new FactState()) {
-	const tools = createManagerTools(sink, facts);
-	return new Map(tools.map((t) => [t.name, t]));
+function toolMap(sink: DecisionState) {
+	return new Map(createManagerTools(sink).map((t) => [t.name, t]));
 }
 
 describe("DecisionState + resolveDecision", () => {
@@ -76,45 +74,19 @@ describe("DecisionState + resolveDecision", () => {
 });
 
 describe("manager tools", () => {
-	it("exposes the manager tool names incl. memory tools", () => {
+	it("exposes exactly the two tools that can end a turn", () => {
+		// The memory verbs used to be in this list. They live in `memory-tools.ts` now:
+		// a turn still has to end in reply or silence, and remembering is not either.
 		expect(MANAGER_TOOL_NAMES).toEqual([
-			"manager_reply",
-			"manager_silent",
-			"manager_remember",
-			"manager_skip",
+			"telegram_manager_reply",
+			"telegram_manager_silent",
 		]);
 	});
 
-	it("manager_remember records de-duplicated facts tagged with subject/kind", async () => {
-		const facts = new FactState();
-		const tools = toolMap(new DecisionState(), facts);
-		await tools.get("manager_remember")?.execute("t1", {
-			facts: [
-				{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
-				{ text: "  ", subject: "interlocutor" },
-				{ text: "lives in Almaty", subject: "interlocutor" },
-			],
-		});
-		expect(facts.current()).toEqual([
-			{ text: "lives in Almaty", subject: "interlocutor", kind: "identity" },
-		]);
-	});
-
-	it("manager_remember defaults an unknown subject to 'other' (so it is dropped)", async () => {
-		const facts = new FactState();
-		const tools = toolMap(new DecisionState(), facts);
-		await tools.get("manager_remember")?.execute("t1", {
-			facts: [{ text: "the owner ships code", subject: "bogus" }],
-		});
-		expect(facts.current()).toEqual([
-			{ text: "the owner ships code", subject: "other", kind: undefined },
-		]);
-	});
-
-	it("manager_resolve_draft records send / refine / drop", async () => {
+	it("telegram_manager_resolve_draft records send / refine / drop", async () => {
 		const state = new DraftResolutionState();
 		const tool = createDraftResolveTool(state);
-		expect(tool.name).toBe("manager_resolve_draft");
+		expect(tool.name).toBe("telegram_manager_resolve_draft");
 
 		await tool.execute("t1", { action: "send" });
 		expect(state.current()).toEqual({ action: "send" });
@@ -131,7 +103,7 @@ describe("manager tools", () => {
 		});
 	});
 
-	it("manager_resolve_draft 'refine' without text is an error (draft not lost)", async () => {
+	it("telegram_manager_resolve_draft 'refine' without text is an error (draft not lost)", async () => {
 		const state = new DraftResolutionState();
 		const tool = createDraftResolveTool(state);
 		const res = await tool.execute("t1", { action: "refine" });
@@ -139,28 +111,17 @@ describe("manager tools", () => {
 		expect(state.current()).toEqual({ action: "none" });
 	});
 
-	it("manager_resolve_draft treats an unknown action as a safe 'send'", async () => {
+	it("telegram_manager_resolve_draft treats an unknown action as a safe 'send'", async () => {
 		const state = new DraftResolutionState();
 		const tool = createDraftResolveTool(state);
 		await tool.execute("t1", { action: "bogus" });
 		expect(state.current()).toEqual({ action: "send" });
 	});
 
-	it("manager_skip fires the onSkip signal so the runtime can end the turn", async () => {
-		let skipped = false;
-		const tools = new Map(
-			createManagerTools(new DecisionState(), new FactState(), () => {
-				skipped = true;
-			}).map((t) => [t.name, t]),
-		);
-		await tools.get("manager_skip")?.execute("t1", {});
-		expect(skipped).toBe(true);
-	});
-
-	it("manager_reply records the text with its category and self-check", async () => {
+	it("telegram_manager_reply records the text with its category and self-check", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
-		const res = await tools.get("manager_reply")?.execute("t1", {
+		const res = await tools.get("telegram_manager_reply")?.execute("t1", {
 			text: "hello",
 			category: "question",
 			needs_reply: true,
@@ -174,27 +135,29 @@ describe("manager tools", () => {
 		expect(res?.isError).toBeUndefined();
 	});
 
-	it("manager_reply defaults an unknown category to 'question'", async () => {
+	it("telegram_manager_reply defaults an unknown category to 'question'", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
 		await tools
-			.get("manager_reply")
+			.get("telegram_manager_reply")
 			?.execute("t1", { text: "hi", category: "bogus", needs_reply: true });
 		expect(state.current()).toMatchObject({ category: "question" });
 	});
 
-	it("manager_reply rejects empty text and records nothing", async () => {
+	it("telegram_manager_reply rejects empty text and records nothing", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
-		const res = await tools.get("manager_reply")?.execute("t1", { text: "  " });
+		const res = await tools
+			.get("telegram_manager_reply")
+			?.execute("t1", { text: "  " });
 		expect(res?.isError).toBe(true);
 		expect(state.current()).toEqual({ kind: "none" });
 	});
 
-	it("manager_silent records silence with an optional reason", async () => {
+	it("telegram_manager_silent records silence with an optional reason", async () => {
 		const state = new DecisionState();
 		const tools = toolMap(state);
-		await tools.get("manager_silent")?.execute("t1", {
+		await tools.get("telegram_manager_silent")?.execute("t1", {
 			reason: "owner handling",
 			category: "chatter",
 			needs_reply: false,

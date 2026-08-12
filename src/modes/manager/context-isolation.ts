@@ -88,7 +88,7 @@ export function buildIsolatedMessages(
 				record.author === "owner" ? labels.owner : labels.interlocutor;
 			const who = record.senderName ? `${label} (${record.senderName})` : label;
 			// Tag each incoming line with its Telegram message id so the model can
-			// point `manager_reply.reply_to` at the exact message it answers.
+			// point `telegram_manager_reply.reply_to` at the exact message it answers.
 			const tag =
 				record.messageId !== undefined ? `[#${record.messageId}] ` : "";
 			// The speaker is the prefix, and nothing else. Context (what they replied

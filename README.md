@@ -101,7 +101,7 @@ Every branch of this is enforced in **code**. The model is only ever asked the q
 
   ─────────────────────────────────────────────────────────────────────────
   ✓ TURN  →  the model is given ONE chat and must end with ONE tool:
-             manager_reply (answer)  ·  manager_silent (nothing was asked)
+             telegram_manager_reply (answer)  ·  telegram_manager_silent (nothing was asked)
              then that chat keeps a 2:00 fast lane, so a live back-and-forth
              is not made to wait five minutes over again
 ```
@@ -166,8 +166,19 @@ Being addressed **in substance** works too ("what does the bot think?") — but 
 
 - **Strict per-chat isolation.** Each turn the model's context is rebuilt from disk for that one conversation. It never sees another chat.
 - **A last-N window** ([`manager.rememberMessages`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **20**), bounded again by characters ([`manager.maxContextChars`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) / [`manager.maxCharsPerMessage`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)) so one long paste cannot overflow a small local context.
-- **Durable facts per contact** ([`manager.factsLimit`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **20**), keyed by the person's Telegram account (not their name — so two Alexes never merge). They are resurfaced the next time that person writes.
-- **Memory consolidation.** When a chat has been quiet for [`manager.factConsolidationQuietMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **30 min**), the model re-reads it and interrogates itself about what is worth keeping: *who is this person → which facts did they state → is each one actually true and durable* (up to [`manager.verifyLimit`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) facts). It runs only while idle, and a live message **interrupts it immediately** — the pass resumes later from where it stopped.
+- **A memory of its own, per person** — a [plugmem](https://github.com/m62624/plugmem) database for each contact, under `<extension dir>/memory/`, keyed by their Telegram account (not their name, so two Alexes never merge). It holds durable facts *and* episodes: every message that arrives and every turn the bot took, including the ones where it decided to stay quiet and why. There is **no size limit** — the transcript above is pruned to twice the reading window, and this is what still answers "what did we agree last month" afterwards, because the bot can ask its memory for a period by date as well as by words (and for what it *believed* on a given day, which is not the same question).
+- **What the model is shown is ranked, not dumped.** Each turn, the memory is queried with the messages nobody has answered yet, and the result — a compact block bounded by [`memory.recallTokenBudget`](SETTINGS.md#memory-the-managers-long-term-memory) (default **512 tokens**) — rides in the trailing message under the transcript, so it costs its own tokens and never makes the conversation above it be re-read. Anything the transcript still shows is left out of it: the memory answers about what the window cannot.
+- **It works with no embedding model at all.** Three of plugmem's four recall sources — keyword (BM25), the entity graph and time — need no model, no key and no network. Configure [`memory.embedder`](SETTINGS.md#memory-the-managers-long-term-memory) and it also matches by *meaning*; leave it alone and everything else is unchanged.
+- **Changing the embedding model needs one command, not a migration.** Each database records which model's vectors are in it, and plugmem refuses to mix two — so after a `model` or `dim` change, a memory that already has vectors stops answering until `/memory_reembed` (in the chat) or `/telegram-memory-reembed` (in the terminal) rebuilds it in place, keeping revisions and edges. Run it once after turning an embedder ON as well: nothing fails there, but only facts learned after the change can be found by meaning until it has. Changing only the endpoint URL is safe when it serves the same model and dimension; to disable embeddings temporarily, set `enabled: false` while retaining the existing values. See [memory settings](SETTINGS.md#memory-the-managers-long-term-memory).
+- **Writing only happens in the background.** `telegram_manager_remember`, `telegram_manager_revise`, `telegram_manager_forget`, `telegram_manager_link` and `telegram_manager_unlink` are all consolidation-only — a live reply turn only *reads* the memory (the block above is assembled automatically, no tool call needed), so answering somebody is never held up by a write.
+- **Memory consolidation.** When a chat has been quiet for [`manager.factConsolidationQuietMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **30 min**), the model goes back over it with its memory tools in hand — `telegram_manager_recall` to look things up, `telegram_manager_remember`, `telegram_manager_revise` to replace what the conversation overturned, `telegram_manager_forget` to drop what was wrong, `telegram_manager_link`/`telegram_manager_unlink` to connect this person to a durable topic (or one topic to another) in the memory's own graph — and ends with `telegram_manager_done`. It **owns its own memory**: nothing is capped, evicted or expired on its behalf. A `revise` closes a fact rather than erasing it, so what it used to believe stays answerable. One pass covers **one chat**, for as many facts as that conversation holds — it ends when the model calls `telegram_manager_done`, not after a fixed number of writes — and the next queued chat starts on a later tick. It runs only while idle, a live message **interrupts it immediately** (the pass resumes with everything it had already done), and it is bounded by [`memory.consolidationMaxSteps`](SETTINGS.md#memory-the-managers-long-term-memory) so a confused pass cannot go on forever.
+- **One database is open at a time, and it is chosen by code** from the active chat. The memory tools have no argument that could name another; a contact's facts are not filtered out of a shared store, they are in a file that is not open. Every `forget` and `revise` is mirrored to your **log** topic, so a model that manages its own memory stays auditable.
+
+### "Operation aborted" is how a turn ends, not a failure
+
+You will see it in the terminal after **every** manager turn — a reply, a silent turn, a finished memory pass. It is deliberate, and it is the only mechanism available: the agent loop keeps re-sampling the model until something stops the run, and a model that has already answered — and can still see the tools it answered with — calls them again. It did exactly that, every pass, until the run was aborted at `turn_end`. So the manager settles each turn against its own accounting (did a reply reach Telegram; did the pass call `telegram_manager_done`) and aborts once the answer is in.
+
+Nothing is lost to it: replies are delivered before the abort, and every memory tool writes to disk the moment it returns, so a pass cut off at any point keeps what it had already decided. One consolidation pass covers one chat; the next queued chat is picked up by the following tick (5 s), each in its own run and its own abort.
 
 ### Guards against a small model doing something silly
 
@@ -276,6 +287,11 @@ Then open Pi and start a mode.
 | `/telegram-mixed` | Start **mixed** mode — terminal + Telegram in one session |
 | `/telegram-stop` | Stop whichever mode is active |
 | `/telegram-status` | Show the active mode |
+| `/telegram-recover` | Recover a mode held by an inaccessible or stuck Pi session |
+
+`/telegram-recover` shows the foreign process and asks for confirmation before sending
+SIGTERM, escalating to SIGKILL only when needed, then clears only the matching singleton
+record. In a headless TUI use `/telegram-recover --force`.
 
 **In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/resume` (pick / resume which session Personal runs in).
 

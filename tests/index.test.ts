@@ -32,6 +32,7 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			"telegram-mixed",
 			"telegram-stop",
 			"telegram-status",
+			"telegram-recover",
 		]) {
 			expect(commands.has(command)).toBe(true);
 		}
@@ -43,18 +44,19 @@ describe("piTelegramManagerExtension (composition root)", () => {
 			// "what are you?" from the project's own pages instead of improvising.
 			"telegram_bot_about",
 			"telegram_attach",
-			"manager_reply",
-			"manager_silent",
-			"manager_remember",
-			"manager_skip",
-			"manager_identify",
-			// Step 2: the memory pass may UNLEARN, and the tool that does it is a probe like
-			// any other — same turn kind, same gate, so the head of the prompt does not move
-			// mid-pass.
-			"manager_forget",
-			"manager_candidates",
-			"manager_verify",
-			"manager_resolve_draft",
+			"telegram_manager_reply",
+			"telegram_manager_silent",
+			"telegram_manager_remember",
+			"telegram_manager_recall",
+			"telegram_manager_revise",
+			"telegram_manager_forget",
+			"telegram_manager_link",
+			"telegram_manager_unlink",
+			// The memory verbs, in a fixed order: tool schemas are rendered into the head of
+			// the prompt, so the same tools listed differently are a cache miss on the whole
+			// prompt (`pi/tool-visibility.ts`).
+			"telegram_manager_done",
+			"telegram_manager_resolve_draft",
 		]);
 		for (const event of [
 			"session_start",
