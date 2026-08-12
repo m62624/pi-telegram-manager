@@ -3,7 +3,7 @@
  * (manager mode) is active?".
  *
  * The manager runs as a deny-all sandbox: the model may only call its own
- * messaging tools (`manager_reply`/`manager_silent`) plus whatever tool names
+ * messaging tools (`telegram_manager_reply`/`telegram_manager_silent`) plus whatever tool names
  * the user re-enabled through `manager.allowedTools` — an array of regular
  * expressions matched against tool names. Everything else (built-in
  * `read`/`write`/`bash`, `ask_user`, any other extension's tools) is blocked.

@@ -11,6 +11,43 @@ describe("normalizeSettings", () => {
 		expect(normalizeSettings({})).toEqual(DEFAULT_SETTINGS);
 	});
 
+	it("accepts the 0.8 embedder contract and keeps disabled settings intact", () => {
+		const enabled = normalizeSettings({
+			memory: {
+				embedder: {
+					enabled: true,
+					url: "https://api.openai.com/v1/embeddings",
+					model: "text-embedding-3-small",
+					apiKeyEnv: "OPENAI_API_KEY",
+					dim: 1536,
+				},
+			},
+		});
+		expect(enabled.memory.embedder).toEqual({
+			enabled: true,
+			url: "https://api.openai.com/v1/embeddings",
+			model: "text-embedding-3-small",
+			apiKeyEnv: "OPENAI_API_KEY",
+			dim: 1536,
+		});
+
+		const disabled = normalizeSettings({
+			memory: {
+				embedder: {
+					enabled: false,
+					url: "http://localhost:11434/v1/embeddings",
+					model: "nomic-embed-text",
+					dim: 768,
+				},
+			},
+		});
+		expect(disabled.memory.embedder.enabled).toBe(false);
+		expect(disabled.memory.embedder.dim).toBe(768);
+		expect(disabled.memory.embedder.url).toBe(
+			"http://localhost:11434/v1/embeddings",
+		);
+	});
+
 	it("field-merges over defaults, keeping untouched defaults", () => {
 		const s = normalizeSettings({
 			manager: { continueWindowMs: 45_000, rememberMessages: 50 },

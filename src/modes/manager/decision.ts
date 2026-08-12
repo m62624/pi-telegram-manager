@@ -3,21 +3,20 @@
  * `[NONE]` text sentinels.
  *
  * The model must finish a manager turn by calling exactly one of:
- *  - `manager_reply({ text })`  — deliver `text` to the interlocutor (the ONLY
+ *  - `telegram_manager_reply({ text })`  — deliver `text` to the interlocutor (the ONLY
  *    delivery channel; the model's reasoning never reaches Telegram);
- *  - `manager_silent({ reason })` — deliberately say nothing.
+ *  - `telegram_manager_silent({ reason })` — deliberately say nothing.
  *
  * A HELD-DRAFT turn is the exception: reply/silent are hidden and blocked, and
- * `manager_resolve_draft` (send/refine/drop) is the only tool that ends it.
+ * `telegram_manager_resolve_draft` (send/refine/drop) is the only tool that ends it.
  *
  * The tools write into an injected {@link DecisionSink}; the runtime resets the
- * sink each turn and reads it on turn end. Policy: `manager_reply` → send its
- * text; `manager_silent` or no call at all → stay silent (the safe default). No
+ * sink each turn and reads it on turn end. Policy: `telegram_manager_reply` → send its
+ * text; `telegram_manager_silent` or no call at all → stay silent (the safe default). No
  * response-text parsing, so it is deterministic and unit-testable.
  */
 
 import { defineTool, type ToolDefinition } from "../../pi/sdk";
-import { FACT_KINDS, type FactKind } from "../../storage/contact-store";
 
 /**
  * How the model classified the latest interlocutor message before acting. It is
@@ -68,10 +67,8 @@ function asCategory(value: unknown): MessageCategory {
 
 /** Names of the tools defined here — fed to the visibility gate. */
 export const MANAGER_TOOL_NAMES = [
-	"manager_reply",
-	"manager_silent",
-	"manager_remember",
-	"manager_skip",
+	"telegram_manager_reply",
+	"telegram_manager_silent",
 ] as const;
 
 /** A per-turn holder the tools write their decision into. */
@@ -91,54 +88,6 @@ export const FACT_RELATIONS: readonly FactRelation[] = [
 	"owner",
 	"other",
 ];
-
-/** A durable fact captured this turn, tagged with its subject relation and kind. */
-export interface RememberedFact {
-	text: string;
-	subject: FactRelation;
-	kind?: FactKind;
-}
-
-/** A per-turn holder the memory tools write recorded facts into. */
-export interface FactSink {
-	record(facts: RememberedFact[]): void;
-}
-
-/** Coerce an untrusted string into a known relation, defaulting to "other". */
-function asRelation(value: unknown): FactRelation {
-	return FACT_RELATIONS.includes(value as FactRelation)
-		? (value as FactRelation)
-		: "other";
-}
-
-/** Coerce an untrusted string into a known fact kind, or undefined. */
-function asKind(value: unknown): FactKind | undefined {
-	return FACT_KINDS.includes(value as FactKind)
-		? (value as FactKind)
-		: undefined;
-}
-
-/** Collects durable facts recorded this turn via `manager_remember`. */
-export class FactState implements FactSink {
-	private facts: RememberedFact[] = [];
-
-	reset(): void {
-		this.facts = [];
-	}
-
-	record(facts: RememberedFact[]): void {
-		for (const fact of facts) {
-			const text = fact.text.trim();
-			if (!text) continue;
-			if (this.facts.some((existing) => existing.text === text)) continue;
-			this.facts.push({ ...fact, text });
-		}
-	}
-
-	current(): RememberedFact[] {
-		return [...this.facts];
-	}
-}
 
 /** A mutable decision holder: reset each turn, read on turn end. */
 export class DecisionState implements DecisionSink {
@@ -161,7 +110,7 @@ export class DecisionState implements DecisionSink {
 /**
  * Resolve the turn's outcome: reply text to send, or null to stay silent.
  *
- * Safe self-contradiction downgrade: if the model called `manager_reply` yet its
+ * Safe self-contradiction downgrade: if the model called `telegram_manager_reply` yet its
  * OWN self-check says no reply is needed (`needs_reply: false`) and it classified
  * the message as pure `chatter`, honour that judgement and stay silent. This cuts
  * the false-positive case (blurting into banter) without ever swallowing a reply
@@ -198,7 +147,7 @@ export interface DraftResolutionSink {
 }
 
 /** The resolve-draft tool name — revealed only on a revise turn (see the matcher). */
-export const MANAGER_RESOLVE_TOOL_NAME = "manager_resolve_draft";
+export const MANAGER_RESOLVE_TOOL_NAME = "telegram_manager_resolve_draft";
 
 /** A mutable resolve-draft holder: reset each turn, read on turn end. */
 export class DraftResolutionState implements DraftResolutionSink {
@@ -231,17 +180,16 @@ function fail(text: string) {
 }
 
 /**
- * Build the manager tools. `sink` receives the terminal reply/silent decision;
- * `factSink` receives durable facts from `manager_remember`. `onSkip` (optional)
- * fires when `manager_skip` runs, so the runtime can treat it as the terminal
- * action of a consolidation turn (which otherwise records nothing observable).
- * Register each with `pi.registerTool`.
+ * Build the manager's two terminal tools. `sink` receives the reply/silent
+ * decision. Register each with `pi.registerTool`.
+ *
+ * The memory verbs used to live here too. They moved to `memory-tools.ts` when the
+ * store became a database the model can query: they are no longer one tool that
+ * appends to a list, and grouping them with the reply decision made a turn's tool
+ * list read as if remembering were part of answering. It is not — a fact is stored
+ * the moment it is learned, and the turn still has to end in reply or silence.
  */
-export function createManagerTools(
-	sink: DecisionSink,
-	factSink: FactSink,
-	onSkip?: () => void,
-): ToolDefinition[] {
+export function createManagerTools(sink: DecisionSink): ToolDefinition[] {
 	const categoryParam = {
 		type: "string",
 		enum: MESSAGE_CATEGORIES,
@@ -251,14 +199,14 @@ export function createManagerTools(
 	const needsReplyParam = {
 		type: "boolean",
 		description:
-			"Your own check: does this message actually require a reply? Reactions and banter usually do not. Setting false while calling manager_reply contradicts itself and your reply will be discarded — if you are replying, this is true.",
+			"Your own check: does this message actually require a reply? Reactions and banter usually do not. Setting false while calling telegram_manager_reply contradicts itself and your reply will be discarded — if you are replying, this is true.",
 	};
 
 	const managerReply = defineTool({
-		name: "manager_reply",
-		label: "Manager Reply",
+		name: "telegram_manager_reply",
+		label: "Telegram Manager Reply",
 		description:
-			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
+			"Deliver a reply to the current interlocutor. Only the text you pass here is sent; your reasoning is never shown. First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of telegram_manager_reply or telegram_manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and telegram_manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -287,7 +235,7 @@ export function createManagerTools(
 			},
 		) {
 			const text = params.text?.trim();
-			if (!text) return fail("manager_reply requires non-empty text.");
+			if (!text) return fail("telegram_manager_reply requires non-empty text.");
 			sink.record({
 				kind: "reply",
 				text,
@@ -301,10 +249,10 @@ export function createManagerTools(
 	});
 
 	const managerSilent = defineTool({
-		name: "manager_silent",
-		label: "Manager Silent",
+		name: "telegram_manager_silent",
+		label: "Telegram Manager Silent",
 		description:
-			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of manager_reply or manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and manager_resolve_draft ends the turn instead.",
+			"Deliberately send nothing this turn (not addressed to you, the owner is handling it, or there is nothing to add). First classify the message (category) and self-check needs_reply. End your turn by calling exactly one of telegram_manager_reply or telegram_manager_silent — EXCEPT on a held-draft turn (the directive quotes a draft), where both are disabled and telegram_manager_resolve_draft ends the turn instead.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -332,86 +280,7 @@ export function createManagerTools(
 		},
 	});
 
-	const managerRemember = defineTool({
-		name: "manager_remember",
-		label: "Manager Remember",
-		description:
-			"Save durable, useful facts to private long-term memory. For EACH fact set subject — 'interlocutor' (about the person you are chatting with), 'owner' (about your operator), or 'other' — and kind (identity/preference/agreement/context). ONLY 'interlocutor' facts are stored; never file the owner's own details under a contact. Save stable facts (name, city, role, preferences, agreements), not passing chatter/mood/location. On a normal turn you may call this in addition to manager_reply/manager_silent.",
-		parameters: {
-			type: "object",
-			properties: {
-				facts: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							text: {
-								type: "string",
-								description: "One short durable fact.",
-							},
-							subject: {
-								type: "string",
-								enum: FACT_RELATIONS,
-								description:
-									"Who the fact is about: 'interlocutor' (stored), 'owner' or 'other' (dropped).",
-							},
-							kind: {
-								type: "string",
-								enum: FACT_KINDS,
-								description:
-									"identity (who they are) | preference (tastes/style) | agreement (commitments) | context (ongoing situation).",
-							},
-						},
-						required: ["text", "subject"],
-						additionalProperties: false,
-					},
-					description: "Durable facts, each tagged with subject and kind.",
-				},
-			},
-			required: ["facts"],
-			additionalProperties: false,
-		} as never,
-		async execute(
-			_toolCallId,
-			params: {
-				facts?: Array<{ text?: string; subject?: string; kind?: string }>;
-			},
-		) {
-			const raw = Array.isArray(params.facts) ? params.facts : [];
-			const facts: RememberedFact[] = raw
-				.filter((item) => item?.text?.trim())
-				.map((item) => ({
-					text: (item.text as string).trim(),
-					subject: asRelation(item.subject),
-					kind: asKind(item.kind),
-				}));
-			factSink.record(facts);
-			return ok(`Remembered ${facts.length} fact(s).`);
-		},
-	});
-
-	const managerSkip = defineTool({
-		name: "manager_skip",
-		label: "Manager Skip",
-		description:
-			"End a memory-consolidation turn without saving anything (nothing durable is worth remembering).",
-		parameters: {
-			type: "object",
-			properties: {
-				reason: {
-					type: "string",
-					description: "Optional short reason for saving nothing.",
-				},
-			},
-			additionalProperties: false,
-		} as never,
-		async execute() {
-			onSkip?.();
-			return ok("Nothing saved.");
-		},
-	});
-
-	return [managerReply, managerSilent, managerRemember, managerSkip];
+	return [managerReply, managerSilent];
 }
 
 /**
@@ -425,9 +294,9 @@ export function createDraftResolveTool(
 ): ToolDefinition {
 	return defineTool({
 		name: MANAGER_RESOLVE_TOOL_NAME,
-		label: "Manager Resolve Draft",
+		label: "Telegram Manager Resolve Draft",
 		description:
-			"Resolve a reply of yours that is HELD instead of sent — because new messages arrived while you wrote it, or you wrote it as plain text (which never reaches Telegram). Available ONLY on such a turn, where manager_reply and manager_silent are disabled: this tool is the only way to end it. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that starts from the draft and folds in the new info (full final message in `text`), or 'drop' ONLY if the interlocutor retracted the question, answered it themselves, the owner already answered it, or your text was never meant as a message to them. A still-open question must be sent or refined, never dropped because of trailing small talk.",
+			"Resolve a reply of yours that is HELD instead of sent — because new messages arrived while you wrote it, or you wrote it as plain text (which never reaches Telegram). Available ONLY on such a turn, where telegram_manager_reply and telegram_manager_silent are disabled: this tool is the only way to end it. Choose 'send' to deliver the draft unchanged, 'refine' to deliver a rewrite that starts from the draft and folds in the new info (full final message in `text`), or 'drop' ONLY if the interlocutor retracted the question, answered it themselves, the owner already answered it, or your text was never meant as a message to them. A still-open question must be sent or refined, never dropped because of trailing small talk.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -456,7 +325,8 @@ export function createDraftResolveTool(
 		) {
 			if (params.action === "refine") {
 				const text = params.text?.trim();
-				if (!text) return fail("manager_resolve_draft 'refine' requires text.");
+				if (!text)
+					return fail("telegram_manager_resolve_draft 'refine' requires text.");
 				sink.record({ action: "refine", text });
 				return ok("Refined reply queued for delivery.");
 			}

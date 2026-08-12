@@ -10,12 +10,20 @@ const PATH = "/connect-intent.json";
 const intent = (over: Partial<ConnectIntent> = {}): ConnectIntent => ({
 	mode: "connect",
 	cwd: "/project",
+	sourceSessionFile: "/sessions/source.jsonl",
 	armedAt: 1000,
 	...over,
 });
 
 describe("intentApplies", () => {
-	const base = { cwd: "/project", reason: "new", now: 1000, maxAgeMs: 60_000 };
+	const base = {
+		cwd: "/project",
+		reason: "new",
+		previousSessionFile: "/sessions/source.jsonl",
+		sessionFile: undefined,
+		now: 1000,
+		maxAgeMs: 60_000,
+	};
 
 	it("is false without an intent", () => {
 		expect(intentApplies(null, base)).toBe(false);
@@ -25,11 +33,32 @@ describe("intentApplies", () => {
 		expect(intentApplies(intent({ cwd: "/other" }), base)).toBe(false);
 	});
 
-	it("only fires for a switch we caused (new/resume), never a plain launch", () => {
+	it("only fires for a matching session replacement, never a plain launch", () => {
 		expect(intentApplies(intent(), { ...base, reason: "new" })).toBe(true);
 		expect(intentApplies(intent(), { ...base, reason: "resume" })).toBe(true);
 		expect(intentApplies(intent(), { ...base, reason: "startup" })).toBe(false);
 		expect(intentApplies(intent(), { ...base, reason: "reload" })).toBe(false);
+		expect(
+			intentApplies(intent(), { ...base, previousSessionFile: undefined }),
+		).toBe(false);
+		expect(
+			intentApplies(intent(), {
+				...base,
+				previousSessionFile: "/sessions/another.jsonl",
+			}),
+		).toBe(false);
+		expect(
+			intentApplies(intent({ targetSessionFile: "/sessions/target.jsonl" }), {
+				...base,
+				sessionFile: "/sessions/other.jsonl",
+			}),
+		).toBe(false);
+		expect(
+			intentApplies(intent({ targetSessionFile: "/sessions/target.jsonl" }), {
+				...base,
+				sessionFile: "/sessions/target.jsonl",
+			}),
+		).toBe(true);
 	});
 
 	it("ignores a note older than the max age (a crash between arm and switch)", () => {
@@ -57,6 +86,7 @@ describe("createConnectIntentStore", () => {
 		expect(await store.load()).toEqual({
 			mode: "mixed",
 			cwd: "/p",
+			sourceSessionFile: "/sessions/source.jsonl",
 			armedAt: 42,
 		});
 

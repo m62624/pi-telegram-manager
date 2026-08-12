@@ -15,8 +15,8 @@
  *
  * A chat is only handed a turn while it has an unanswered interlocutor message
  * (`unserved`), so the agent never spins on an already-answered chat. On turn end
- * the model's `manager_reply` text is delivered on behalf of the owner (tagged so
- * the bot never mistakes its own send for the owner); `manager_silent` releases
+ * the model's `telegram_manager_reply` text is delivered on behalf of the owner (tagged so
+ * the bot never mistakes its own send for the owner); `telegram_manager_silent` releases
  * the chat to the next in line.
  *
  * Every Pi/grammY specific arrives as a port, so the coordination is unit-testable
@@ -43,21 +43,25 @@ import type {
 	ConsolidationQueue,
 	SentRegistry,
 } from "../../storage/chat-state";
+import type { ChatMessageRecord, ChatStore } from "../../storage/chat-store";
+import { ownWords } from "../../storage/chat-store";
+import type { ContactStore } from "../../storage/contact-store";
 import {
-	type ChatMessageRecord,
-	type ChatStore,
-	ownWords,
-} from "../../storage/chat-store";
-import {
-	type ContactFact,
-	type ContactStore,
-	capFacts,
-	dedupeFacts,
-	type FactKind,
-} from "../../storage/contact-store";
+	type ContactMemory,
+	MEMORY_EPISODE_ENTITY,
+	MEMORY_EPISODE_RELATION,
+	type MemoryWorkspace,
+} from "../../storage/memory";
 import { describeAttachments, isImage } from "../../telegram/media";
 import { extractMessageContext } from "../../telegram/message-context";
 import { extractProfileFromUser } from "../../telegram/profile";
+import {
+	CONSOLIDATION_INSTRUCTIONS,
+	CONSOLIDATION_PROMPT,
+	type ConsolidationLimits,
+	consolidationDirective,
+	consolidationVerdict,
+} from "./consolidation";
 import {
 	boundaryDirective,
 	buildIsolatedMessages,
@@ -65,26 +69,21 @@ import {
 	type IsolatedMessage,
 	windowRecords,
 } from "./context-isolation";
-import { analyzeChat, type ConversationState } from "./conversation-state";
+import { analyzeChat, conversationStateCard } from "./conversation-state";
 import {
 	DecisionState,
 	DraftResolutionState,
-	FactState,
 	type MessageCategory,
 	resolveDecision,
 } from "./decision";
 import { isBotMessage, stripBotMarker } from "./identity";
 import {
-	advance as advanceInterrogation,
-	currentProbe,
-	droppedFacts,
-	finalFacts,
-	type InterrogationState,
-	initInterrogation,
-	isDone,
-	type KnownFact,
-	ProbeState,
-} from "./interrogation";
+	consolidationMemoryBlock,
+	dropVisible,
+	memoryBlock,
+	recallQuery,
+} from "./memory-block";
+import { MemoryLedger, type MemoryToolContext } from "./memory-tools";
 import { matchesMention } from "./mention";
 import { ReplyGate } from "./reply-gate";
 import { ChatScheduler } from "./scheduler";
@@ -110,42 +109,22 @@ export interface ManagerMediaPolicy {
 export const MANAGER_ACTION_TRIGGER =
 	"[Decide now on the latest messages above. First classify the latest message " +
 	"(category) and self-check needs_reply, then end this turn by calling exactly " +
-	"one tool — manager_reply to answer, or manager_silent to stay quiet and keep " +
-	"observing. You may also call manager_remember first to save a durable fact. " +
+	"one tool — telegram_manager_reply to answer, or telegram_manager_silent to stay quiet and keep " +
+	"observing. " +
 	"Never write plain text and never write a tool name as text. No draft is held " +
-	"right now, so manager_resolve_draft does NOT apply this turn — calling it " +
+	"right now, so telegram_manager_resolve_draft does NOT apply this turn — calling it " +
 	"fails.]";
 
 /**
  * Replaces the action trigger once the turn's terminal decision is already
  * recorded. If the agent loop re-samples the model before the turn-end abort
- * lands (a race, or after a non-terminal manager_remember), this tells the model
- * the decision is made so it ends the turn instead of repeating the same tool
- * call against otherwise-identical context.
+ * lands — a race — this tells the model the decision is made so it ends the
+ * turn instead of repeating the same tool call against otherwise-identical
+ * context.
  */
 export const MANAGER_TURN_DONE =
 	"[You have already decided this turn. Do not call any more tools. Reply with a " +
 	"single word to end the turn.]";
-
-/**
- * The same job for a consolidation pass — and it needs its own words, because the one
- * above is written for a turn that ends in a DECISION, and a memory pass does not have
- * one.
- *
- * Reused verbatim, it told a model in the middle of a background memory review that it
- * "had already decided this turn". Reading that, with the reply tools still in its list
- * (a separate bug, now fixed in `tool-gate.ts`) and a transcript ending in somebody's
- * question, the model concluded it was answering that person — "I already replied", it
- * wrote, and then produced a word of prose for a chat it was never talking to. In other
- * passes it went looking for the interrogation step that the standing prompt above still
- * demanded, found none, and called step one again until the run was aborted.
- *
- * A directive that ends a turn has to say what KIND of turn it is ending.
- */
-export const CONSOLIDATION_DONE =
-	"[The memory pass for this contact is finished: every step has been answered and " +
-	"there is nothing left to do. You are not replying to anyone — no tool, no message. " +
-	"Reply with a single word to end the turn.]";
 
 /**
  * Trailing directive when a drafted reply is held back because new messages
@@ -157,14 +136,14 @@ export function reviseDirective(draft: string): string {
 		`[HELD-DRAFT TURN. You drafted this reply: «${draft}». Since then new message(s) ` +
 		"landed — from the interlocutor, or the Owner answering themselves — so it was " +
 		"NOT sent yet. Read them above before you decide.\n" +
-		"manager_reply and manager_silent are DISABLED this turn — calling either " +
+		"telegram_manager_reply and telegram_manager_silent are DISABLED this turn — calling either " +
 		"fails and wastes the turn. The ONE tool that ends this turn is " +
-		"manager_resolve_draft (it IS available, whatever you assume about your tool " +
+		"telegram_manager_resolve_draft (it IS available, whatever you assume about your tool " +
 		"list):\n" +
-		'  manager_resolve_draft {"action": "send"} — deliver the draft unchanged;\n' +
-		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		'  telegram_manager_resolve_draft {"action": "send"} — deliver the draft unchanged;\n' +
+		'  telegram_manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
 		"deliver a rewrite that starts from the draft and folds in the new info;\n" +
-		'  manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
+		'  telegram_manager_resolve_draft {"action": "drop"} — ONLY if they retracted the ' +
 		"question, answered it themselves, or the Owner has now answered it (or your " +
 		"draft merely repeats what the Owner said).\n" +
 		"A still-open question must be sent or refined — never dropped just because a " +
@@ -188,67 +167,18 @@ export function proseResolveDirective(draft: string): string {
 		"draft, and this turn decides what happens to it. It is a reply to the active " +
 		"chat — do not re-analyse who it is for or open a fresh decision; this turn is " +
 		"only send / refine / drop.\n" +
-		"manager_reply and manager_silent are DISABLED this turn — calling either fails " +
-		"and wastes the turn. The ONE tool that ends this turn is manager_resolve_draft " +
+		"telegram_manager_reply and telegram_manager_silent are DISABLED this turn — calling either fails " +
+		"and wastes the turn. The ONE tool that ends this turn is telegram_manager_resolve_draft " +
 		"(it IS available, whatever you assume about your tool list):\n" +
-		'  manager_resolve_draft {"action": "send"} — deliver that text as-is (usually ' +
+		'  telegram_manager_resolve_draft {"action": "send"} — deliver that text as-is (usually ' +
 		"the right call);\n" +
-		'  manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
+		'  telegram_manager_resolve_draft {"action": "refine", "text": "<full final message>"} — ' +
 		"deliver a corrected version of it;\n" +
-		'  manager_resolve_draft {"action": "drop"} — ONLY if it was not meant as a ' +
+		'  telegram_manager_resolve_draft {"action": "drop"} — ONLY if it was not meant as a ' +
 		"message to the interlocutor (e.g. it was just your own reasoning).\n" +
 		"A real question deserves its answer — do not drop it as chatter.]"
 	);
 }
-
-/** System block for an idle memory-consolidation turn (no reply is sent). */
-export const CONSOLIDATION_INSTRUCTIONS =
-	"You are reviewing a finished Telegram conversation to update your private " +
-	"long-term memory about this specific person. Nobody is waiting for you and " +
-	"nothing you write reaches Telegram: the reply tools do not exist on this turn, " +
-	"and a question left standing in the transcript below is one you have already " +
-	"answered, or one that is not yours to answer now. Work strictly about the " +
-	"interlocutor, never the owner or the bot. Answer only the numbered interrogation " +
-	"step shown below, calling the one tool it names.";
-
-/** Bare prompt that kicks off each interrogation probe (real directive is in context). */
-const CONSOLIDATION_PROMPT =
-	"Consolidate your long-term memory about this contact by answering the " +
-	"interrogation step shown, calling exactly the one tool it names.";
-
-/**
- * How each fact kind is surfaced in the "Known facts" block — a section title
- * plus the behaviour it should steer, so a fact does work rather than being a
- * flat note. Rendered in this order; untagged facts fall under `context`.
- */
-const KIND_SECTIONS: Record<FactKind, { title: string; directive: string }> = {
-	identity: {
-		title: "Who they are",
-		directive:
-			"Ground your replies in these; address them correctly and never re-ask what you already know.",
-	},
-	preference: {
-		title: "Preferences",
-		directive: "Adapt your tone, format, and language to these.",
-	},
-	agreement: {
-		title: "Agreements",
-		directive:
-			"These are commitments — honour them and proactively follow up on them.",
-	},
-	context: {
-		title: "Context",
-		directive:
-			"Background that may be out of date — do not assume it still holds.",
-	},
-};
-
-const KIND_ORDER: readonly FactKind[] = [
-	"identity",
-	"preference",
-	"agreement",
-	"context",
-];
 
 /** What a finished manager turn decided, for the owner-side debug feed. */
 export type ManagerTurnOutcome = "reply" | "silent" | "held" | "corrected";
@@ -307,10 +237,24 @@ export interface ManagerControllerDeps {
 	 * Defaults to {@link DEFAULT_FORWARD_POLICY}.
 	 */
 	forwards?: ForwardPolicy;
-	/** Last-N durable facts kept + injected per contact. */
-	factsLimit: number;
 	/** Quiet period (ms) before an idle memory-consolidation pass may run. */
 	factConsolidationQuietMs: number;
+	/**
+	 * How much of a turn's prompt one recall may spend, in tokens.
+	 *
+	 * The successor to the old `factsLimit`, and a different KIND of limit: that one
+	 * bounded how much could be remembered, so learning something meant forgetting
+	 * something. This bounds only how much of what is remembered may be said in one
+	 * turn — and it is charged in the trailing block, so it costs its own tokens and
+	 * nothing above it.
+	 */
+	recallTokenBudget: number;
+	/** Max facts one recall may select; 0 = the engine's default. */
+	recallK: number;
+	/** Bounds on an idle memory pass — see `consolidation.ts`. */
+	consolidationLimits: ConsolidationLimits;
+	/** Record inbound messages and turn outcomes as episodes alongside the facts. */
+	episodes: boolean;
 	/**
 	 * Silence (ms) after which a resuming chat is treated as a re-opening and gets
 	 * the re-greeting instructions. `0` disables re-greeting.
@@ -337,8 +281,6 @@ export interface ManagerControllerDeps {
 	 * that over-replies to banter.
 	 */
 	strictReplyGuard: boolean;
-	/** Max candidates individually verified in the consolidation interrogation. */
-	verifyLimit: number;
 	/**
 	 * Max true age (ms) for an interlocutor message to open a live reply cycle. An
 	 * older (redelivered/backlog) message is recorded for context only, so a
@@ -359,12 +301,26 @@ export interface ManagerControllerDeps {
 	media: ManagerMediaPolicy;
 	clock: Clock;
 	chatStore: ChatStore;
+	/** Telegram profiles only — facts live in {@link ManagerControllerDeps.memory}. */
 	contactStore: ContactStore;
+	/** One database per contact; the controller is the only thing that picks which. */
+	memory: MemoryWorkspace;
 	consolidationQueue: ConsolidationQueue;
 	/** How far each chat has been answered and consolidated — see `chat-state`. */
 	chatCursors: ChatCursorStore;
 	sentRegistry: SentRegistry;
 	businessStore: BusinessStore;
+	/**
+	 * Report a memory that will not open — a database whose vector width no longer
+	 * matches the configured embedder, a permissions problem, a corrupt file.
+	 *
+	 * Called at most once per distinct message. The manager keeps answering people
+	 * without it, because refusing to answer a stranger over a broken file would be a
+	 * worse failure than answering them without remembering who they are — but the
+	 * owner is told, in words, rather than left with a bot that has quietly stopped
+	 * learning.
+	 */
+	onMemoryError?: (message: string) => void;
 	/** Whether the agent is free to take a new turn. */
 	isIdle: () => boolean;
 	/** Download an interlocutor message's inline images (empty when none/disabled). */
@@ -506,18 +462,19 @@ export function triggerHint(
 				`[The Owner used a wake-word for you in message${at} — that is what ` +
 				`pulled you into this turn. It is evidence, not proof: the word can ` +
 				`land in a link, a name, or a line ABOUT you rather than one TO you. ` +
-				`Decide by meaning. If they are putting something to you, answer the ` +
-				`Owner and thread your reply to${at}, not to anyone else in the chat. ` +
-				`If the word was incidental and nothing is asked of you, stay silent.]`
+				`Decide by meaning. If they are putting a question or request to you, ` +
+				`you MUST answer the Owner and thread your reply to${at}, not to anyone ` +
+				`else in the chat. Stay silent only when the word was incidental and ` +
+				`nothing is asked of you.]`
 			);
 		}
 		// A summons is open but this line does not carry the wake-word: the owner is
 		// still adding to the request they put to the bot a moment ago.
 		return (
 			`[The Owner called you moments ago; message${at} is what they have added ` +
-			`since. If their request now reads as complete, answer the Owner and ` +
-			`thread your reply to${at}, not to anyone else in the chat. If they are ` +
-			`still assembling it, or that line was not meant for you, stay silent.]`
+			`since. If their request now reads as complete, you MUST answer the Owner ` +
+			`and thread your reply to${at}, not to anyone else in the chat. If they are ` +
+			`still assembling it, stay silent.]`
 		);
 	}
 	const who = message.senderName
@@ -536,15 +493,18 @@ export function triggerHint(
 	);
 }
 
-/** A short human-readable state line injected so the model decides deliberately. */
-function stateSummary(state: ConversationState): string {
-	if (state.interlocutorWaiting) {
-		return "[State: the interlocutor sent the latest message and is waiting; the owner has not answered. Decide whether a reply is needed.]";
-	}
-	if (state.lastAuthor === "owner") {
-		return "[State: the owner spoke last. Stay silent unless you are directly addressed.]";
-	}
-	return "[State: you replied last. Continue only if there is something to add.]";
+/** One idle memory pass over one chat, and everything it needs to resume. */
+interface ConsolidationPass {
+	chatId: string;
+	userId?: string;
+	/** The second queue: what the pass has done, and what stops it. */
+	ledger: MemoryLedger;
+	/**
+	 * The newest message this pass can see. Written to the chat's cursor when the pass
+	 * finishes, and it is what stops the same conversation being re-read from scratch
+	 * at every launch.
+	 */
+	coveredThrough: number;
 }
 
 export class ManagerController {
@@ -552,8 +512,20 @@ export class ManagerController {
 	private readonly gate: ReplyGate;
 	private readonly decision = new DecisionState();
 	private readonly resolve = new DraftResolutionState();
-	private readonly facts = new FactState();
-	private readonly probes = new ProbeState();
+	/**
+	 * The ledger `memoryToolContext().ledger()` falls back to when no pass is running.
+	 *
+	 * Every memory verb is now consolidation-pass-only (`tool-gate.ts`), backed by a
+	 * runtime tool guard (`registerToolGuard` in `index.ts`) that refuses the call
+	 * before `execute()` ever runs — so this fallback should be unreachable in
+	 * practice. Kept anyway so `ledger()` never has to return `null`: a pure safety
+	 * net against a gate regression, not a working path.
+	 */
+	private readonly scratchLedger = new MemoryLedger();
+	/** Memory failures already announced — see {@link reportMemoryError}. */
+	private readonly memoryErrorsSeen = new Set<string>();
+	/** Contacts already joined to their episode log this run — see `recordEpisode`. */
+	private readonly episodesLinked = new Set<string>();
 	private readonly chats = new Map<string, ChatMeta>();
 	/** Chats with an interlocutor message the model has not answered yet. */
 	private readonly unserved = new Set<string>();
@@ -594,42 +566,28 @@ export class ManagerController {
 	 */
 	private readonly reviseCount = new Map<string, number>();
 	/**
-	 * The chat currently being memory-consolidated (idle pass), if any, together
-	 * with the interrogation state machine driving its per-probe questions.
+	 * The chat currently being memory-consolidated (idle pass), if any, with the
+	 * ledger of what the pass has done — see `consolidation.ts`.
 	 */
-	private consolidating: {
-		chatId: string;
-		userId?: string;
-		loop: InterrogationState;
-		/**
-		 * The interlocutor's own transcript lines, captured at consolidation start
-		 * for the per-fact evidence check. Cached so the interrogation can step
-		 * SYNCHRONOUSLY from `turn_end` (no async chatStore read mid-run); the
-		 * transcript is static while an idle consolidation runs.
-		 */
-		interlocutorLines: string[];
-		/**
-		 * The newest message this pass can see. Written to the chat's cursor when the
-		 * pass finishes, and it is what stops the whole interrogation being run again,
-		 * from scratch, on the same messages, at every launch.
-		 */
-		coveredThrough: number;
-	} | null = null;
+	private consolidating: ConsolidationPass | null = null;
 	/**
-	 * A consolidation paused mid-interrogation because live conversation work
-	 * appeared. Its progress (the interrogation step reached) is preserved here and
-	 * resumed — from exactly where it left off, not restarted — by
-	 * {@link maybeStartConsolidation} once the manager is idle again. Distinct from
-	 * {@link consolidating} so a live turn's termination is judged on the reply
-	 * decision, not a stale probe.
+	 * A consolidation paused because live conversation work appeared. The ledger goes
+	 * with it, so a resumed pass knows what it already did and does not redo it, and
+	 * {@link maybeStartConsolidation} picks it up once the manager is idle again.
+	 * Distinct from {@link consolidating} so a live turn's termination is judged on the
+	 * reply decision rather than on a memory pass's state.
 	 */
-	private pausedConsolidation: {
-		chatId: string;
-		userId?: string;
-		loop: InterrogationState;
-		interlocutorLines: string[];
-		coveredThrough: number;
-	} | null = null;
+	private pausedConsolidation: ConsolidationPass | null = null;
+	/**
+	 * The recall block for the turn in flight, and the batch it was fetched for.
+	 *
+	 * `pi.on("context")` runs before EVERY sample, and within one run the trailing
+	 * message must be the same bytes each time — otherwise a re-sample after a tool
+	 * call re-reads a block that says the same thing in a different order. Keyed by
+	 * the query so a genuinely new batch invalidates it.
+	 */
+	private recallCache: { chatId: string; query: string; block: string } | null =
+		null;
 	/** Open forward batches, per chat — the budget for pasted-in content. */
 	private readonly forwards: ForwardBursts;
 
@@ -654,14 +612,70 @@ export class ManagerController {
 		return this.decision;
 	}
 
-	/** The per-turn fact sink the memory tool writes into. */
-	factSink(): FactState {
-		return this.facts;
+	/**
+	 * What the memory tools need to run: which contact's database is open, who it is
+	 * about, and where to record what they did.
+	 *
+	 * Resolving the database HERE, from the active chat, is the isolation guarantee.
+	 * The tools have no database argument, so there is no path by which a model
+	 * answering one person can touch another's memory — not a rule it is asked to
+	 * follow, an address it is never given.
+	 */
+	memoryToolContext(): MemoryToolContext {
+		return {
+			active: () => this.activeMemory(),
+			contactName: () => {
+				const chatId =
+					this.consolidating?.chatId ?? this.scheduler.activeChat();
+				return (chatId && this.chats.get(chatId)?.contactName) || "the contact";
+			},
+			ledger: () => this.consolidating?.ledger ?? this.scratchLedger,
+			now: () => this.deps.clock.now(),
+			// The same zone the `[Now: …]` line uses, so a date read there and a date
+			// asked about are the same day.
+			timezone: this.deps.timezone,
+		};
 	}
 
-	/** The per-probe sink the interrogation tools write into (consolidation). */
-	probeSink(): ProbeState {
-		return this.probes;
+	/** Whether the active memory pass has exhausted its inspection-only allowance. */
+	isConsolidationRecallBlocked(): boolean {
+		return this.consolidating?.ledger.recallBlocked() ?? false;
+	}
+
+	/**
+	 * The memory of whoever this turn is about, or null when there is nobody to
+	 * remember — an unidentified chat, or the owner talking to their own bot.
+	 *
+	 * The owner check is by USER ID, in code, before the model is involved: a
+	 * namesake cannot be mistaken for the owner, and the owner's own details can
+	 * never be filed under a contact.
+	 */
+	private async activeMemory(): Promise<ContactMemory | null> {
+		const chatId = this.consolidating?.chatId ?? this.scheduler.activeChat();
+		if (chatId === null) return null;
+		const userId = this.chats.get(chatId)?.userId;
+		if (!userId) return null;
+		if (await this.isOwnerUserId(userId)) return null;
+		try {
+			return await this.deps.memory.for(userId);
+		} catch (error) {
+			this.reportMemoryError(error);
+			return null;
+		}
+	}
+
+	/**
+	 * Say once, to the owner, that the memory is not working — and carry on.
+	 *
+	 * Once, because the cause is a file or a setting: it will fail identically on every
+	 * turn until somebody changes something, and a warning repeated every minute is how
+	 * people learn to scroll past warnings.
+	 */
+	private reportMemoryError(error: unknown): void {
+		const message = error instanceof Error ? error.message : String(error);
+		if (this.memoryErrorsSeen.has(message)) return;
+		this.memoryErrorsSeen.add(message);
+		this.deps.onMemoryError?.(message);
 	}
 
 	/** The per-turn sink the resolve-draft tool writes into (revise turns). */
@@ -673,7 +687,7 @@ export class ManagerController {
 	 * Whether the active chat is on a REVISE turn: a reply is held (either drafted
 	 * last turn and held because new interlocutor messages landed, or recovered from a
 	 * plain-text turn) and the model must now resolve it (send/refine/drop). Public so
-	 * the tool matcher can reveal manager_resolve_draft only on these turns (and hide it
+	 * the tool matcher can reveal telegram_manager_resolve_draft only on these turns (and hide it
 	 * everywhere else).
 	 */
 	isReviseTurn(): boolean {
@@ -686,20 +700,18 @@ export class ManagerController {
 	/**
 	 * Whether the model has made this turn's terminal decision, so the agent loop
 	 * can stop re-sampling instead of spinning on identical context. Terminality is
-	 * turn-type specific: a normal turn ends on reply/silent (a bare
-	 * manager_remember does NOT end it — the model may still reply); a consolidation
-	 * probe ends as soon as its interrogation tool has been called.
+	 * turn-type specific: a normal turn ends on reply/silent; a memory pass ends
+	 * only when the model says it is finished.
 	 */
 	turnDecided(): boolean {
 		if (this.consolidating) {
-			// A consolidation "turn" spans the WHOLE interrogation now (one agent run
-			// walking identify -> candidates -> verify×N). It is decided only when the
-			// interrogation reaches `done`, at which point the context shows
-			// MANAGER_TURN_DONE so the model ends the run with one word.
-			return isDone(this.consolidating.loop);
+			// A pass spans a whole agent run, however many tool calls it takes. Only
+			// telegram_manager_done ends it — see `consolidation.ts` for what stops a pass that
+			// will not say so itself.
+			return this.consolidating.ledger.isFinished();
 		}
 		// Revise turn: the gate ends the turn ONLY when the model resolved the held
-		// draft — a plain manager_reply/manager_silent must not complete it, so a
+		// draft — a plain telegram_manager_reply/telegram_manager_silent must not complete it, so a
 		// ready answer can never be dropped by calling silent on trailing chatter.
 		if (this.isReviseTurn()) {
 			return this.resolve.current().action !== "none";
@@ -713,152 +725,47 @@ export class ManagerController {
 	}
 
 	/**
-	 * Whether the running memory pass has answered every step and is only waiting for
-	 * the run to end. Public so the tool gate can take the probes away: a finished pass
-	 * has no step left to answer, and a model that can still see step one's tool will
-	 * call step one again (it did — every pass, until the runtime aborted the run).
+	 * Whether the running memory pass is over and only waiting for the run to end.
+	 * Public so the tool gate can take the memory tools away: a model that has just
+	 * said it is finished, and can still see the tools it finished with, calls one of
+	 * them again — it did, every pass, until the runtime aborted the run.
 	 */
 	isConsolidationDone(): boolean {
-		return this.consolidating !== null && isDone(this.consolidating.loop);
+		return this.consolidating?.ledger.isFinished() === true;
 	}
 
 	/**
-	 * Step the consolidation interrogation at a `turn_end`, WITHIN one agent run.
-	 * Reads the probe the model just called, advances the state machine, and tells
-	 * the caller whether to abort the run:
+	 * Settle one sample of a memory pass at `turn_end`, and say whether the run stops.
 	 *
-	 *  - `"abort"` — the interrogation just answered its last step (end the run: see
-	 *    below), live conversation work is now waiting (pre-empt at once; the run is
-	 *    paused and resumed later), or the model kept calling tools after the
-	 *    interrogation was already done (backstop against a spin);
-	 *  - `"continue"` — let the agent loop re-sample; `pi.on("context")` rebuilds the
-	 *    context showing the next probe's directive, so the whole interrogation flows
-	 *    in a single run with no per-probe abort.
+	 * This is the second queue in action. Every other turn in this project is settled by
+	 * asking what reached Telegram; a memory pass sends nothing to anybody, so that
+	 * question has no answer here and this reads the ledger instead — what the model
+	 * called, whether it called anything at all, and how much of the pass's budget is
+	 * left. The rules live in `consolidation.ts`; this adds the one piece of state that
+	 * module cannot see.
 	 *
-	 * A pass used to end one LLM call later than this: the last probe answered, the tool
-	 * gate withdrew the probes (a finished pass that can still see step one's tool calls
-	 * step one — it did), and the model was sampled once more with an empty tool list so
-	 * that it could say a word and stop. That word was never read by anything. It cost a
-	 * whole inference — and worse, withdrawing the tools rewrites the head of the prompt,
-	 * which is the prefix every backend caches, so the closing call re-read the entire
-	 * interrogation from byte zero. Once per pass, and the owner watched the prefix
-	 * watchdog (`core/payload-probe.ts`) report it as the defect it was.
+	 * That piece is live work. A person waiting for a reply outranks a background pass
+	 * unconditionally, so the moment anything is unserved the run yields — `onAgentEnd`
+	 * then parks the pass with its ledger intact and serves the chat.
 	 *
-	 * So the run ends where the questions end. Nothing is lost by stopping here: every
-	 * confirmed fact is already on disk ({@link persistConfirmed} writes each one the
-	 * moment it passes verification), and `agent_end` reaches
-	 * {@link finishConsolidationRun}, which sees `isDone` and finalizes exactly as it
-	 * does for a pass that ends any other way.
-	 *
-	 * Async because a fact that has just passed verification is WRITTEN here, before the
-	 * next step is taken — see {@link persistConfirmed}.
+	 * Nothing is lost by stopping at any point: every memory tool writes on the spot
+	 * (see `memory-tools.ts`), so a pass cut off mid-thought has already saved what it
+	 * decided before the cut.
 	 */
 	async stepConsolidation(): Promise<"continue" | "abort"> {
 		const current = this.consolidating;
 		if (!current) return "continue";
-		const probe = this.probes.current();
-		if (isDone(current.loop)) {
-			// Already finished and the run is somehow still going (a queued message can
-			// skip the step below, leaving the pass unsettled for a turn). If the model
-			// called another tool anyway, abort as a backstop against a spin.
-			return probe ? "abort" : "continue";
-		}
-		// Preserve this turn's progress (a recorded probe) BEFORE possibly yielding, so
-		// a live pre-empt never discards a completed step — it resumes from the next.
-		if (probe) {
-			const loop = advanceInterrogation(
-				current.loop,
-				probe,
-				current.interlocutorLines,
-				this.deps.verifyLimit,
-			);
-			this.consolidating = { ...current, loop };
-			this.probes.reset();
-			await this.persistConfirmed(current.loop, loop, current);
-			await this.persistDropped(current.loop, loop, current);
-			// The last question has been answered. There is nothing left to ask and
-			// nothing left to say: stop, rather than pay for a call whose only job is to
-			// end the turn.
-			if (isDone(loop)) return "abort";
-		}
-		// A reply is now waiting: yield so a live answer is never delayed by an
-		// in-flight consolidation. onAgentEnd pauses the pass (progress kept).
+		const verdict = consolidationVerdict(
+			current.ledger,
+			this.deps.consolidationLimits,
+		);
+		// Read the ledger's per-turn flag BEFORE clearing it for the next sample, and clear
+		// it whatever the verdict: a paused pass resumes into a fresh turn too.
+		current.ledger.startTurn();
+		if (verdict === "abort") return "abort";
+		// A reply is now waiting: yield so a live answer is never delayed by a memory pass.
 		if (this.unserved.size > 0) return "abort";
 		return "continue";
-	}
-
-	/**
-	 * Write the facts this step just confirmed — now, not at the end of the pass.
-	 *
-	 * A fact reaches `confirmed` only after the model verified it against a quote that
-	 * code found in the interlocutor's own lines. It is knowledge at that moment. Holding
-	 * it in memory until the whole interrogation finishes made it hostage to everything
-	 * that can end a pass early: an interlocutor writing mid-pass (pre-empt), the run
-	 * being aborted, the bot being restarted. All of it was dropped, the chat stayed in
-	 * the queue, and the next pass asked the same questions from step one — which is
-	 * exactly what the owner saw: "I thought it had already saved fact, fact, fact".
-	 *
-	 * Written per fact, the worst an interruption can now cost is the candidates that
-	 * were not verified yet. Re-running the pass re-confirms what is already stored, and
-	 * the store drops the repeat (`contact-store.appendFacts` dedupes) — so a fact is
-	 * written once, however many times it is learned.
-	 */
-	private async persistConfirmed(
-		before: InterrogationState,
-		after: InterrogationState,
-		current: { chatId: string; userId?: string },
-	): Promise<void> {
-		const fresh = after.confirmed.slice(before.confirmed.length);
-		if (fresh.length === 0) return;
-		for (const fact of fresh) {
-			this.facts.record([
-				{ text: fact.text, subject: "interlocutor", kind: fact.kind },
-			]);
-		}
-		const contactName = this.chats.get(current.chatId)?.contactName;
-		await this.persistRecordedFacts(current.userId, contactName);
-	}
-
-	/**
-	 * What is remembered about a contact right now, exactly as the model is shown it —
-	 * deduped, and capped the way the store caps itself.
-	 *
-	 * The review step is asked about THIS list by number, so it has to be the same list,
-	 * built the same way. A fact the model cannot see is a fact it cannot be asked about.
-	 */
-	private async rememberedFacts(
-		userId: string | undefined,
-	): Promise<KnownFact[]> {
-		if (!userId) return [];
-		const stored = await this.deps.contactStore.getFacts(userId);
-		return capFacts(dedupeFacts(stored), this.deps.factsLimit).map((fact) => ({
-			text: fact.text,
-			kind: fact.kind,
-		}));
-	}
-
-	/**
-	 * Unlearn what this step just overturned — now, not at the end of the pass, and for
-	 * the same reason {@link persistConfirmed} writes a fact the moment it is confirmed:
-	 * a pass can be pre-empted, aborted or restarted at any step, and a decision held in
-	 * memory until the end is a decision that gets lost.
-	 *
-	 * A fact only reaches `dropped` after the model named it AND code found, in the
-	 * interlocutor's own lines, the sentence that overturns it. So this deletes nothing
-	 * the person did not themselves say was no longer true.
-	 */
-	private async persistDropped(
-		before: InterrogationState,
-		after: InterrogationState,
-		current: { userId?: string },
-	): Promise<void> {
-		const fresh = after.dropped.slice(before.dropped.length);
-		if (fresh.length === 0 || !current.userId) return;
-		if (await this.isOwnerUserId(current.userId)) return;
-		await this.deps.contactStore.removeFacts(
-			current.userId,
-			fresh.map((fact) => fact.text),
-		);
 	}
 
 	/** Persist a connected/updated business account. */
@@ -966,6 +873,18 @@ export class ManagerController {
 					messageId,
 					kind: media.kind,
 				});
+				// The owner's own line in this chat is part of what happened in it, so it
+				// belongs in the memory of the person they were talking to — that is the
+				// conversation it is about. Their words, not a fact about them.
+				await this.recordEpisode(
+					chatId,
+					ownerText,
+					["owner"],
+					messageTime,
+					messageId === undefined
+						? undefined
+						: { messageId: String(messageId) },
+				);
 			}
 			await this.touchConsolidation(chatId, messageTime);
 			// An explicit wake-word from the owner summons the bot, even though it never
@@ -1000,7 +919,7 @@ export class ManagerController {
 			// chat. The draft is now stale — the owner may have answered the question
 			// themselves — so it must NOT be sent blind: flag the turn dirty and leave
 			// the chat unserved, which is what makes turn end HOLD the draft and give the
-			// model a revise turn (`manager_resolve_draft`: send / refine / drop). Note
+			// model a revise turn (`telegram_manager_resolve_draft`: send / refine / drop). Note
 			// the chat deliberately stays unserved: `triggerTurn` needs it to run that
 			// revise turn, and clearing it here would strand the draft forever.
 			if (this.scheduler.activeChat() === chatId && !this.deps.isIdle()) {
@@ -1061,6 +980,24 @@ export class ManagerController {
 			messageId,
 			kind: media.kind,
 		});
+		// Every inbound message goes into the memory, whether or not it ever produces a
+		// turn: what a person said is worth keeping even when the owner answered it
+		// themselves, and the transcript it is stored beside will be pruned long before
+		// anybody asks about it. `ownWords` rather than the stored text, so a reply's
+		// quoted paragraphs are not filed as something THEY said.
+		await this.recordEpisode(
+			chatId,
+			ownWords({
+				author: "interlocutor",
+				text: storedText,
+				context: messageContext(input.message),
+				forwarded: input.message.forward_origin !== undefined,
+				timestamp: messageTime,
+			}),
+			["message"],
+			messageTime,
+			messageId === undefined ? undefined : { messageId: String(messageId) },
+		);
 		await this.touchConsolidation(chatId, messageTime);
 		// A backlog message — one whose true send time is well in the past, e.g.
 		// redelivered after downtime — is kept for context and consolidation but does
@@ -1201,16 +1138,13 @@ export class ManagerController {
 	async onAgentEnd(finalText?: string): Promise<ManagerTurnLog | null> {
 		// agent_end is not terminal: Pi may retry, compact, or continue the same run
 		// after this event. Keep the memory pass and its tool gate alive until
-		// onAgentSettled, otherwise the continuation would see manager_reply/silent and
+		// onAgentSettled, otherwise the continuation would see telegram_manager_reply/silent and
 		// mistake a background pass for a conversation turn.
 		if (this.consolidating) {
 			return null;
 		}
 		const active = this.scheduler.activeChat();
-		if (active === null) {
-			this.facts.reset();
-			return null;
-		}
+		if (active === null) return null;
 		let text: string | null;
 		let requestedReplyTo: number | undefined;
 		let decisionKind: "reply" | "silent" | "none";
@@ -1218,7 +1152,7 @@ export class ManagerController {
 		let silentReason: string | undefined;
 		let needsReply: boolean | undefined;
 		// A REVISE turn: a held draft is pending, so the resolve-draft tool — not
-		// manager_reply/manager_silent — carries the outcome (the gate guaranteed it
+		// telegram_manager_reply/telegram_manager_silent — carries the outcome (the gate guaranteed it
 		// was called, or an unresolved run falls back to sending the draft as-is).
 		const pending = this.pendingReply.get(active);
 		if (pending) {
@@ -1284,8 +1218,6 @@ export class ManagerController {
 			isBot: profile?.isBot,
 			lastMessageId: meta?.lastMessageId,
 		};
-		// Persist any durable facts the model recorded mid-conversation.
-		await this.persistRecordedFacts(meta?.userId, meta?.contactName);
 		this.gate.clearServed(active);
 		// The model ended in plain text without calling a tool. Plain text is never
 		// delivered, so the reply was lost. Instead of re-deciding from scratch (a weak
@@ -1411,6 +1343,24 @@ export class ManagerController {
 				await this.touchConsolidation(active, now);
 			}
 		}
+		// What the bot did about this batch, and why — the half of the record that the
+		// transcript cannot hold. A delivered reply is already in the transcript; a
+		// SILENCE is not, and "I decided not to answer that, because it was banter" is
+		// exactly the kind of thing the owner (and the next pass) needs to be able to
+		// find. Stored as the model's own account of its turn.
+		await this.recordEpisode(
+			active,
+			text
+				? `Replied to ${contactName}: ${text}`
+				: `Stayed silent with ${contactName}${
+						(silentReason ?? guardReason)
+							? `: ${silentReason ?? guardReason}`
+							: ""
+					}`,
+			["turn", text ? "reply" : "silent"],
+			this.deps.clock.now(),
+			category ? { category } : undefined,
+		);
 		if (text) {
 			// Replied: keep the chat active and arm the 2:00 continuation window.
 			this.scheduler.onReplied();
@@ -1506,7 +1456,13 @@ export class ManagerController {
 			: this.isReopening(records)
 				? this.deps.instructions.reopen
 				: "";
-		const known = await this.knownFactsBlock(meta);
+		const memory = await this.activeMemory();
+		const known = await this.recallBlock(
+			active,
+			records,
+			meta?.contactName,
+			memory,
+		);
 		// The head message is the same bytes for every chat and every turn of the session.
 		//
 		// That is not a stylistic preference, it is the whole cost model. Every backend
@@ -1517,8 +1473,13 @@ export class ManagerController {
 		// pasted-length messages, ONE learned fact cost 19,397 characters of re-reading —
 		// the whole conversation, re-read to say one new line about the person.
 		//
+		// The recall block makes that rule load-bearing rather than merely wise: it is
+		// fetched fresh for every batch, so it is the single most volatile thing in the
+		// prompt. Above the transcript it would re-read the conversation every time
+		// anybody said anything.
+		//
 		// So the rule is: above the transcript goes only what never changes; everything
-		// that varies — the clock, the opener, the facts, the state, the directive —
+		// that varies — the clock, the opener, the memory, the state, the directive —
 		// travels in the trailing message, where it is charged for itself alone.
 		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${this.deps.instructions.base}${this.ownerLine()}`;
 		const pending = this.pendingReply.get(active);
@@ -1538,9 +1499,18 @@ export class ManagerController {
 			? "owner"
 			: "interlocutor";
 		const owed = this.ownerSummoned.has(active) || state.interlocutorWaiting;
+		const trigger = owed ? triggerMessage(records, triggerSide) : undefined;
+		const directAddressed =
+			this.ownerSummoned.has(active) ||
+			(trigger !== undefined &&
+				matchesMention(trigger.text, this.deps.mentionWords));
 		const hint =
 			directive === MANAGER_ACTION_TRIGGER && owed
 				? triggerHint(records, triggerSide, this.deps.mentionWords)
+				: "";
+		const stateCard =
+			directive === MANAGER_ACTION_TRIGGER
+				? conversationStateCard(records, { directAddressed })
 				: "";
 		return [
 			{ role: "user", content: system },
@@ -1551,7 +1521,7 @@ export class ManagerController {
 					this.nowLine(),
 					opener,
 					known,
-					`${stateSummary(state)}${hint ? `\n\n${hint}` : ""}`,
+					`${stateCard}${hint ? `\n\n${hint}` : ""}`,
 					directive,
 				]
 					.filter((part) => part.trim())
@@ -1570,16 +1540,17 @@ export class ManagerController {
 	}
 
 	/**
-	 * Build the isolated context for the current consolidation probe: the shared
-	 * consolidation system block, the isolated transcript, then the directive for
-	 * the interrogation's current step (identify → candidates → per-fact verify).
-	 * Once the probe's tool has been called, the done directive ends the turn.
+	 * Build the context for a memory pass: the consolidation system block, the
+	 * isolated transcript, then the pass's current memory and its directive.
+	 *
+	 * The memory shown here is the WHOLE of what is held about this person, not a
+	 * relevance-ranked slice — a pass exists to decide what should still be there, and
+	 * it cannot decide that about facts it was not shown. The reply turn's block is
+	 * the opposite (see {@link recallBlock}) because a reply needs what bears on the
+	 * question, not an inventory.
 	 */
 	private async buildConsolidationContext(): Promise<IsolatedMessage[]> {
-		const current = this.consolidating as {
-			chatId: string;
-			loop: InterrogationState;
-		};
+		const current = this.consolidating as ConsolidationPass;
 		const raw = await this.deps.chatStore.all(current.chatId);
 		this.rememberUserId(current.chatId, raw);
 		const records = windowRecords(raw, {
@@ -1592,25 +1563,30 @@ export class ManagerController {
 			records,
 			boundary: boundaryDirective(meta?.contactName ?? current.chatId),
 		});
-		const probe = currentProbe(current.loop);
-		// The review step hands the model its own memory, numbered, because it answers by
-		// number. Showing the grouped block underneath it as well would put the same facts
-		// in front of the model twice, in two different shapes, on the one step where it
-		// has to point at exactly one of them.
-		const known =
-			probe.tool === "manager_forget" ? "" : await this.knownFactsBlock(meta);
+		const memory = await this.activeMemory();
+		const held = memory
+			? await memory.recall({
+					entities: [meta?.contactName ?? current.chatId],
+					tags: ["fact"],
+					tokenBudget: this.deps.recallTokenBudget,
+				})
+			: null;
 		// Constant above the transcript, everything that varies below it — the same rule as
-		// `buildContextForActive`, and for the same measured reason. The facts block is the
-		// most volatile thing in a consolidation (it is what the pass EXISTS to change), so
-		// it is the last thing that may sit on top of the conversation.
+		// `buildContextForActive`, and for the same measured reason. The memory block is the
+		// most volatile thing in a pass (it is what the pass EXISTS to change), so it is the
+		// last thing that may sit on top of the conversation.
 		const system = `${SYSTEM_INSTRUCTIONS_HEADER}\n\n${CONSOLIDATION_INSTRUCTIONS}`;
-		const directive = this.turnDecided() ? CONSOLIDATION_DONE : probe.directive;
 		return [
 			{ role: "user", content: system },
 			...isolated,
 			{
 				role: "user",
-				content: [this.nowLine(), known, directive]
+				content: [
+					this.nowLine(),
+					consolidationMemoryBlock(held?.rendered ?? ""),
+					current.ledger.contextDraft(),
+					consolidationDirective(current.ledger, this.deps.consolidationLimits),
+				]
 					.filter((part) => part.trim())
 					.join("\n\n"),
 			},
@@ -1662,7 +1638,9 @@ export class ManagerController {
 		if (!(await this.hasSomethingToAnswer(active))) return false;
 		this.decision.reset();
 		this.resolve.reset();
-		this.facts.reset();
+		// A new batch deserves a fresh look at the memory; the cache exists to hold one
+		// turn's block still, not to carry it into the next turn.
+		this.recallCache = null;
 		// Fresh turn: only messages that arrive AFTER this point count as mid-turn
 		// arrivals that should trigger a reconsider.
 		this.dirtyDuringTurn.delete(active);
@@ -1676,8 +1654,8 @@ export class ManagerController {
 		// and blocked while a draft is held, so prompting for them wastes the turn.
 		await this.deps.triggerAgent(
 			this.pendingReply.has(active)
-				? "A drafted reply is held for review in the active Telegram chat. Resolve it by calling manager_resolve_draft."
-				: "Respond to the latest messages in the active Telegram chat by calling manager_reply or manager_silent.",
+				? "A drafted reply is held for review in the active Telegram chat. Resolve it by calling telegram_manager_resolve_draft."
+				: "Respond to the latest messages in the active Telegram chat by calling telegram_manager_reply or telegram_manager_silent.",
 		);
 		return true;
 	}
@@ -1690,7 +1668,7 @@ export class ManagerController {
 	 *  - an interlocutor message nobody has answered (`analyzeChat`);
 	 *  - a chat the owner summoned with a wake-word — the one case where the model
 	 *    may answer the owner at all;
-	 *  - a held draft awaiting `manager_resolve_draft`.
+	 *  - a held draft awaiting `telegram_manager_resolve_draft`.
 	 *
 	 * `unserved` already implies this, but only by construction: every path that
 	 * sets it would have to stay correct forever. Checking the transcript makes it
@@ -1732,72 +1710,117 @@ export class ManagerController {
 	}
 
 	/**
-	 * A "Known facts about X" block for a chat's contact, grouped into sections by
-	 * kind — each section leads with the behaviour that kind should steer, so the
-	 * model uses an identity fact differently from a preference or an agreement.
-	 * Returns "" when there is nothing to show.
+	 * What the memory holds that bears on the messages being answered — the block that
+	 * replaced "Known facts about X".
+	 *
+	 * Two differences from the list it replaced, and both are the point. It is RANKED
+	 * against the unanswered batch rather than being the whole store, so a memory of a
+	 * thousand facts costs the same in the prompt as a memory of ten and spends that
+	 * budget on the ones that matter to what was just said. And it is bounded in
+	 * TOKENS rather than in facts, so the cap means what it is for: how much of the
+	 * turn the memory may occupy.
+	 *
+	 * Cached for the turn, because `pi.on("context")` runs before every sample and a
+	 * block that came back in a different order on the second call would make the
+	 * backend re-read the trailing message for nothing.
+	 *
+	 * Returns "" when there is nothing to say — no memory, no batch, or no hits.
 	 */
-	private async knownFactsBlock(meta: ChatMeta | undefined): Promise<string> {
-		if (!meta?.userId) return "";
-		const stored = await this.deps.contactStore.getFacts(meta.userId);
-		if (stored.length === 0) return "";
-		// Deduped BEFORE the cap, not after: a store written before the dedupe landed
-		// still holds repeats, and slicing first would spend the budget on them — a
-		// contact whose memory is one sentence three times, and whose fourth fact fell
-		// off the end. Telling the model something twice does not make it truer.
-		const facts = dedupeFacts(stored);
-		// Capped the same way the store caps itself: least valuable first, age only as the
-		// tie-break. Slicing the newest off the end would show the model a different memory
-		// from the one it has — and drop the contact's name to make room for their mood.
-		const recent = capFacts(facts, this.deps.factsLimit);
-		const byKind = new Map<FactKind, string[]>();
-		for (const fact of recent) {
-			const kind = fact.kind ?? "context";
-			const bucket = byKind.get(kind) ?? [];
-			bucket.push(fact.text);
-			byKind.set(kind, bucket);
+	private async recallBlock(
+		chatId: string,
+		records: readonly ChatMessageRecord[],
+		contactName: string | undefined,
+		memory: ContactMemory | null,
+	): Promise<string> {
+		// A normal turn recalls the unanswered interlocutor batch. When the Owner
+		// summons the bot inside a contact chat, use the current contact's memory
+		// without a text query: the Owner may be asking for an inventory such as
+		// "what do you remember about them?", which has no lexical overlap with
+		// the stored facts. This is deliberately not a name-to-database lookup:
+		// activeMemory() already selected the database from the current chat's
+		// Telegram userId.
+		const ownerSummoned = this.ownerSummoned.has(chatId);
+		const query = ownerSummoned ? "" : recallQuery(records);
+		// Nothing outstanding means nothing to look up, except for an Owner summon:
+		// the explicit summon is the request to inspect this current contact's memory.
+		if (!query && !ownerSummoned) return "";
+		const cached = this.recallCache;
+		if (cached && cached.chatId === chatId && cached.query === query) {
+			return cached.block;
 		}
-		const sections: string[] = [];
-		for (const kind of KIND_ORDER) {
-			const items = byKind.get(kind);
-			if (!items?.length) continue;
-			const { title, directive } = KIND_SECTIONS[kind];
-			const lines = items.map((text) => `- ${text}`).join("\n");
-			sections.push(`${title} (${directive})\n${lines}`);
-		}
-		return `Known facts about ${meta.contactName}:\n\n${sections.join("\n\n")}`;
+		if (!memory) return "";
+		const name = contactName ?? chatId;
+		const result = await memory.recall({
+			query: query || undefined,
+			entities: [name],
+			k: this.deps.recallK,
+			tokenBudget: this.deps.recallTokenBudget,
+		});
+		// Anything the transcript above still shows is the transcript's job — see
+		// `dropVisible`. Without it the block opens by quoting back the message sitting
+		// three lines above it, because that message is an episode too.
+		const block = memoryBlock(dropVisible(result.rendered, records), name);
+		this.recallCache = { chatId, query, block };
+		return block;
 	}
 
 	/**
-	 * Persist the facts the model recorded this turn (capped to factsLimit), behind
-	 * the who-is-who firewall: only facts the model tagged `subject: interlocutor`
-	 * are kept, and nothing is written if the target card is actually the business
-	 * owner (a self-test where the owner messaged their own bot). Each stored fact
-	 * carries the confirmed contact name + kind for auditability.
+	 * Record something that happened, as an episode in the contact's memory.
+	 *
+	 * Episodes are why the memory outlives the transcript. The JSONL log is compacted
+	 * to twice the reading window, so a conversation from last month is simply not on
+	 * disk any more — while the questions people actually ask ("what did we agree?",
+	 * "did I ever tell them?") are about exactly that. A message costs microseconds to
+	 * store and nothing at all in the prompt until a recall ranks it highly enough to
+	 * be worth saying.
+	 *
+	 * Best-effort by design: an episode is a nicety, and a memory that will not write
+	 * must not stop a reply from going out. The failure surfaces on the next tool call
+	 * the model makes, which is where it can actually be acted on.
+	 *
+	 * The subject is {@link MEMORY_EPISODE_ENTITY} and never the contact — see there
+	 * for what filing a conversation under the person breaks. The edge that keeps the
+	 * two joined is written once per contact per run rather than per message: it is a
+	 * journal append like any other, and a message is the one thing here that arrives
+	 * in bulk.
 	 */
-	private async persistRecordedFacts(
-		userId: string | undefined,
-		contactName?: string,
+	private async recordEpisode(
+		chatId: string,
+		text: string,
+		tags: string[],
+		at: number,
+		metadata?: Record<string, string>,
 	): Promise<void> {
-		const recorded = this.facts.current();
-		this.facts.reset();
-		if (!userId || recorded.length === 0) return;
-		if (await this.isOwnerUserId(userId)) return;
-		const kept = recorded.filter((fact) => fact.subject === "interlocutor");
-		if (kept.length === 0) return;
-		const now = this.deps.clock.now();
-		const facts: ContactFact[] = kept.map((fact) => ({
-			text: fact.text,
-			timestamp: now,
-			source: "manager",
-			subject: contactName,
-			kind: fact.kind,
-		}));
-		await this.deps.contactStore.appendFacts(
-			userId,
-			facts,
-			this.deps.factsLimit,
-		);
+		if (!this.deps.episodes) return;
+		const body = text.trim();
+		if (!body) return;
+		const meta = this.chats.get(chatId);
+		if (!meta?.userId) return;
+		try {
+			if (await this.isOwnerUserId(meta.userId)) return;
+			const memory = await this.deps.memory.for(meta.userId);
+			await memory.remember({
+				text: body,
+				entity: MEMORY_EPISODE_ENTITY,
+				tags: ["episode", ...tags],
+				validFrom: at,
+				metadata: { chatId, ...metadata },
+			});
+			// Keyed by the name too, so a contact renamed in Telegram is joined to their
+			// own log under the name the facts about them now carry.
+			const edge = `${meta.userId} ${meta.contactName}`;
+			if (!this.episodesLinked.has(edge)) {
+				await memory.link(
+					meta.contactName,
+					MEMORY_EPISODE_RELATION,
+					MEMORY_EPISODE_ENTITY,
+				);
+				this.episodesLinked.add(edge);
+			}
+		} catch (error) {
+			// Never at the cost of the conversation — but not in silence either.
+			this.reportMemoryError(error);
+		}
 	}
 
 	/** Whether a userId is the business owner (never store contact facts for them). */
@@ -1841,13 +1864,12 @@ export class ManagerController {
 	private async maybeStartConsolidation(): Promise<void> {
 		if (!this.deps.isIdle() || this.consolidating) return;
 		if (this.scheduler.activeChat() !== null || this.unserved.size > 0) return;
-		// Resume a consolidation that was paused for live work before starting a new
-		// one — continue from the exact interrogation step it reached, so nothing
-		// already consolidated is redone.
+		// Resume a pass that was paused for live work before starting a new one. The
+		// ledger comes with it, so the model is handed back what it already did rather
+		// than starting the conversation over.
 		if (this.pausedConsolidation) {
-			// Resume from the exact step reached, but refresh the window: the transcript
-			// grew while the pass was paused for live work, and the pass will be credited
-			// with everything it can now see.
+			// Resumed, but with a refreshed window: the transcript grew while the pass was
+			// parked, and the pass will be credited with everything it can now see.
 			this.consolidating = {
 				...this.pausedConsolidation,
 				...(await this.loadConsolidationWindow(
@@ -1855,8 +1877,7 @@ export class ManagerController {
 				)),
 			};
 			this.pausedConsolidation = null;
-			this.facts.reset();
-			this.probes.reset();
+			this.consolidating.ledger.startTurn();
 			await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
 			return;
 		}
@@ -1866,28 +1887,23 @@ export class ManagerController {
 		);
 		if (!entry) return;
 		// Decide "is this the owner talking to themselves?" in CODE, by userId, before
-		// the model ever runs the identify probe — a namesake can never be mistaken for
-		// the owner (or vice versa) the way name-based reasoning would. A self-chat has
-		// no interlocutor to remember, so drop it from the queue and stop.
+		// the model is involved at all — a namesake can never be mistaken for the owner
+		// (or vice versa) the way name-based reasoning would. A self-chat has no
+		// interlocutor to remember, so drop it from the queue and stop.
 		if (entry.userId && (await this.isOwnerUserId(entry.userId))) {
 			await this.deps.consolidationQueue.remove(entry.chatId);
 			return;
 		}
-		const contactName =
-			this.chats.get(entry.chatId)?.contactName ?? entry.chatId;
+		const ledger = new MemoryLedger();
+		ledger.startTurn();
 		this.consolidating = {
 			chatId: entry.chatId,
 			userId: entry.userId,
-			// What is already remembered goes INTO the interrogation, not just alongside it:
-			// the review step is asked about this exact list, and its numbers index into it.
-			loop: initInterrogation(
-				contactName,
-				await this.rememberedFacts(entry.userId),
-			),
+			ledger,
 			...(await this.loadConsolidationWindow(entry.chatId)),
 		};
-		this.facts.reset();
-		this.probes.reset();
+		// A pass makes no chat decision, so it must not inherit one either: a sink still
+		// holding the last reply turn's answer would be read by whatever ends this run.
 		this.decision.reset();
 		this.resolve.reset();
 		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
@@ -1936,134 +1952,86 @@ export class ManagerController {
 	}
 
 	/**
-	 * What a memory pass reads: the interlocutor's own lines (the evidence a fact must
-	 * be quoted from) and how far into the chat those lines go.
+	 * How far into a chat a memory pass can see.
 	 *
-	 * Their OWN words only. A reply quotes the message it answers and a forward carries
-	 * a stranger's text: both used to sit inside the interlocutor's stored line, so the
-	 * evidence check confirmed "facts" about them out of words the owner or the bot had
-	 * written.
-	 *
-	 * `coveredThrough` is the newest message in the window — every author, not just
-	 * theirs — because it answers a different question: not "what may be remembered"
-	 * but "how much of this chat has been looked at". A pass that saw the bot's reply
-	 * has been over that reply too, and must not be asked to look again.
+	 * `coveredThrough` is the newest message in the window — every author, not just the
+	 * interlocutor's — because it answers "how much of this conversation has been
+	 * looked at", not "what may be remembered". A pass that saw the bot's reply has
+	 * been over that reply too, and must not be asked to look again. Written to the
+	 * chat's cursor when the pass ends; without it, every launch re-read every stored
+	 * transcript from the beginning and paid a full pass of inference to conclude
+	 * nothing had changed.
 	 */
 	private async loadConsolidationWindow(
 		chatId: string,
-	): Promise<{ interlocutorLines: string[]; coveredThrough: number }> {
+	): Promise<{ coveredThrough: number }> {
 		const records = await this.deps.chatStore.getRecent(
 			chatId,
 			this.deps.rememberMessages,
 		);
-		const interlocutorLines = records
-			.filter((record) => record.author === "interlocutor")
-			.map((record) => ownWords(record))
-			.filter((line) => line.length > 0);
 		const coveredThrough = records.reduce(
 			(newest, record) => Math.max(newest, record.timestamp),
 			0,
 		);
-		return { interlocutorLines, coveredThrough };
+		return { coveredThrough };
 	}
 
 	/**
-	 * Handle the end of a consolidation agent run. The interrogation now advances
-	 * step-by-step WITHIN one run (see {@link stepConsolidation} in `turn_end`), so
-	 * this run-boundary handler only decides what to do now that the run stopped:
+	 * Handle the end of a memory pass's agent run.
 	 *
-	 *  - the interrogation is `done` → persist the confirmed facts (through the
-	 *    who-is-who firewall) and drop the chat from the consolidation queue;
-	 *  - live conversation work is waiting (the run was pre-empted for a reply) →
-	 *    PAUSE, keeping the exact step reached, and hand the turn back to the chat;
-	 *    consolidation resumes from here once idle again;
-	 *  - the run ended early without finishing (the model produced no probe tool this
-	 *    step) → safely progress the state machine one step (a missing result is
-	 *    handled by {@link advance}, so the pass always terminates) and, unless that
-	 *    reached `done`, continue the interrogation in a fresh run.
+	 * A pass walks its whole loop inside one run (`stepConsolidation` settles each
+	 * sample at `turn_end`), so by the time the run stops there are only three things
+	 * it can mean:
 	 *
-	 * Progress is never discarded: a completed step is kept and carried forward.
+	 *  - the model called `telegram_manager_done`, or the runtime stopped a pass that would not
+	 *    stop itself → finalize;
+	 *  - live conversation work appeared → PARK the pass, ledger and all, and serve the
+	 *    person who is waiting; it resumes from exactly here once idle;
+	 *  - the run ended for some other reason with the pass unfinished → finalize
+	 *    anyway.
+	 *
+	 * That last case is where this differs from the design it replaced, which
+	 * restarted the run to ask the next question. There is no next question now, and
+	 * nothing to recover: every memory tool has already written what it did. Starting
+	 * a fresh run would buy another inference for a pass the model has stopped
+	 * engaging with — the chat's cursor records how far this one read, and whatever is
+	 * left is the next pass's to find.
 	 */
 	private async finishConsolidationRun(): Promise<void> {
 		const current = this.consolidating;
 		if (!current) return;
-		if (isDone(current.loop)) {
-			await this.finalizeConsolidation(current);
-			return;
-		}
-		// Pre-empted by live work: pause here (progress kept) and serve the reply.
-		if (this.unserved.size > 0) {
+		// Pre-empted by live work: park here (nothing is lost) and serve the reply.
+		if (!current.ledger.isFinished() && this.unserved.size > 0) {
 			this.pausedConsolidation = current;
 			this.consolidating = null;
 			await this.triggerTurn();
 			return;
 		}
-		// The run ended before finishing and nothing is waiting — the model produced
-		// no probe for the current step. Progress the machine safely (a null result
-		// ends identify/candidates and drops a single verify), so the pass can never
-		// stall, then continue in a new run unless that already completed it.
-		const next = advanceInterrogation(
-			current.loop,
-			this.probes.current(),
-			current.interlocutorLines,
-			this.deps.verifyLimit,
-		);
-		this.probes.reset();
-		this.consolidating = { ...current, loop: next };
-		if (isDone(next)) {
-			await this.finalizeConsolidation(this.consolidating);
-			return;
-		}
-		await this.deps.triggerAgent(CONSOLIDATION_PROMPT);
+		await this.finalizeConsolidation(current);
 	}
 
 	/**
-	 * Persist a finished interrogation's confirmed facts (through the who-is-who
-	 * firewall), clear consolidation state, drop the chat from the queue, and serve
-	 * any reply that queued while it ran.
+	 * Close a pass: clear the state, drop the chat from the queue, record how far it
+	 * read, and serve anything that queued while it ran.
 	 *
-	 * Most of these facts are already on disk — {@link persistConfirmed} wrote each one
-	 * the moment it passed verification, and {@link persistDropped} removed each one the
-	 * moment it was overturned. This stays as the backstop for the path that does not go
-	 * through a probe (a run that ended early, whose last step is settled here by
-	 * {@link finishConsolidationRun}); redoing either is free — the store keeps one copy
-	 * of a fact, and removing one that is already gone removes nothing.
+	 * There are no facts to write here. Every one of them was written by the tool that
+	 * decided it, at the moment it decided it — which is what makes a pass safe to cut
+	 * off at any point, and what makes this function short.
 	 */
-	private async finalizeConsolidation(current: {
-		chatId: string;
-		userId?: string;
-		loop: InterrogationState;
-		coveredThrough: number;
-	}): Promise<void> {
+	private async finalizeConsolidation(
+		current: ConsolidationPass,
+	): Promise<void> {
 		this.consolidating = null;
-		this.facts.reset();
 		// A memory pass makes no chat decision, so it must leave none behind. It should
-		// not be able to record one at all now (`tool-gate.ts` takes the reply tools away
-		// on this turn) — but a sink that outlives the turn that filled it is a landmine,
+		// not be able to record one at all (`tool-gate.ts` takes the reply tools away on
+		// this turn) — but a sink that outlives the turn that filled it is a landmine,
 		// and the next turn to read it would be somebody else's.
 		this.decision.reset();
 		this.resolve.reset();
-		for (const fact of finalFacts(current.loop)) {
-			this.facts.record([
-				{ text: fact.text, subject: "interlocutor", kind: fact.kind },
-			]);
-		}
-		const contactName = this.chats.get(current.chatId)?.contactName;
-		// Unlearn BEFORE writing: a pass that overturns a fact and states its replacement
-		// in the same breath must not have the replacement dropped as a duplicate of the
-		// thing it replaces.
-		const dropped = droppedFacts(current.loop);
-		if (dropped.length > 0 && current.userId) {
-			await this.deps.contactStore.removeFacts(
-				current.userId,
-				dropped.map((fact) => fact.text),
-			);
-		}
-		await this.persistRecordedFacts(current.userId, contactName);
 		await this.deps.consolidationQueue.remove(current.chatId);
-		// Say so on disk, or the next launch will ask the same questions of the same
-		// messages. Recorded even when the pass saved nothing — "there was nothing here
-		// to remember" is a conclusion, and it took a full interrogation to reach it.
+		// Say so on disk, or the next launch will read the same conversation again.
+		// Recorded even when the pass changed nothing — "there was nothing here worth
+		// remembering" is a conclusion, and it cost a pass of inference to reach.
 		if (current.coveredThrough > 0) {
 			await this.deps.chatCursors.markConsolidated(
 				current.chatId,

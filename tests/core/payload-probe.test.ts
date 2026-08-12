@@ -77,11 +77,11 @@ describe("comparePayloads", () => {
 	it("names the tools that came and went", () => {
 		const delta = comparePayloads(
 			describePayload(payload(["read", "bash", "write"])),
-			describePayload(payload(["read", "manager_reply"])),
+			describePayload(payload(["read", "telegram_manager_reply"])),
 		);
 		expect(delta.headStable).toBe(false);
 		expect(delta.toolsRemoved).toEqual(["bash", "write"]);
-		expect(delta.toolsAdded).toEqual(["manager_reply"]);
+		expect(delta.toolsAdded).toEqual(["telegram_manager_reply"]);
 		expect(delta.headCharsDelta).toBeLessThan(0);
 	});
 
@@ -107,7 +107,7 @@ describe("PrefixWatch", () => {
 		expect(watch.record(payload(["read", "bash"]))).toBeNull(); // nothing to compare
 
 		watch.runStarted();
-		const churn = watch.record(payload(["manager_reply"]));
+		const churn = watch.record(payload(["telegram_manager_reply"]));
 		expect(churn?.midRun).toBe(false);
 		expect(watch.defects()).toHaveLength(0);
 	});

@@ -140,15 +140,15 @@ import {
 	createManagerTools,
 	type DecisionSink,
 	type DraftResolutionSink,
-	type FactSink,
 	MANAGER_RESOLVE_TOOL_NAME,
 	MANAGER_TOOL_NAMES,
 } from "./modes/manager/decision";
 import {
-	createInterrogationTools,
-	INTERROGATION_TOOL_NAMES,
-	type ProbeSink,
-} from "./modes/manager/interrogation";
+	createMemoryTools,
+	MEMORY_TOOL_NAMES,
+	MemoryLedger,
+	type MemoryToolContext,
+} from "./modes/manager/memory-tools";
 import { withLabelerMention } from "./modes/manager/mention";
 import {
 	stripTelegramTurns,
@@ -208,7 +208,10 @@ import {
 import { createContactStore } from "./storage/contact-store";
 import { createDmState } from "./storage/dm-state";
 import { createNodeFs } from "./storage/fs";
-import { migrateStorage } from "./storage/migrations";
+import type { MemoryWorkspace } from "./storage/memory";
+import { createPlugmemWorkspace } from "./storage/memory-plugmem";
+import { importLegacyFacts, migrateStorage } from "./storage/migrations";
+import { buildPlugmemConfig, embedderActive } from "./storage/plugmem-config";
 import { createSingletonStore } from "./storage/singleton-store";
 import { createUpdateCursor } from "./storage/update-cursor";
 import {
@@ -495,15 +498,26 @@ const STATUS_KEY = "telegram";
 const MAX_STRAY_MESSAGES = 50;
 const MANAGER_BANNER_KEY = "telegram-manager-banner";
 
-// Every tool the manager may use in the telegram-sandbox: the reply/memory tools,
-// the consolidation interrogation probes, and the resolve-draft tool (visible only
-// on a revise turn — see the matcher wrapper in startManager).
+/**
+ * How long a contact's memory may sit open before the workspace closes it.
+ *
+ * An open database holds its file's exclusive lock, so this is what decides whether
+ * the owner can read their own memory with `plugmem-cli` while the bot is running. A
+ * minute is short enough that a moment's quiet frees it and long enough that a live
+ * back-and-forth is not reopening on every turn (an open costs about two
+ * milliseconds, so being wrong here is cheap in both directions).
+ */
+const MEMORY_IDLE_TIMEOUT_MS = 60_000;
+
+// Every tool the manager may use in the telegram-sandbox: the two reply tools, the
+// memory verbs, and the resolve-draft tool (visible only on a revise turn — see the
+// matcher wrapper in startManager).
 /** Bundled `about` pages ship beside the source, like the instruction files. */
 const ABOUT_DOCS_DIR = join(dirname(fileURLToPath(import.meta.url)), "about");
 
 const MANAGER_TOOLS = [
 	...MANAGER_TOOL_NAMES,
-	...INTERROGATION_TOOL_NAMES,
+	...MEMORY_TOOL_NAMES,
 	MANAGER_RESOLVE_TOOL_NAME,
 	// `about` is safe inside the sandbox: it reads bundled pages by a fixed key, takes
 	// no path, touches no file the model can name — and refuses the owner's live
@@ -566,7 +580,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		isActive: () => managerGuardActive(manager !== null, mixedActive, polarity),
 		matcher: () => managerMatcher,
 		// A blocked tool must be answered with the tool that CAN end this turn — otherwise
-		// a blocked manager_reply is answered with "call manager_reply", and the model
+		// a blocked telegram_manager_reply is answered with "call telegram_manager_reply", and the model
 		// spins until the turn is wasted. Each turn kind has its own way out.
 		endTurnHint: () =>
 			manager?.isConsolidationDone()
@@ -778,6 +792,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 	// Live manager-mode runtime (null when inactive).
 	let manager: ManagerController | null = null;
+	// The per-contact memory databases, open for as long as the manager runs. Closed
+	// on stop so the files' locks are released and the owner can read their own memory
+	// with `plugmem-cli`.
+	let memoryWorkspace: MemoryWorkspace | null = null;
 	// The active telegram-sandbox allowlist; null while the manager is inactive.
 	let managerMatcher: ToolMatcher | null = null;
 	// Tool calls made during the current manager turn, gathered for the debug feed
@@ -1377,18 +1395,31 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const managerDecisionSink: DecisionSink = {
 		record: (decision) => manager?.decisionSink().record(decision),
 	};
-	const managerFactSink: FactSink = {
-		record: (facts) => manager?.factSink().record(facts),
-	};
-	const managerProbeSink: ProbeSink = {
-		record: (result) => manager?.probeSink().record(result),
-	};
 	const managerResolveSink: DraftResolutionSink = {
 		record: (resolution) => manager?.resolveSink().record(resolution),
 	};
+	// The memory verbs reach the live controller the same way, and it — not they —
+	// decides which contact's database is open. A tool called while no manager is
+	// running finds no memory and says so, rather than inventing one.
+	const managerMemoryContext: MemoryToolContext = {
+		active: async () => (await manager?.memoryToolContext().active()) ?? null,
+		contactName: () =>
+			manager?.memoryToolContext().contactName() ?? "the contact",
+		ledger: () => {
+			const live = manager?.memoryToolContext().ledger();
+			if (live) return live;
+			// No manager, no pass to account for. A throwaway keeps the tools total.
+			return new MemoryLedger();
+		},
+		now: () => manager?.memoryToolContext().now() ?? Date.now(),
+		// A getter, so it follows a mode restarted with a different zone.
+		get timezone() {
+			return manager?.memoryToolContext().timezone;
+		},
+	};
 	for (const tool of [
-		...createManagerTools(managerDecisionSink, managerFactSink),
-		...createInterrogationTools(managerProbeSink),
+		...createManagerTools(managerDecisionSink),
+		...createMemoryTools(managerMemoryContext),
 		createDraftResolveTool(managerResolveSink),
 	]) {
 		pi.registerTool(tool);
@@ -1453,6 +1484,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			clearInterval(managerHeartbeat);
 			managerHeartbeat = null;
 		}
+		await stoppingClient?.stop().catch(() => {});
+		await memoryWorkspace?.close().catch(() => {});
+		memoryWorkspace = null;
 		deliverManagerFeed = null;
 		mirrorManagerNotice = null;
 		visibility.setActive("manager", false);
@@ -1658,7 +1692,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		//  2. We are not the only extension writing this list. `setActiveTools` is a global
 		//     setter with no notion of whose tools are whose, and `pi-planner` rebuilds the
 		//     whole thing from `getAllTools()` on `before_provider_request` — which
-		//     resurrected the manager tools we hide (the model could see `manager_reply` in
+		//     resurrected the manager tools we hide (the model could see `telegram_manager_reply` in
 		//     the owner's DM) and rewrote the head of the prompt mid-turn, so the backend
 		//     threw away its cache: 24 302 tokens of prefill where 97 would have done.
 		//
@@ -2163,6 +2197,8 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			intentApplies(intent, {
 				cwd: ctx.cwd,
 				reason: event.reason,
+				previousSessionFile: event.previousSessionFile,
+				sessionFile: ctx.sessionManager.getSessionFile(),
 				now,
 				maxAgeMs: CONNECT_INTENT_MAX_AGE_MS,
 			})
@@ -2199,11 +2235,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// A failed migration must not take the bot down with it: the old files are still
 		// there, untouched by any step that did not complete, and the owner is told.
 		try {
-			const outcome = await migrateStorage(
-				fs,
-				paths,
-				createContactStore(fs, paths),
-			);
+			const outcome = await migrateStorage(fs, paths);
 			if (outcome.applied.length > 0) {
 				ctx.ui.notify(
 					`Telegram storage upgraded (layout v${outcome.from} → v${outcome.to}): ${outcome.applied.join(", ")}.`,
@@ -2957,8 +2989,20 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	const armConnectIntent = async (
 		mode: ReArmMode,
 		cwd: string,
+		sourceSessionFile: string | undefined,
+		targetSessionFile?: string,
 	): Promise<void> => {
-		await connectIntent.arm({ mode, cwd, armedAt: Date.now() });
+		// An in-memory/never-saved session has no stable hand-off identity. Do not leave
+		// behind a broad "start on the next session" note; the owner can start Telegram
+		// explicitly in the new session instead.
+		if (!sourceSessionFile) return;
+		await connectIntent.arm({
+			mode,
+			cwd,
+			sourceSessionFile,
+			targetSessionFile,
+			armedAt: Date.now(),
+		});
 	};
 
 	/**
@@ -2976,6 +3020,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		mode: ReArmMode,
 	): Promise<boolean> => {
 		const currentId = ctx.sessionManager.getSessionId();
+		const sourceSessionFile = ctx.sessionManager.getSessionFile();
 		const sessions = await listSessions(ctx.cwd).catch(() => []);
 		const title =
 			mode === "mixed" ? "Mixed — pick a session" : "Personal — pick a session";
@@ -2995,7 +3040,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				page = pick.page;
 				continue;
 			}
-			await armConnectIntent(mode, ctx.cwd);
+			await armConnectIntent(
+				mode,
+				ctx.cwd,
+				sourceSessionFile,
+				pick.kind === "resume" ? pick.path : undefined,
+			);
 			if (pick.kind === "new") {
 				await ctx.newSession();
 			} else {
@@ -3213,6 +3263,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			get consolidationDone() {
 				return manager?.isConsolidationDone() ?? false;
 			},
+			get recallBlocked() {
+				return manager?.isConsolidationRecallBlocked() ?? false;
+			},
 			get revising() {
 				return manager?.isReviseTurn() ?? false;
 			},
@@ -3231,6 +3284,35 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			fs,
 			paths,
 			settings.manager.rememberMessages,
+		);
+		// The long-term memory: one plugmem database per contact, under `memory/`. The
+		// config is regenerated from the owner's settings on every start, so an embedder
+		// they just turned on is in force for this run and not the next one.
+		//
+		// A workspace left over from a previous start is closed first, and that is not
+		// belt and braces: an open database holds its file's exclusive lock, so a leaked
+		// workspace does not merely waste a handle — it makes that contact's memory
+		// unopenable, including by the workspace replacing it. Every mode start comes
+		// through a stop, so this should already be null; "should" is the word that makes
+		// it worth a line.
+		await memoryWorkspace?.close().catch(() => {});
+		await fs.mkdirp(paths.memoryDir);
+		await fs.writeTextAtomic(
+			paths.memoryConfigPath,
+			buildPlugmemConfig(settings.memory.embedder),
+		);
+		memoryWorkspace = createPlugmemWorkspace(paths.memoryDir, {
+			configPath: paths.memoryConfigPath,
+			idleTimeoutMs: MEMORY_IDLE_TIMEOUT_MS,
+		});
+		// Facts an older version stored in `contacts/*.json` move into the memory here,
+		// rather than in the layout migration — that runs before the settings are read,
+		// and a memory database cannot be opened without them. Idempotent through the
+		// data: each contact's array is emptied once its facts are safely stored.
+		await importLegacyFacts(fs, paths, memoryWorkspace, (userId, count) =>
+			ctx.ui.notify(
+				`Memory: moved ${count} stored fact(s) for contact ${userId} into their own database.`,
+			),
 		);
 		// Everything we know ABOUT a chat that is not the chat itself: the ids we sent, the
 		// memory-pass queue, and how far it has been answered and consolidated. One subject,
@@ -3338,9 +3420,14 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			forwards: settings.forwards,
 			continueWindowMs: settings.manager.continueWindowMs,
 			ownerReplyWindowMs: settings.manager.ownerReplyWindowMs,
-			factsLimit: settings.manager.factsLimit,
 			factConsolidationQuietMs: settings.manager.factConsolidationQuietMs,
-			verifyLimit: settings.manager.verifyLimit,
+			recallTokenBudget: settings.memory.recallTokenBudget,
+			recallK: settings.memory.recallK,
+			consolidationLimits: {
+				maxSteps: settings.memory.consolidationMaxSteps,
+				maxNudges: settings.memory.consolidationMaxNudges,
+			},
+			episodes: settings.memory.episodes,
 			liveFreshnessMs: settings.manager.liveFreshnessMs,
 			reopenAfterMs: settings.manager.reopenAfterMs,
 			reviseThreshold: settings.manager.reviseThreshold,
@@ -3358,6 +3445,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			clock: { now: () => Date.now() },
 			chatStore,
 			contactStore,
+			memory: memoryWorkspace,
 			consolidationQueue,
 			chatCursors,
 			sentRegistry,
@@ -3366,6 +3454,13 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// in the Telegram polarity; during coding the owner owns the session, so
 			// the manager stays "not idle" — it keeps ingesting/deferring but never
 			// triggers a turn until the return timer flips polarity.
+			onMemoryError: (message) => {
+				mirrorManagerNotice?.(
+					"error",
+					`Long-term memory is not working: ${message} — replies still go out, ` +
+						"but nothing is being remembered or recalled until this is fixed.",
+				);
+			},
 			isIdle: () => !busy && managerHoldsSession(mixedActive, polarity),
 			triggerAgent: async (prompt) => {
 				// Tag every injected Telegram turn — in ALL modes, not just mixed — so the
@@ -3527,6 +3622,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		).catch(() => {});
 		updateManagerBanner();
 		managerTick = setInterval(() => {
+			// Let go of a memory nobody has touched for a while. An open database holds its
+			// file's exclusive lock, so without this the owner could never read their own
+			// memory with `plugmem-cli` while the bot was running.
+			memoryWorkspace?.closeIdle();
 			// A tick must never take the process with it: an escaping rejection here is an
 			// unhandled rejection, and Node ends the process for one.
 			void manager
@@ -3713,6 +3812,119 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		handler: recoverTelegram,
 	});
 
+	/**
+	 * Rebuild every contact memory's vectors with the currently configured embedder.
+	 *
+	 * The owner's operation, and deliberately not an automatic one: it calls the model
+	 * once per batch of facts, for every contact, and how long that takes depends on a
+	 * provider this code does not manage. It is needed after two changes to
+	 * `memory.embedder`, and only one of them announces itself:
+	 *
+	 *  - **a different model** — plugmem records which model's vectors are in the file
+	 *    and refuses to mix two, so every read and write fails until this runs. Loud,
+	 *    and the failure says so;
+	 *  - **turning an embedder on** over memories that were built without one — silent.
+	 *    Facts learned from now on get vectors, facts learned before do not, and the
+	 *    memory answers meaning-based questions about the recent half of what it knows
+	 *    without ever mentioning the rest.
+	 */
+	/**
+	 * Rebuild every contact memory's vectors with the currently configured embedder.
+	 *
+	 * The owner's operation, and deliberately not an automatic one: it calls the model
+	 * once per batch of facts, for every contact, and how long that takes depends on a
+	 * provider this code does not manage. It is needed after two changes to
+	 * `memory.embedder`, and only one of them announces itself:
+	 *
+	 *  - **a different model** — plugmem records which model's vectors are in the file
+	 *    and refuses to mix two, so every read and write of that memory fails until
+	 *    this runs. Loud, and the failure says so;
+	 *  - **turning an embedder on** over memories that were built without one — silent.
+	 *    Facts learned from now on get vectors, facts learned before do not, and the
+	 *    memory answers meaning-based questions about the recent half of what it knows
+	 *    without ever mentioning the rest.
+	 *
+	 * **Running it with the bridge up is the normal case, not a hazard.** Settings are
+	 * read when a mode starts, so a live workspace is already using the configuration
+	 * in force — and every memory verb in this process goes through one queue, which
+	 * makes the rebuild atomic against a fact somebody is stating right now. What it
+	 * does cost is a pause: memory verbs wait behind it, so a turn taken mid-rebuild
+	 * answers a moment later.
+	 */
+	const reembedMemories = async (
+		report: (text: string, level?: "warning" | "error") => void | Promise<void>,
+	): Promise<void> => {
+		const live = memoryWorkspace;
+		// Without a running mode there is no workspace and no settings in hand, so both
+		// are made here — and the config file is rewritten first, because a rebuild that
+		// used a stale one would quietly re-embed with the model being replaced.
+		let settings = activeSettings;
+		if (!live) {
+			const loaded = await loadSettings(fs, paths.settingsPath);
+			for (const warning of loaded.warnings) await report(warning, "warning");
+			settings = loaded.settings;
+		}
+		if (!settings) {
+			await report("Telegram settings could not be read.", "error");
+			return;
+		}
+		if (!embedderActive(settings.memory.embedder)) {
+			await report(
+				"memory.embedder is off, so there is no model to rebuild vectors with. " +
+					"The memories still work — keyword, entity-graph and time retrieval " +
+					"need no embedder; only meaning-based recall does.",
+				"error",
+			);
+			return;
+		}
+		let workspace = live;
+		if (!workspace) {
+			await fs.mkdirp(paths.memoryDir);
+			await fs.writeTextAtomic(
+				paths.memoryConfigPath,
+				buildPlugmemConfig(settings.memory.embedder),
+			);
+			workspace = createPlugmemWorkspace(paths.memoryDir, {
+				configPath: paths.memoryConfigPath,
+				idleTimeoutMs: MEMORY_IDLE_TIMEOUT_MS,
+			});
+		}
+		try {
+			const reports = await workspace.reembed((name, index, total) =>
+				report(`Rebuilding memory vectors ${index + 1}/${total} (${name})…`),
+			);
+			if (reports.length === 0) {
+				await report("No contact memories yet — nothing to rebuild.");
+				return;
+			}
+			const facts = reports.reduce((total, entry) => total + entry.embedded, 0);
+			await report(
+				`Memory vectors rebuilt: ${facts} fact(s) across ${reports.length} ` +
+					`contact(s), now on ${reports[0].space}.`,
+			);
+		} catch (error) {
+			// Partial by construction: each memory is republished atomically on its own,
+			// so the ones already done are done. Saying so is what makes running it again
+			// obviously safe rather than something the owner has to reason about.
+			await report(
+				`Rebuilding memory vectors failed: ${String(error)}. Memories already ` +
+					"rebuilt keep their new vectors; run it again to finish the rest.",
+				"error",
+			);
+		} finally {
+			// Only ours. Closing the live one would take the running mode's memory with it.
+			if (!live) await workspace.close().catch(() => {});
+		}
+	};
+
+	pi.registerCommand(COMMANDS.memoryReembed, {
+		description:
+			"Rebuild contact memory vectors after changing memory.embedder.",
+		handler: async (_args, ctx) => {
+			await reembedMemories((text, level) => ctx.ui.notify(text, level));
+		},
+	});
+
 	// Start a specific mode using the captured command context.
 	const startMode = async (
 		target: SwitchTarget,
@@ -3856,7 +4068,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		await ack("Resuming…");
-		await armConnectIntent(mixedActive ? "mixed" : "connect", ctx.cwd);
+		await armConnectIntent(
+			mixedActive ? "mixed" : "connect",
+			ctx.cwd,
+			ctx.sessionManager.getSessionFile(),
+			targetPath,
+		);
 		await ctx.switchSession(targetPath);
 	};
 
@@ -4108,6 +4325,26 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 						text: "🗜 /compact and /clear apply to personal and mixed mode. In manager mode I build the context fresh for each conversation, so there is no history to compact or clear.",
 					})
 					.catch(() => {});
+				return true;
+			}
+			// /memory_reembed works in every mode, and from the phone on purpose: the
+			// failure it fixes ("this memory was written with a different embedding
+			// model") shows up while the owner is watching the bot answer people, not
+			// while they are sitting at the terminal. Progress goes back as it happens —
+			// it calls the embedding provider once per batch, for every contact, so a
+			// silent minute would read as a command that did nothing.
+			if (/^\/memory_reembed(@\w+)?$/i.test(text)) {
+				const thread = threadOf(event) ?? personalThread();
+				const owner = ownerUserId;
+				await reembedMemories(async (line, level) => {
+					await api
+						.sendMessage({
+							chat_id: owner,
+							message_thread_id: thread,
+							text: `${level === "error" ? "⚠️" : "🧠"} ${line}`,
+						})
+						.catch(() => {});
+				});
 				return true;
 			}
 			// /help works in the owner DM in every mode. Personal mode renders its own

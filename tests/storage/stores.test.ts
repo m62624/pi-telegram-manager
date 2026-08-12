@@ -137,7 +137,6 @@ describe("contact-store", () => {
 		const rec = await store.upsertProfile(profile(), 1000);
 		expect(rec.firstSeen).toBe(1000);
 		expect(rec.updatedAt).toBe(1000);
-		expect(rec.facts).toEqual([]);
 		expect(rec.profile.displayName).toBe("Ada");
 		expect(await store.get("42")).toEqual(rec);
 	});
@@ -157,28 +156,6 @@ describe("contact-store", () => {
 		expect(rec.profile.lastName).toBe("Lovelace");
 	});
 
-	it("appends important facts, oldest-first", async () => {
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile(), 1000);
-		await store.addFact("42", { text: "likes tea", timestamp: 1100 });
-		await store.addFact("42", {
-			text: "timezone UTC+3",
-			timestamp: 1200,
-			source: "manual",
-		});
-		const facts = await store.getFacts("42");
-		expect(facts.map((f) => f.text)).toEqual(["likes tea", "timezone UTC+3"]);
-	});
-
-	it("ignores facts for an unknown contact", async () => {
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.addFact("999", { text: "orphan", timestamp: 1 });
-		expect(await store.getFacts("999")).toEqual([]);
-		expect(await store.get("999")).toBeNull();
-	});
-
 	it("isolates contacts per user id", async () => {
 		const fs = new FakeFs();
 		const store = createContactStore(fs, paths);
@@ -186,133 +163,6 @@ describe("contact-store", () => {
 		await store.upsertProfile(profile({ userId: "2", displayName: "Two" }), 1);
 		expect((await store.get("1"))?.profile.displayName).toBe("One");
 		expect((await store.get("2"))?.profile.displayName).toBe("Two");
-	});
-
-	it("clearAllFacts wipes every contact's facts but keeps profiles", async () => {
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile({ userId: "1", displayName: "One" }), 1);
-		await store.upsertProfile(profile({ userId: "2", displayName: "Two" }), 1);
-		await store.addFact("1", { text: "a", timestamp: 1 });
-		await store.addFact("2", { text: "b", timestamp: 1 });
-		await store.clearAllFacts();
-		expect(await store.getFacts("1")).toEqual([]);
-		expect(await store.getFacts("2")).toEqual([]);
-		expect((await store.get("1"))?.profile.displayName).toBe("One");
-		expect((await store.get("2"))?.profile.displayName).toBe("Two");
-	});
-
-	it("clearAllFacts clears nothing, and says so, when there is nothing to clear", async () => {
-		// The count is what tells the owner whether their memory was actually thrown away.
-		// A fresh install passes through the memory migration too, and must not be told
-		// that facts it never had were "upgraded".
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		expect(await store.clearAllFacts()).toBe(0);
-	});
-
-	it("stores a fact once, however many times it is learned", async () => {
-		// A memory pass re-runs over a chat whenever it gets new messages, and it
-		// re-confirms what it confirmed before: the same sentence, verified against the
-		// same quote, genuinely true again. Appended blindly, "true again" became "stored
-		// again" — in the owner's live store, one contact's memory was five facts, three
-		// of which were the same line.
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile(), 1000);
-		await store.appendFacts("42", [
-			{ text: "Prefers voice notes", timestamp: 1 },
-		]);
-		await store.appendFacts("42", [
-			{ text: "prefers voice notes.", timestamp: 2 }, // same sentence, different dress
-			{ text: "Works nights", timestamp: 2 },
-		]);
-		await store.addFact("42", {
-			text: "  Prefers   voice notes  ",
-			timestamp: 3,
-		});
-		const facts = await store.getFacts("42");
-		expect(facts.map((f) => f.text)).toEqual([
-			"Prefers voice notes",
-			"Works nights",
-		]);
-	});
-
-	it("does not let a repeat evict a real fact through the cap", async () => {
-		// `factsLimit` keeps the NEWEST facts. A repeat that is stored is a repeat that
-		// pushes something true off the end.
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile(), 1000);
-		await store.appendFacts(
-			"42",
-			[
-				{ text: "Works nights", timestamp: 1 },
-				{ text: "Prefers voice notes", timestamp: 1 },
-			],
-			2,
-		);
-		await store.appendFacts(
-			"42",
-			[{ text: "Prefers voice notes", timestamp: 2 }],
-			2,
-		);
-		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
-			"Works nights",
-			"Prefers voice notes",
-		]);
-	});
-
-	it("evicts the least valuable fact when full, not simply the oldest", async () => {
-		// It used to be `slice(-limit)`: keep the newest, whatever they are. So a contact's
-		// name and city — learned the day they first wrote — were evicted by a week of "is
-		// at the office today", and the memory that survived was the one worth the least.
-		// `context` is documented as background that may go stale; `identity` is who the
-		// person IS and `agreement` is what was promised them. Age is the tie-break now.
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile(), 1000);
-		await store.appendFacts(
-			"42",
-			[
-				{ text: "Lives two hours ahead", timestamp: 1, kind: "identity" },
-				{ text: "Is travelling this week", timestamp: 2, kind: "context" },
-				{ text: "Was promised a refund", timestamp: 3, kind: "agreement" },
-			],
-			3,
-		);
-		await store.appendFacts(
-			"42",
-			[{ text: "Prefers short replies", timestamp: 4, kind: "preference" }],
-			3,
-		);
-		// The disposable one went; who they are and what they were promised stayed — and
-		// the survivors are still in the order they were learned.
-		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
-			"Lives two hours ahead",
-			"Was promised a refund",
-			"Prefers short replies",
-		]);
-	});
-
-	it("forgets a fact by what it says, however it is dressed", async () => {
-		// The unlearning path (`manager_forget`): the pass names a fact by its text, and a
-		// trailing full stop or a stray double space must not save it from being dropped —
-		// the same normalisation that stops the same sentence being stored twice.
-		const fs = new FakeFs();
-		const store = createContactStore(fs, paths);
-		await store.upsertProfile(profile(), 1000);
-		await store.appendFacts("42", [
-			{ text: "Works at a bank", timestamp: 1, kind: "identity" },
-			{ text: "Prefers voice notes", timestamp: 2, kind: "preference" },
-		]);
-		expect(await store.removeFacts("42", ["  works at a BANK. "])).toBe(1);
-		expect((await store.getFacts("42")).map((f) => f.text)).toEqual([
-			"Prefers voice notes",
-		]);
-		// Removing what is not there removes nothing, and says so.
-		expect(await store.removeFacts("42", ["never knew this"])).toBe(0);
-		expect(await store.removeFacts("unknown-contact", ["anything"])).toBe(0);
 	});
 });
 

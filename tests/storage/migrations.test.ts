@@ -14,12 +14,45 @@ function setup() {
 	const fs = new FakeFs();
 	return {
 		fs,
-		run: () => migrateStorage(fs, paths, createContactStore(fs, paths)),
+		run: () => migrateStorage(fs, paths),
 	};
 }
 
 async function write(fs: FakeFs, path: string, value: unknown): Promise<void> {
 	await fs.writeText(path, JSON.stringify(value, null, 2));
+}
+
+/**
+ * A contact file as an older version wrote it — profile AND facts in one JSON.
+ *
+ * Written by hand rather than through `ContactStore`, because the live store does not
+ * know this shape any more. That is the point of the migration doctrine: exactly one
+ * place reads a layout this version does not write, and these tests are what pin it.
+ */
+async function legacyContact(
+	fs: FakeFs,
+	userId: string,
+	facts: Array<{ text: string; timestamp?: number; kind?: string }>,
+	displayName = "Alice",
+): Promise<void> {
+	await write(fs, paths.contactFile(userId), {
+		profile: { userId, displayName },
+		facts,
+		firstSeen: 0,
+		updatedAt: 0,
+	});
+}
+
+/** The facts still sitting in a contact file. */
+async function storedFacts(
+	fs: FakeFs,
+	userId: string,
+): Promise<Array<{ text: string }>> {
+	const record = await readJsonIfExists<{ facts?: Array<{ text: string }> }>(
+		fs,
+		paths.contactFile(userId),
+	);
+	return record?.facts ?? [];
 }
 
 /** The whole of an old install, as it really looked on disk. */
@@ -192,29 +225,29 @@ describe("migrateStorage: an install from before the runner", () => {
 		// A fact is a claim about a person. A claim captured under rules we no longer trust
 		// is worse than no claim — consolidation re-derives it from a clean transcript.
 		const { fs, run } = setup();
-		const contacts = createContactStore(fs, paths);
-		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
-		await contacts.addFact("5", { text: "Works at a bank", timestamp: 1 });
+		await legacyContact(fs, "5", [{ text: "Works at a bank", timestamp: 1 }]);
 		// An install that predates the fact-schema marker entirely.
 		await write(fs, paths.legacy.sentRegistryPath, {});
 
 		const outcome = await run();
 		expect(outcome.factsCleared).toBe(1);
-		expect(await contacts.getFacts("5")).toEqual([]);
+		expect(await storedFacts(fs, "5")).toEqual([]);
 		// The profile is not a claim and is kept.
-		expect((await contacts.get("5"))?.profile.displayName).toBe("Alice");
+		expect(
+			(await createContactStore(fs, paths).get("5"))?.profile.displayName,
+		).toBe("Alice");
 	});
 
 	it("does not re-clear facts an earlier memory migration already cleared", async () => {
 		const { fs, run } = setup();
-		const contacts = createContactStore(fs, paths);
-		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
-		await contacts.addFact("5", { text: "Prefers voice notes", timestamp: 1 });
+		await legacyContact(fs, "5", [
+			{ text: "Prefers voice notes", timestamp: 1 },
+		]);
 		await write(fs, paths.legacy.memoryVersionPath, { version: 3 });
 
 		const outcome = await run();
 		expect(outcome.factsCleared).toBe(0);
-		expect(await contacts.getFacts("5")).toHaveLength(1);
+		expect(await storedFacts(fs, "5")).toHaveLength(1);
 		// Its marker is gone: one number, one file.
 		expect(await fs.exists(paths.legacy.memoryVersionPath)).toBe(false);
 	});
@@ -369,9 +402,9 @@ describe("migrateStorage: the memory is never wiped on a guess", () => {
 		// the memory the first had just decided to keep. There is no legacy file left to see,
 		// and that is the evidence: this directory has been migrated, not neglected.
 		const { fs, run } = setup();
-		const contacts = createContactStore(fs, paths);
-		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
-		await contacts.addFact("5", { text: "Prefers voice notes", timestamp: 1 });
+		await legacyContact(fs, "5", [
+			{ text: "Prefers voice notes", timestamp: 1 },
+		]);
 		await write(fs, paths.legacy.memoryVersionPath, { version: 3 });
 
 		await run(); // the first process
@@ -379,7 +412,7 @@ describe("migrateStorage: the memory is never wiped on a guess", () => {
 
 		const second = await run();
 		expect(second.factsCleared).toBe(0);
-		expect(await contacts.getFacts("5")).toHaveLength(1);
+		expect(await storedFacts(fs, "5")).toHaveLength(1);
 	});
 
 	it("still wipes the facts of an install from before the marker existed", async () => {
@@ -388,9 +421,7 @@ describe("migrateStorage: the memory is never wiped on a guess", () => {
 		// were captured under rules we no longer trust, and consolidation will re-derive them
 		// from clean transcripts.
 		const { fs, run } = setup();
-		const contacts = createContactStore(fs, paths);
-		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
-		await contacts.addFact("5", { text: "Works at a bank", timestamp: 1 });
+		await legacyContact(fs, "5", [{ text: "Works at a bank", timestamp: 1 }]);
 		await write(fs, paths.legacy.topicsPath, {
 			ownerChatId: 7,
 			chat: 11,
@@ -399,19 +430,19 @@ describe("migrateStorage: the memory is never wiped on a guess", () => {
 
 		const outcome = await run();
 		expect(outcome.factsCleared).toBe(1);
-		expect(await contacts.getFacts("5")).toEqual([]);
+		expect(await storedFacts(fs, "5")).toEqual([]);
 	});
 
 	it("does not go looking through the contacts of a clean install", async () => {
 		// Nothing here at all: no marker, no old files, nothing to be suspicious of.
 		const { fs, run } = setup();
-		const contacts = createContactStore(fs, paths);
-		await contacts.upsertProfile({ userId: "5", displayName: "Alice" }, 0);
-		await contacts.addFact("5", { text: "Prefers voice notes", timestamp: 1 });
+		await legacyContact(fs, "5", [
+			{ text: "Prefers voice notes", timestamp: 1 },
+		]);
 
 		const outcome = await run();
 		expect(outcome.factsCleared).toBe(0);
-		expect(await contacts.getFacts("5")).toHaveLength(1);
+		expect(await storedFacts(fs, "5")).toHaveLength(1);
 		expect(await fs.exists(paths.schemaVersionPath)).toBe(true);
 	});
 });

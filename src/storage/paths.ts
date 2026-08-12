@@ -68,8 +68,21 @@ export interface TelegramPaths {
 	};
 	/** Per-chat JSONL transcripts directory (manager last-N memory). */
 	chatsDir: string;
-	/** Per-contact profile + important-facts directory (both modes). */
+	/** Per-contact profile directory (both modes). */
 	contactsDir: string;
+	/**
+	 * The plugmem workspace: one database per contact, named `u<userId>`.
+	 *
+	 * A directory rather than a file, and that is the point — plugmem resolves a name
+	 * inside it and a name cannot represent a path, so one contact's facts cannot be
+	 * addressed from another contact's turn. See `storage/memory.ts`.
+	 */
+	memoryDir: string;
+	/**
+	 * The `config.toml` plugmem reads (engine width + embedder). Generated from the
+	 * owner's `memory.*` settings on every mode start — see `storage/plugmem-config.ts`.
+	 */
+	memoryConfigPath: string;
 	/** Working directory a mode-2 manager session is opened in. */
 	managerWorkspaceDir: string;
 	/**
@@ -90,6 +103,7 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 	const chatsDir = join(extensionDir, "chats");
 	const contactsDir = join(extensionDir, "contacts");
 	const toolOutputDir = join(extensionDir, "tool-output");
+	const memoryDir = join(extensionDir, "memory");
 	return {
 		agentDir,
 		extensionDir,
@@ -112,6 +126,8 @@ export function createTelegramPaths(agentDir: string): TelegramPaths {
 		},
 		chatsDir,
 		contactsDir,
+		memoryDir,
+		memoryConfigPath: join(memoryDir, "config.toml"),
 		managerWorkspaceDir: join(extensionDir, "manager-workspace"),
 		toolOutputDir,
 		chatFile: (chatId) => join(chatsDir, `${sanitizeSegment(chatId)}.jsonl`),

@@ -35,41 +35,40 @@ export interface ToolGuardDeps {
 
 /** Default steer: the normal turn ends with exactly one of the two decision tools. */
 export const DECIDE_END_TURN_HINT =
-	"End your turn by calling exactly one of manager_reply (to answer the " +
-	"interlocutor) or manager_silent (to stay quiet).";
+	"End your turn by calling exactly one of telegram_manager_reply (to answer the " +
+	"interlocutor) or telegram_manager_silent (to stay quiet).";
 
 /**
  * Steer for a revise turn: reply/silent/remember are hidden and blocked, and the
  * held draft is resolved through the single tool that is active. Without this the
- * guard used to answer a blocked `manager_reply` by telling the model to call
- * `manager_reply` — a contradiction that burns the whole turn.
+ * guard used to answer a blocked `telegram_manager_reply` by telling the model to call
+ * `telegram_manager_reply` — a contradiction that burns the whole turn.
  */
 export const RESOLVE_DRAFT_END_TURN_HINT =
-	"A drafted reply is held for review, so manager_reply / manager_silent are " +
-	"disabled this turn. End your turn by calling manager_resolve_draft with " +
+	"A drafted reply is held for review, so telegram_manager_reply / telegram_manager_silent are " +
+	"disabled this turn. End your turn by calling telegram_manager_resolve_draft with " +
 	"action 'send', 'refine' (with the corrected text), or 'drop'.";
 
 /**
  * Steer for a consolidation pass: there is nobody to answer on this turn, so the reply
- * tools do not exist. Without a hint of its own, a blocked `manager_silent` here was
- * answered with the default "decide the turn with manager_reply or manager_silent" —
+ * tools do not exist. Without a hint of its own, a blocked `telegram_manager_silent` here was
+ * answered with the default "decide the turn with telegram_manager_reply or telegram_manager_silent" —
  * which is the one thing that cannot be done, and the model would keep trying.
  */
 export const CONSOLIDATION_END_TURN_HINT =
 	"This is a background memory pass, not a conversation: nothing you write reaches " +
-	"anyone, and manager_reply / manager_silent do not exist on this turn. Answer the " +
-	"interrogation step shown in the directive, by calling the one tool it names.";
+	"anyone, and telegram_manager_reply / telegram_manager_silent do not exist on this turn. Call one of " +
+	"the memory tools listed in the directive, or telegram_manager_done to end the pass.";
 
 /**
- * Steer for a memory pass that has already answered every step. Its predecessor —
- * "answer the interrogation step shown in the directive" — told the model to do the one
- * thing that no longer existed, and a model told to answer a step that is not there
- * answers the last one it remembers: step 1, again.
+ * Steer for a memory pass that is over. Its predecessor pointed at a step in a
+ * four-step interrogation that no longer exists, and a model told to answer a step that
+ * is not there answers the last one it remembers: step 1, again.
  */
 export const CONSOLIDATION_DONE_END_TURN_HINT =
-	"The memory pass for this contact is finished — every step has been answered, and " +
-	"no tool exists on this turn. Do not call anything. Reply with a single word to end " +
-	"the turn.";
+	"The memory pass for this contact is finished — you have already called " +
+	"telegram_manager_done, and no tool exists on this turn. Do not call anything. Reply with a " +
+	"single word to end the turn.";
 
 /** The steer text returned to the model when it calls a blocked tool. */
 export function blockedToolReason(
