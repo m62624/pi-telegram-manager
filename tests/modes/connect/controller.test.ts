@@ -1108,15 +1108,18 @@ describe("ConnectController: a message typed outside the personal topic", () => 
 		["typed in another topic", FOREIGN],
 		["typed in the personal topic", PERSONAL],
 		["typed with no topic at all", undefined],
-	])("answers in the personal topic, plain, for a message %s", async (_name, thread) => {
-		const { controller, api } = setup({ chatThread: () => PERSONAL });
-		await controller.onEvent(threadEvent(11, thread));
-		await controller.deliverAssistant("answer");
+	])(
+		"answers in the personal topic, plain, for a message %s",
+		async (_name, thread) => {
+			const { controller, api } = setup({ chatThread: () => PERSONAL });
+			await controller.onEvent(threadEvent(11, thread));
+			await controller.deliverAssistant("answer");
 
-		expect(api.sent).toHaveLength(1);
-		expect(api.sent[0].message_thread_id).toBe(PERSONAL);
-		expect(api.sent[0]).not.toHaveProperty("reply_parameters");
-	});
+			expect(api.sent).toHaveLength(1);
+			expect(api.sent[0].message_thread_id).toBe(PERSONAL);
+			expect(api.sent[0]).not.toHaveProperty("reply_parameters");
+		},
+	);
 
 	it("hands over the turn's messages when the bot speaks, not when the turn starts", async () => {
 		// The copy of a stray message is made from this hook. It must fire with the
