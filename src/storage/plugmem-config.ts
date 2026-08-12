@@ -35,7 +35,21 @@ export interface EmbedderSettings {
 	 * it; see the note in SETTINGS.md.
 	 */
 	dim: number;
+	/**
+	 * The stable identity a database's stored vectors are tagged with, so plugmem
+	 * knows whether a later `model` still describes them. Unset — the default —
+	 * falls back to `model` itself, which is right until two different model names
+	 * are known to produce interchangeable vectors (a rename, a proxy alias): only
+	 * then does declaring the same `spaceId` for both let plugmem treat them as one
+	 * space and skip a reembed neither needs. Changing `spaceId` on an embedder that
+	 * already has vectors is exactly what a vector-space mismatch is — see the note
+	 * in SETTINGS.md.
+	 */
+	spaceId?: string;
 }
+
+/** plugmem's own ceiling on a persisted embedding-space identity (`MAX_VECTOR_SPACE_ID_BYTES`). */
+export const MAX_SPACE_ID_BYTES = 256;
 
 /** Whether the configured embedder is enabled. */
 export function embedderActive(embedder: EmbedderSettings): boolean {
@@ -68,6 +82,17 @@ export function validateEmbedder(
 		throw new TypeError(
 			`${path}.dim must be greater than 0 when ${path}.enabled is true`,
 		);
+	}
+	if (embedder.spaceId !== undefined) {
+		if (!embedder.spaceId.trim()) {
+			throw new TypeError(`${path}.spaceId must not be empty`);
+		}
+		const bytes = new TextEncoder().encode(embedder.spaceId).length;
+		if (bytes > MAX_SPACE_ID_BYTES) {
+			throw new TypeError(
+				`${path}.spaceId must be at most ${MAX_SPACE_ID_BYTES} bytes, got ${bytes}`,
+			);
+		}
 	}
 }
 
@@ -121,6 +146,9 @@ export function buildPlugmemConfig(embedder: EmbedderSettings): string {
 	}
 	if (embedder.model !== undefined) {
 		lines.push(`model = ${tomlString(embedder.model)}`);
+	}
+	if (embedder.spaceId !== undefined) {
+		lines.push(`space_id = ${tomlString(embedder.spaceId)}`);
 	}
 	if (embedder.apiKeyEnv?.trim()) {
 		lines.push(`api_key_env = ${tomlString(embedder.apiKeyEnv.trim())}`);

@@ -75,6 +75,25 @@ describe("buildPlugmemConfig", () => {
 		});
 		expect(toml).not.toContain("api_key_env");
 	});
+
+	it("passes an explicit spaceId through, and omits it when unset", () => {
+		const withSpaceId = buildPlugmemConfig({
+			enabled: true,
+			url: "http://localhost:1234/v1/embeddings",
+			model: "e5-alias",
+			spaceId: "e5",
+			dim: 384,
+		});
+		expect(withSpaceId).toContain('space_id = "e5"');
+
+		const withoutSpaceId = buildPlugmemConfig({
+			enabled: true,
+			url: "http://localhost:1234/v1/embeddings",
+			model: "e5",
+			dim: 384,
+		});
+		expect(withoutSpaceId).not.toContain("space_id");
+	});
 });
 
 describe("validateEmbedder", () => {
@@ -121,5 +140,26 @@ describe("validateEmbedder", () => {
 		expect(() =>
 			validateEmbedder({ enabled: true, dim: 1 }, "memory.embedder"),
 		).toThrow(/memory\.embedder\.url/);
+	});
+
+	it("rejects an empty or oversized spaceId, mirroring plugmem's own ceiling", () => {
+		const base = {
+			enabled: true,
+			url: "http://x/v1/embeddings",
+			model: "e5",
+			dim: 768,
+		};
+		expect(() => validateEmbedder({ ...base, spaceId: "" })).toThrow(
+			/spaceId must not be empty/,
+		);
+		expect(() => validateEmbedder({ ...base, spaceId: "  " })).toThrow(
+			/spaceId must not be empty/,
+		);
+		expect(() =>
+			validateEmbedder({ ...base, spaceId: "x".repeat(257) }),
+		).toThrow(/spaceId must be at most 256 bytes, got 257/);
+		expect(() =>
+			validateEmbedder({ ...base, spaceId: "x".repeat(256) }),
+		).not.toThrow();
 	});
 });

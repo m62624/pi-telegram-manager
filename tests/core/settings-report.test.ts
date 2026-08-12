@@ -100,6 +100,48 @@ describe("renderSettingsReport", () => {
 		});
 		expect(closed).toContain("none (messaging tools only)");
 	});
+
+	it("names the vector space an enabled embedder answers from", () => {
+		const withoutSpaceId = normalizeSettings({
+			botToken: SECRET,
+			allowedUserId: 777,
+			memory: {
+				embedder: {
+					enabled: true,
+					url: "http://localhost:11434/v1/embeddings",
+					model: "nomic-embed-text",
+					dim: 768,
+				},
+			},
+		});
+		const report = renderSettingsReport({
+			settings: withoutSpaceId,
+			mode: "manager",
+		});
+		expect(report).toContain(
+			'vector space "nomic-embed-text" (defaults to the model name)',
+		);
+
+		const withSpaceId = normalizeSettings({
+			botToken: SECRET,
+			allowedUserId: 777,
+			memory: {
+				embedder: {
+					enabled: true,
+					url: "http://localhost:11434/v1/embeddings",
+					model: "nomic-embed-text-alias",
+					spaceId: "nomic-embed-text",
+					dim: 768,
+				},
+			},
+		});
+		const reportWithSpaceId = renderSettingsReport({
+			settings: withSpaceId,
+			mode: "manager",
+		});
+		expect(reportWithSpaceId).toContain('vector space "nomic-embed-text"');
+		expect(reportWithSpaceId).not.toContain("defaults to the model name");
+	});
 });
 
 describe("humanMs / humanBytes", () => {

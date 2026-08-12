@@ -814,6 +814,7 @@ export function normalizeSettings(
 				),
 				url: asOptionalString(embedder.url, "memory.embedder.url"),
 				model: asOptionalString(embedder.model, "memory.embedder.model"),
+				spaceId: asOptionalString(embedder.spaceId, "memory.embedder.spaceId"),
 				apiKeyEnv: asOptionalString(
 					embedder.apiKeyEnv,
 					"memory.embedder.apiKeyEnv",

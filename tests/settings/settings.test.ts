@@ -48,6 +48,25 @@ describe("normalizeSettings", () => {
 		);
 	});
 
+	it("accepts an explicit spaceId, and leaves it unset by default", () => {
+		expect(DEFAULT_SETTINGS.memory.embedder.spaceId).toBeUndefined();
+
+		const withSpaceId = normalizeSettings({
+			memory: {
+				embedder: {
+					enabled: true,
+					url: "https://api.openai.com/v1/embeddings",
+					model: "text-embedding-3-small",
+					spaceId: "text-embedding-3-small-alias",
+					dim: 1536,
+				},
+			},
+		});
+		expect(withSpaceId.memory.embedder.spaceId).toBe(
+			"text-embedding-3-small-alias",
+		);
+	});
+
 	it("field-merges over defaults, keeping untouched defaults", () => {
 		const s = normalizeSettings({
 			manager: { continueWindowMs: 45_000, rememberMessages: 50 },

@@ -288,6 +288,7 @@ LM Studio, vLLM and llama.cpp-compatible servers all use this same shape.
 | `memory.embedder.model` | unset | replaces | Embedding model name selected on the server. Required when enabled. |
 | `memory.embedder.apiKeyEnv` | unset | replaces | Name of the **environment variable** holding the bearer token — never the token itself. |
 | `memory.embedder.dim` | `0` | replaces | Embedding width. Must be greater than `0` when enabled; keep the stored width while temporarily disabled. |
+| `memory.embedder.spaceId` | unset (falls back to `model`) | replaces | The identity plugmem tags a database's stored vectors with — see [Vector space identity](#vector-space-identity-spaceid) below. |
 
 A local example, with [Ollama](https://ollama.com) already running:
 
@@ -311,13 +312,28 @@ Changing only `url` is safe when it still serves the same model at the same widt
 temporarily stop semantic embedding, set `enabled: false` and keep the existing `model`
 and `dim` — the stored vectors are left alone and switching back on costs nothing.
 
+#### Vector space identity (`spaceId`)
+
+Each database records not just the width but **which vector space its stored vectors
+belong to** — an identity string, written into the database when the first vector is
+stored. `spaceId` sets that identity explicitly; left unset, it is `model` itself, which
+is right for the ordinary case where "the model changed" and "the vectors are no longer
+comparable" are the same fact.
+
+They stop being the same fact when a model is renamed or re-published behind a new
+name but keeps producing the identical vectors — a provider alias, a version bump that
+changed nothing about the weights. Declare the same `spaceId` for both names and
+plugmem treats their vectors as one space: no mismatch, no reembed, because none is
+needed. This is the ONE case `spaceId` exists for; changing it on an embedder that
+already has vectors is a vector-space change like any other, and produces the same
+`vector space mismatch` below.
+
 #### Changing the embedding model
 
-Each database records not just the width but **which model's vectors are in it**. Two
-models' vectors cannot be compared, so rather than return quiet nonsense plugmem
-refuses: after a `model` change, every read and write of a memory that already has
-vectors fails with `vector space mismatch` until the vectors are rebuilt. The bot says
-so, and names the command.
+Two models' vectors cannot be compared, so rather than return quiet nonsense plugmem
+refuses: after a `model` (or `spaceId`) change, every read and write of a memory that
+already has vectors fails with `vector space mismatch` until the vectors are rebuilt.
+The bot says so, and names the command.
 
 Rebuilding is one command, in place, and needs no export, no backup dance and no
 stopped bot:
