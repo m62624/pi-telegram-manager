@@ -34,18 +34,24 @@ describe("registerToolGuard", () => {
 
 	it("allows whitelisted tools while active", async () => {
 		const pi = fakePi();
-		const matcher = createToolMatcher(["manager_reply", "manager_silent"]);
+		const matcher = createToolMatcher([
+			"telegram_manager_reply",
+			"telegram_manager_silent",
+		]);
 		registerToolGuard(pi as never, {
 			isActive: () => true,
 			matcher: () => matcher,
 		});
-		expect(await pi.call("manager_reply")).toEqual({});
+		expect(await pi.call("telegram_manager_reply")).toEqual({});
 	});
 
 	it("blocks non-whitelisted tools while active and steers back", async () => {
 		const pi = fakePi();
 		const blocked: string[] = [];
-		const matcher = createToolMatcher(["manager_reply", "manager_silent"]);
+		const matcher = createToolMatcher([
+			"telegram_manager_reply",
+			"telegram_manager_silent",
+		]);
 		registerToolGuard(pi as never, {
 			isActive: () => true,
 			matcher: () => matcher,
@@ -53,49 +59,55 @@ describe("registerToolGuard", () => {
 		});
 		const result = await pi.call("ask_user");
 		expect(result.block).toBe(true);
-		expect(result.reason).toContain("manager_reply");
+		expect(result.reason).toContain("telegram_manager_reply");
 		expect(blocked).toEqual(["ask_user"]);
 	});
 
 	it("steers a blocked decision tool at the resolve tool on a revise turn", async () => {
-		// Regression: the steer used to be static, so blocking manager_reply on a
-		// revise turn answered "call manager_reply" — a contradiction that burned
+		// Regression: the steer used to be static, so blocking telegram_manager_reply on a
+		// revise turn answered "call telegram_manager_reply" — a contradiction that burned
 		// the turn while a ready draft sat held.
 		const pi = fakePi();
-		const matcher = createToolMatcher(["manager_resolve_draft"]);
+		const matcher = createToolMatcher(["telegram_manager_resolve_draft"]);
 		registerToolGuard(pi as never, {
 			isActive: () => true,
 			matcher: () => matcher,
 			endTurnHint: () => RESOLVE_DRAFT_END_TURN_HINT,
 		});
-		const result = await pi.call("manager_reply");
+		const result = await pi.call("telegram_manager_reply");
 		expect(result.block).toBe(true);
-		expect(result.reason).toContain("manager_resolve_draft");
+		expect(result.reason).toContain("telegram_manager_resolve_draft");
 		expect(result.reason).toContain("disabled this turn");
 	});
 
 	it("never steers a blocked silent call back to reply tools during consolidation", async () => {
 		const pi = fakePi();
 		const matcher = createToolMatcher([
-			"manager_remember",
-			"manager_recall",
-			"manager_revise",
-			"manager_forget",
-			"manager_done",
+			"telegram_manager_remember",
+			"telegram_manager_recall",
+			"telegram_manager_revise",
+			"telegram_manager_forget",
+			"telegram_manager_done",
 		]);
 		registerToolGuard(pi as never, {
 			isActive: () => true,
 			matcher: () => matcher,
 			endTurnHint: () => CONSOLIDATION_END_TURN_HINT,
 		});
-		const result = await pi.call("manager_silent");
+		const result = await pi.call("telegram_manager_silent");
 		expect(result.block).toBe(true);
 		expect(result.reason).toContain("background memory pass");
 		expect(result.reason).toContain(
-			"manager_reply / manager_silent do not exist",
+			"telegram_manager_reply / telegram_manager_silent do not exist",
 		);
 		expect(result.reason).not.toContain(
-			"End your turn by calling exactly one of manager_reply",
+			"End your turn by calling exactly one of telegram_manager_reply",
 		);
+		// And it points at a way out that exists. It used to name "the interrogation
+		// step shown in the directive" — a four-step automaton that has since been
+		// replaced by the memory verbs, so the steer sent the model looking for a tool
+		// no directive names.
+		expect(result.reason).toContain("telegram_manager_done");
+		expect(result.reason).not.toContain("interrogation");
 	});
 });

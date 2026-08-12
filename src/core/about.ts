@@ -76,7 +76,7 @@ export interface AboutToolDeps {
 	 * Claim one read of this turn's budget; false once it is spent.
 	 *
 	 * `telegram_bot_about` is not a terminal tool: in manager mode the turn ends when the model
-	 * calls `manager_reply` or `manager_silent`, so a model that kept calling `telegram_bot_about`
+	 * calls `telegram_manager_reply` or `telegram_manager_silent`, so a model that kept calling `telegram_bot_about`
 	 * would never decide anything and would spin. A few reads are plenty to answer
 	 * "what are you?" — after that the model has what it needs and must speak.
 	 */

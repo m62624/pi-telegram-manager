@@ -31,11 +31,11 @@
  * written last.
  */
 import { type ChatStateRecord, DEFAULT_MAX_SENT_PER_CHAT } from "./chat-state";
-import type { ContactStore } from "./contact-store";
 import type { DmState, ModePin } from "./dm-state";
 import { withFileWriteLock } from "./file-lock";
-import type { TelegramFs } from "./fs";
+import { safeReaddir, type TelegramFs } from "./fs";
 import { readJsonIfExists, writeJson } from "./json";
+import type { MemoryWorkspace } from "./memory";
 import type { TelegramPaths } from "./paths";
 
 /**
@@ -118,7 +118,6 @@ interface LegacyModePin {
 export async function migrateStorage(
 	fs: TelegramFs,
 	paths: TelegramPaths,
-	contactStore: ContactStore,
 ): Promise<MigrationOutcome> {
 	const marker = await readJsonIfExists<VersionMarker>(
 		fs,
@@ -142,7 +141,7 @@ export async function migrateStorage(
 	if (await migrateSettingsKeys(fs, paths)) outcome.applied.push("settings");
 	if (await migrateChatState(fs, paths)) outcome.applied.push("chat-state");
 	if (await migrateDmState(fs, paths)) outcome.applied.push("dm-state");
-	const cleared = await migrateFacts(fs, paths, contactStore, hadLegacy);
+	const cleared = await migrateFacts(fs, paths, hadLegacy);
 	if (cleared > 0) {
 		outcome.applied.push("memory");
 		outcome.factsCleared = cleared;
@@ -393,7 +392,6 @@ async function migrateDmState(
 async function migrateFacts(
 	fs: TelegramFs,
 	paths: TelegramPaths,
-	contactStore: ContactStore,
 	hadLegacy: boolean,
 ): Promise<number> {
 	const marker = await readJsonIfExists<VersionMarker>(
@@ -402,9 +400,185 @@ async function migrateFacts(
 	).catch(() => null);
 	const stale =
 		marker !== null ? marker.version < MEMORY_SCHEMA_VERSION : hadLegacy;
-	const cleared = stale ? await contactStore.clearAllFacts() : 0;
+	const cleared = stale ? await clearLegacyFacts(fs, paths) : 0;
 	await removeQuietly(fs, paths.legacy.memoryVersionPath);
 	return cleared;
+}
+
+/**
+ * A contact file as it was written when facts lived in it. The live
+ * {@link ContactStore} does not know this shape any more, which is the point: exactly
+ * one place in the project reads a layout this version does not write, and it is here.
+ */
+interface LegacyContactRecord {
+	facts?: LegacyFact[];
+	[key: string]: unknown;
+}
+
+interface LegacyFact {
+	text?: string;
+	timestamp?: number;
+	kind?: string;
+	subject?: string;
+}
+
+/** Every contact file's user id. */
+async function contactIds(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+): Promise<string[]> {
+	const entries = await safeReaddir(fs, paths.contactsDir);
+	return entries
+		.filter((name) => name.endsWith(".json"))
+		.map((name) => name.slice(0, -".json".length));
+}
+
+/**
+ * Empty every contact's `facts` array, keeping the profile. Returns how many contacts
+ * actually lost something — a directory with nothing in it is not an upgrade, and the
+ * owner should not be told it was.
+ */
+async function clearLegacyFacts(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+): Promise<number> {
+	let cleared = 0;
+	for (const userId of await contactIds(fs, paths)) {
+		const path = paths.contactFile(userId);
+		await withFileWriteLock(path, async () => {
+			const record = await readJsonIfExists<LegacyContactRecord>(fs, path);
+			if (!record?.facts?.length) return;
+			record.facts = [];
+			cleared += 1;
+			await writeJson(fs, path, record);
+		});
+	}
+	return cleared;
+}
+
+/** One fact carried out of a legacy contact file, ready to be re-remembered. */
+export interface ImportedFact {
+	text: string;
+	kind: string;
+	/** When the fact was learned, so the imported memory keeps its chronology. */
+	timestamp: number;
+}
+
+/** What an import did, per contact. */
+export interface FactImport {
+	userId: string;
+	facts: ImportedFact[];
+}
+
+/**
+ * Read the facts still sitting in `contacts/*.json` and hand them back for writing
+ * into the memory databases.
+ *
+ * Separate from {@link migrateStorage}, and not by preference: a memory database is
+ * opened with the owner's embedder configuration, which is read from `settings.json`
+ * — and the layout migration runs BEFORE the settings, because it is what makes them
+ * readable. So the import is a second step, run once the workspace exists.
+ *
+ * It is idempotent through the data rather than through a marker: the caller clears
+ * each contact's array once its facts are safely stored ({@link clearImportedFacts}),
+ * so a second run finds nothing to do. Interrupted halfway, the facts it had not yet
+ * cleared are still there, and re-storing one it already stored costs nothing — the
+ * engine reports the duplicate instead of doubling it.
+ */
+export async function pendingFactImports(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+): Promise<FactImport[]> {
+	const imports: FactImport[] = [];
+	for (const userId of await contactIds(fs, paths)) {
+		const record = await readJsonIfExists<LegacyContactRecord>(
+			fs,
+			paths.contactFile(userId),
+		).catch(() => null);
+		const facts = (record?.facts ?? [])
+			.filter((fact): fact is LegacyFact & { text: string } =>
+				Boolean(fact?.text?.trim()),
+			)
+			.map((fact) => ({
+				text: fact.text.trim(),
+				kind: fact.kind ?? "context",
+				timestamp: fact.timestamp ?? 0,
+			}));
+		if (facts.length > 0) imports.push({ userId, facts });
+	}
+	return imports;
+}
+
+/**
+ * Move every fact still sitting in `contacts/*.json` into that contact's memory
+ * database, then empty the array it came from.
+ *
+ * Order matters and is the file's standing rule: write the new home first, clear the
+ * old one only once the write returned. Interrupted between the two, the next run
+ * finds the facts still in the JSON and stores them again — a duplicate, and the
+ * deliberate choice between the two ways of being wrong here. The guarded write would
+ * refuse the second copy, and would equally refuse two legacy facts that merely read
+ * alike, dropping one of them on the floor during the one operation that is supposed
+ * to lose nothing. A duplicate is visible and removable; a fact silently not migrated
+ * is neither.
+ *
+ * A contact whose database will not open is SKIPPED, not emptied: their facts stay
+ * exactly where they are, and the next start tries again. A migration that cannot do
+ * its job leaves its sources alone.
+ *
+ * `onContact` reports each contact that actually moved something, so the owner is told
+ * what happened to their data rather than finding it changed.
+ */
+export async function importLegacyFacts(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+	memory: MemoryWorkspace,
+	onContact?: (userId: string, count: number) => void,
+): Promise<number> {
+	let moved = 0;
+	for (const pending of await pendingFactImports(fs, paths)) {
+		const record = await readJsonIfExists<{
+			profile?: { displayName?: string };
+		}>(fs, paths.contactFile(pending.userId)).catch(() => null);
+		const entity = record?.profile?.displayName;
+		try {
+			const database = await memory.for(pending.userId);
+			// One batch, so a contact's facts arrive together or not at all — which is
+			// what makes the clearing step below safe to run against "the write
+			// returned" rather than against a count of how many of them made it.
+			await database.rememberMany(
+				pending.facts.map((fact) => ({
+					text: fact.text,
+					entity,
+					tags: ["fact", fact.kind, "migrated"],
+					// The chronology survives the move: a fact learned in March keeps saying
+					// so, which is what makes an as-of question about March answerable.
+					validFrom: fact.timestamp > 0 ? fact.timestamp : undefined,
+				})),
+			);
+		} catch {
+			continue;
+		}
+		await clearImportedFacts(fs, paths, pending.userId);
+		moved += pending.facts.length;
+		onContact?.(pending.userId, pending.facts.length);
+	}
+	return moved;
+}
+
+/** Drop one contact's legacy facts, once they are stored somewhere better. */
+export async function clearImportedFacts(
+	fs: TelegramFs,
+	paths: TelegramPaths,
+	userId: string,
+): Promise<void> {
+	const path = paths.contactFile(userId);
+	await withFileWriteLock(path, async () => {
+		const record = await readJsonIfExists<LegacyContactRecord>(fs, path);
+		if (!record?.facts?.length) return;
+		record.facts = [];
+		await writeJson(fs, path, record);
+	});
 }
 
 /** Did an older version of this extension leave anything here? Asked once, first. */

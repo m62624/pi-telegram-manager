@@ -55,7 +55,7 @@ export interface FilterableMessage {
 }
 
 /** Every tool the manager can call is named for it; nothing else may be. */
-const MANAGER_TOOL_PREFIX = "manager_";
+const MANAGER_TOOL_PREFIX = "telegram_manager_";
 
 /**
  * Whether a message is a manager tool call or its result — the one signature of a

@@ -39,9 +39,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "rememberMessages": 20,
     "maxCharsPerMessage": 4000,
     "maxContextChars": 40000,
-    "factsLimit": 20,
     "factConsolidationQuietMs": 1800000,
-    "verifyLimit": 8,
     "liveFreshnessMs": 600000,
     "reopenAfterMs": 86400000,
     "reviseThreshold": 2,
@@ -53,6 +51,17 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "labelerRule": "────────────",
     "mentionWords": ["llm", "manager"],
     "instructionFiles": []
+  },
+  "memory": {
+    "episodes": true,
+    "recallTokenBudget": 512,
+    "recallK": 0,
+    "consolidationMaxSteps": 12,
+    "consolidationMaxNudges": 2,
+    "embedder": {
+      "enabled": false,
+      "dim": 0
+    }
   },
   "mixed": {
     "returnToTelegramMs": 480000
@@ -180,9 +189,7 @@ The thread ids are remembered on disk (`dm-state.json`); a topic you delete whil
 | `manager.rememberMessages` | `20` | replaces | How many of a chat's newest messages the model reads each turn — a floor, not an exact count: the window holds between this many and this many plus seven, and only lets go of a whole block at a time. A window that keeps *exactly* the last N moves its first line whenever anyone speaks, and every backend then re-reads the transcript from the top (measured: 9,328 characters per turn, almost none of it new). Also bounds the transcript kept on disk (old messages are pruned to ~2× this). |
 | `manager.maxCharsPerMessage` | `4000` | replaces | Character cap on a single message in the window the model reads — a longer one is truncated with a `…[+N chars]` marker, so one huge paste can't dominate a small local context. `0` disables. Disk transcripts are never trimmed. |
 | `manager.maxContextChars` | `40000` | replaces | Character budget for the whole last-N window: the oldest messages are dropped until the kept text fits (the newest is always kept). Bounds the window by size, not just count, so 20 long messages still fit a small model. `0` disables. |
-| `manager.factsLimit` | `20` | replaces | Last-N durable facts kept and injected per contact. |
-| `manager.factConsolidationQuietMs` | `1800000` (30 min) | replaces | Quiet period after a chat's last activity before an idle memory-consolidation pass may run on it. |
-| `manager.verifyLimit` | `8` | replaces | Max candidate facts individually verified in one consolidation pass. |
+| `manager.factConsolidationQuietMs` | `1800000` (30 min) | replaces | Quiet period after a chat's last activity before an idle memory pass may run on it. |
 | `manager.reviseThreshold` | `2` | replaces | How many times a drafted reply may be reconsidered when new messages keep arriving mid-turn before it is sent as-is. `0` sends immediately. |
 | `manager.strictReplyGuard` | `true` | replaces | Drop a reply the model itself tagged as chatter/acknowledgement (or "no reply needed") unless it was directly addressed. Curbs a weak model over-replying to banter. |
 | `manager.mentionWords` | `["llm", "manager"]` | **replaces list** (+ labeler) | Wake-words — see [Wake-words](#wake-words) below. |
@@ -220,6 +227,151 @@ will not go into (`manager.instructionFiles`).
 - **Labeler is added automatically.** On top of your list, the bot's own label (`manager.labeler`, normalized) is added as a phrase, so a message that addresses the bot by the name it signs replies with also wakes it. This is automatic and additive — your `mentionWords` stays authoritative, and the labeler is never written into your file. (An empty or emoji-only labeler adds nothing.)
 - **Matching.** Case-insensitive and **whole-word** (Unicode-aware): `"llm"` matches "Hey LLM!" but not "llms". Surrounding punctuation is ignored (`"llm!?"`, `"(qwen)"` match). A multi-word entry is matched as whole words **in order** with any punctuation between them — `"mini bro"` matches "Mini, bro!" but not "minibro" or "bro mini". Misspellings are not matched; the model can still infer intent from the message itself.
 - **Priority in mixed.** In mixed mode, a wake-word does **not** interrupt your terminal work — it only marks the chat ready and is served after the return timer (`mixed.returnToTelegramMs`) hands the brain back to Telegram. In the standalone manager it takes effect on the next tick.
+
+## `memory` (the manager's long-term memory)
+
+The manager keeps a **separate database per contact**, under
+`<agent>/extensions/pi-telegram-manager/memory/`, using
+[plugmem](https://github.com/m62624/plugmem) — an embedded engine, like SQLite: no
+server, no daemon, nothing to install beyond the package.
+
+Two things about it are worth knowing before the table.
+
+**There is no size limit.** The old `manager.factsLimit` capped how much could be
+*remembered*, so learning a new fact meant evicting an old one — and what got evicted
+was decided by a table of ranks rather than by whether it mattered. Nothing is capped
+now. What is capped is how much of the memory may be **said in one turn**
+(`memory.recallTokenBudget`): each turn, the memory is queried with the messages
+nobody has answered yet, and only the ranked result goes into the prompt. It rides
+below the transcript, so it costs its own tokens and never causes the conversation
+above it to be read again.
+
+**Which database is open is decided by code**, from the chat being served, and one is
+open at a time. The model's memory tools have no argument that could name a different
+one — a contact's facts are not filtered out of a shared store, they are in a file
+that is not open.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `memory.recallTokenBudget` | `512` | replaces | How many tokens one recall may put into a turn's prompt. The only cap on memory there is. |
+| `memory.recallK` | `0` | replaces | Max facts one recall may select. `0` = plugmem's own default. |
+| `memory.episodes` | `true` | replaces | Record each inbound message and each finished turn (including a decision to stay silent, and why) alongside the durable facts. The transcript on disk is pruned to twice the reading window; this is what still answers "what did they say last month" afterwards. |
+| `memory.consolidationMaxSteps` | `12` | replaces | How many memory tool calls one idle pass may make before it is told to wrap up. It runs only while nothing is waiting and yields instantly to a live message, so this bounds a confused model, not a busy one. |
+| `memory.consolidationMaxNudges` | `2` | replaces | How many times a pass may be re-prompted after the model answers without calling any tool, before the pass is abandoned (and picked up another time). |
+
+### The embedder — optional, and off by default
+
+**Everything works without one.** Three of plugmem's four recall sources need no model,
+no API key and no network:
+
+| Source | What it finds | Needs an embedder |
+| --- | --- | --- |
+| Keyword (BM25) | exact terms, word overlap | no |
+| Entity graph | what is known *around* this person | no |
+| Time | "what was true then", recent windows | no |
+| Semantic (vectors) | meaning, paraphrase | **yes** |
+
+So with `enabled: false` (the default), a fact reading *"prefers to be called in the
+evening"* answers a question containing "evening", but not a question phrased *"when
+should I reach them?"*. Enable the configured embedder and it does.
+
+These keys are translated to plugmem's `[embedder]` section plus `[engine].dim`.
+There is one implementation, `OpenAiCompatEmbedder`: `url` is the complete
+OpenAI-compatible embeddings endpoint exactly as entered — no `/embeddings` path is
+appended — and `model` is the model name selected on that server. OpenAI, Ollama,
+LM Studio, vLLM and llama.cpp-compatible servers all use this same shape.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `memory.embedder.enabled` | `false` | replaces | Create and call the embedder when `true`; `false` keeps the settings but makes no HTTP requests. |
+| `memory.embedder.url` | unset | replaces | The complete embeddings endpoint URL, for example `https://api.openai.com/v1/embeddings`. Required when enabled. |
+| `memory.embedder.model` | unset | replaces | Embedding model name selected on the server. Required when enabled. |
+| `memory.embedder.apiKeyEnv` | unset | replaces | Name of the **environment variable** holding the bearer token — never the token itself. |
+| `memory.embedder.dim` | `0` | replaces | Embedding width. Must be greater than `0` when enabled; keep the stored width while temporarily disabled. |
+
+A local example, with [Ollama](https://ollama.com) already running:
+
+```jsonc
+  "memory": {
+    "embedder": {
+      "enabled": true,
+      "url": "http://localhost:11434/v1/embeddings",
+      "model": "nomic-embed-text",
+      "dim": 768
+    }
+  }
+```
+
+Settings that do not add up are refused **when the settings are read**, not at the
+first recall: an enabled embedder without a `url`, a `model` or a positive `dim` fails
+the mode start with the offending key named. A disabled embedder may retain all three
+values, which makes switching it back on safe for an existing database.
+
+Changing only `url` is safe when it still serves the same model at the same width. To
+temporarily stop semantic embedding, set `enabled: false` and keep the existing `model`
+and `dim` — the stored vectors are left alone and switching back on costs nothing.
+
+#### Changing the embedding model
+
+Each database records not just the width but **which model's vectors are in it**. Two
+models' vectors cannot be compared, so rather than return quiet nonsense plugmem
+refuses: after a `model` change, every read and write of a memory that already has
+vectors fails with `vector space mismatch` until the vectors are rebuilt. The bot says
+so, and names the command.
+
+Rebuilding is one command, in place, and needs no export, no backup dance and no
+stopped bot:
+
+- in the chat — **`/memory_reembed`**;
+- in the terminal — **`/telegram-memory-reembed`**.
+
+It recomputes every retained fact with the model `memory.embedder` now names, one
+contact at a time, and publishes each memory atomically: closed revisions, edges and
+metadata all survive, which is what separates it from an export/import round trip.
+`dim` moves with it, so a model with a different output width needs only its own `dim`
+in the settings. If it fails partway, the memories already rebuilt keep their new
+vectors — run it again to finish the rest.
+
+> **Turning an embedder ON for the first time is the quiet case.** Memories built
+> without one keep working: nothing fails, facts learned from now on get vectors, and
+> facts learned before the change do not. Meaning-based recall then answers from the
+> newer half of what the bot knows without ever mentioning the older half. Run the
+> rebuild once after enabling, and the whole memory is searchable by meaning.
+
+For a complete backup, copy the database files without changing their settings.
+
+### Reading your own memory
+
+While the bot runs it holds one database open, and an open database holds that file's
+lock. It lets go after a minute of that contact being idle, so `plugmem-cli` can read
+it without stopping anything:
+
+```console
+$ WS="<agent-dir returned by getAgentDir()>/extensions/pi-telegram-manager/memory"
+$ CFG="$WS/config.toml"
+$ plugmem-cli --workspace "$WS" --config "$CFG" workspace list
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 recall --entity "Alice"
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 recall --entity "Alice" --tag episode
+$ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 stats
+```
+
+The database name is `u` followed by the contact's numeric Telegram user id, and the
+entity is the contact's display name. Tags **filter** a recall rather than being
+something it can rank by, so a query made only of tags has nothing to search on and
+comes back empty — always give it an entity, a query, or both.
+
+One database can hold **more than two** subjects: the contact, who the durable facts are
+about; `chat log`, which is every message and turn outcome, joined to them by a `said`
+edge; and, when the consolidation pass has used `telegram_manager_link`, any number of TOPIC
+entities (a hobby, a show, a recurring activity) joined to the contact — or to each other
+— by one of a closed set of relations (`interested_in`, `involved_in`, `part_of`,
+`related_to`, `mentioned_with`). That is why the recall above answers with episodes while
+anchored on the contact — it walks one hop, and a fact filed under a linked topic is
+reached the same way. They are kept apart from the contact's own facts because plugmem
+judges a new fact against the most recent facts of the subject it names: with the
+conversation filed under the person, a fact drawn from what they just said collides with
+their own message, and after a few dozen messages a fact the memory already holds stops
+being recognised at all.
 
 ## `forwards` (forwarded messages, all modes)
 

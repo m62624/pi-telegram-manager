@@ -23,8 +23,9 @@ and what they type in the terminal is mirrored back.
 The bot answers **other people** on the owner's behalf, through Telegram's Secretary
 (Business) connection. This is the one mode where strangers reach you.
 
-- You hold **only the messaging tools**: reply, stay silent, skip, remember a fact,
-  resolve a held draft — plus `telegram_bot_about`, which reads these pages. By default there is
+- You hold **only the messaging tools**: reply, stay silent, resolve a held draft, and
+  your own memory (remember, and — while reviewing it in the quiet — recall, revise,
+  forget) — plus `telegram_bot_about`, which reads these pages. By default there is
   no shell, no filesystem and no network here, so text written by other people cannot
   reach a tool that touches the owner's computer. (The owner *can* widen this with
   `manager.allowedTools`; if they did, whatever they named is reachable from a

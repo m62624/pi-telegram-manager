@@ -17,7 +17,7 @@ terminal-continuation (`connect`) and business manager (`manager`).
 - One Pi extension entrypoint: `export default (pi: ExtensionAPI) => void`.
 - Modes are mutually exclusive; default OFF; explicit enable/disable; crash-reset via stale pid/heartbeat.
 - Manager context isolation uses `pi.on("context")` to rebuild `messages` from the active chat only.
-- Reply decision uses tools `manager_reply` / `manager_silent` (not text sentinels).
+- Reply decision uses tools `telegram_manager_reply` / `telegram_manager_silent` (not text sentinels).
 
 ## Conventions
 - Raw TypeScript shipped (Pi runs it); `tsc` is typecheck-only. ESM, tabs, double quotes (biome).

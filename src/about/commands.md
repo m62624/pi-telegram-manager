@@ -25,6 +25,14 @@ every MODE" — never "to everyone".
 - `/esc` — cancel whatever the agent is doing, exactly as the Escape key does in the
   terminal. If the session does not stop, the bot says so rather than staying quiet.
 - `/switch` — change the mode (manager / personal / mixed) with buttons.
+- `/memory_reembed` — rebuild the vectors in every contact's long-term memory with the
+  embedding model `memory.embedder` currently names. Needed after that model changes:
+  the memories keep the vectors of the model that wrote them, and rather than mix two
+  models' vectors the bot stops answering from memory until this has run. Also worth
+  running once after turning an embedder ON over memories built without one, otherwise
+  only the facts learned since the change can be found by meaning. It calls the
+  provider once per batch of facts, for every contact, and reports each memory as it
+  goes.
 - `/stop` — stop the bot entirely. Deliberately a typed command and not a button, so a
   mistap cannot end a Secretary connection.
 - `/start` — the privacy and terms notice. The one command anyone may use.
@@ -64,6 +72,8 @@ Pi. Do not promise otherwise — see the `settings` topic.
 ## In the terminal, not in the chat
 
 `/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop`,
-`/telegram-status` and `/telegram-recover` are Pi commands: the owner types them at
-their terminal, not to the bot. Sending them to the bot does nothing. Recovery asks
-before stopping a mode held by another Pi process; add `--force` for a headless TUI.
+`/telegram-status`, `/telegram-recover` and `/telegram-memory-reembed` are Pi commands:
+the owner types them at their terminal, not to the bot. Sending them to the bot does
+nothing. Recovery asks before stopping a mode held by another Pi process; add `--force`
+for a headless TUI. `/telegram-memory-reembed` is the terminal twin of the chat's
+`/memory_reembed`, and does the same thing whether or not a mode is running.
