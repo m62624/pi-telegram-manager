@@ -136,7 +136,11 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 					? "disabled (keyword, entity-graph and time recall still work)"
 					: `${s.memory.embedder.model ?? "(no model)"} at ${
 							s.memory.embedder.url ?? "(no url)"
-						}, ${s.memory.embedder.dim} dimensions`
+						}, ${s.memory.embedder.dim} dimensions, vector space "${
+							s.memory.embedder.spaceId ??
+							s.memory.embedder.model ??
+							"(no model)"
+						}"${s.memory.embedder.spaceId ? "" : " (defaults to the model name)"}`
 			}`,
 			"",
 		);

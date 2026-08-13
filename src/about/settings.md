@@ -102,13 +102,25 @@ said in any one turn.
   embedding service. With `enabled: false` (the default) recall still works: it
   matches on words, on the entity graph and on time. With it enabled, it also matches
   on MEANING; `url` is the complete endpoint and `model` selects the server model.
-  Each database records which model's vectors are in it, and two models' vectors are
-  never mixed: after the owner changes `model` (or `dim`), a memory that already has
-  vectors refuses every read and write until the vectors are rebuilt with
-  `/memory_reembed`. That command also matters in a quieter case — enabling an embedder
-  over memories built without one keeps working, but only the facts learned after the
-  change can be found by meaning until it has run. Temporarily disabling the embedder
-  is safe when its existing `dim` is retained.
+  `dim` is the vector width, fixed into a database the moment its first vector is
+  written.
+- `memory.embedder.spaceId` — the identity a database's stored vectors are tagged
+  with. Unset (the default) it is just `model` — which is right until a model is
+  renamed or re-published under a new name while producing the identical vectors, the
+  one case worth setting this for explicitly.
+
+**Why a memory sometimes answers nothing at all, and what to do about it.** Every
+database remembers which vector space its stored facts' vectors belong to (`model`,
+or `spaceId` if the owner set one). Two spaces' vectors are never mixed — plugmem
+refuses rather than compare vectors that do not mean the same thing — so the moment
+`memory.embedder.model` (or `.spaceId`) changes, every read and write on a memory
+that already has vectors fails with **`vector space mismatch`**, for every contact,
+until the vectors are rebuilt. Nothing is lost: the facts and their text are still
+there, only the vectors need recomputing. Tell whoever hits this to run
+**`/memory_reembed`** in the chat, or **`/telegram-memory-reembed`** in the terminal
+— either rebuilds every contact's vectors in place, atomically, and resumes where it
+left off if interrupted. Reverting `model`/`spaceId` to what they were before also
+clears it, with nothing to rebuild.
 
 **What you may touch**
 
