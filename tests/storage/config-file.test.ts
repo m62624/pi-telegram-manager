@@ -76,6 +76,28 @@ describe("ensurePlugmemConfig", () => {
 		expect(await fs.readText(DEFAULT_PATH)).toContain('on_error = "degrade"');
 	});
 
+	it("says the workspace sections do nothing, because they are the one trap", async () => {
+		// Somebody configuring this file will look for where the memories live. They
+		// are not decided here: the root is passed to plugmem directly, and the pool
+		// options are passed explicitly too - so [database]/[workspace] are read by
+		// nothing, and an hour can go into finding that out the hard way.
+		const fs = new FakeFs();
+		await ensurePlugmemConfig(base(fs));
+		const written = await fs.readText(DEFAULT_PATH);
+		// Named one by one, not as "the [workspace] section": the two pool keys are
+		// ineffective for a different reason than the two path keys, and somebody
+		// setting max_open would otherwise have no way to learn it is overridden.
+		for (const key of [
+			"[database].path",
+			"[workspace].dir",
+			"[workspace].max_open",
+			"[workspace].idle_timeout_ms",
+		]) {
+			expect(written, `${key} is not named as ineffective`).toContain(key);
+		}
+		expect(written).toContain("does not move them");
+	});
+
 	it("never touches a file that is already there", async () => {
 		const fs = new FakeFs();
 		await fs.writeTextAtomic(DEFAULT_PATH, "[engine]\ndim = 7\n");

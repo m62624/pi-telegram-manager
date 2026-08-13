@@ -65,9 +65,17 @@ export const DEFAULT_PLUGMEM_CONFIG = `# plugmem's configuration for this bot's 
 # defaults. The full list, with every default and what it is for, is in plugmem's
 # config.example.toml and SETTINGS.md.
 #
-# [database] and [workspace] are the exception: they do nothing here. The workspace
-# directory is this file's own directory, passed explicitly, and one database per
-# contact is resolved by name inside it. Everything else applies to all of them.
+# Four keys are read by nothing here, so setting them is wasted effort:
+#
+#   [database].path              - the memories live in this extension's own memory/
+#   [workspace].dir                directory, which is handed to plugmem directly.
+#                                  Moving THIS file elsewhere does not move them.
+#   [workspace].max_open         - defaults for options the bot passes explicitly, so
+#   [workspace].idle_timeout_ms    the file loses. max_open is 1 on purpose: it is
+#                                  what makes "two contacts' memories are never open
+#                                  at the same time" true rather than likely.
+#
+# Everything else here applies to every contact memory alike.
 
 [engine]
 # Embedding width. 0 stores no vectors at all. With an embedder on it has to match

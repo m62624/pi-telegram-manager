@@ -283,9 +283,17 @@ The file is **yours**:
   not understand, and documents every key in its own `config.example.toml` and
   `SETTINGS.md`. This extension does not parse it.
 
-`[database]` and `[workspace]` in that file do nothing here: the workspace directory
-is the file's own directory, passed explicitly, and one database per contact is
-resolved by name inside it.
+**Four keys in that file are read by nothing here**, so filling them in is wasted
+effort:
+
+| Key | Why it does nothing |
+| --- | --- |
+| `[database].path` | The memories live in the extension's own `memory/` directory, handed to plugmem directly. Moving `config.toml` elsewhere does not move them. |
+| `[workspace].dir` | Same reason: the workspace root is passed, not looked up. |
+| `[workspace].max_open` | A default for an option the bot passes explicitly, so the file loses. It is `1` on purpose — that is what makes "two contacts' memories are never open at the same time" true rather than merely likely. |
+| `[workspace].idle_timeout_ms` | Passed explicitly too: an open memory holds its file's lock, so how soon it is released is a liveness decision this extension makes. |
+
+Everything else in the file applies to every contact memory alike.
 
 > **Upgrading?** If `settings.json` still has a `memory.embedder` section it is
 > written into `config.toml` once, on the next mode start, and the bot tells you where
