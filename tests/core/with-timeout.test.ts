@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTimeout } from "../../src/core/with-timeout";
 
 describe("withTimeout", () => {
@@ -15,11 +15,29 @@ describe("withTimeout", () => {
 		).resolves.toBe(true);
 	});
 
-	it("returns after the deadline when cleanup never settles", async () => {
-		const started = Date.now();
-		await expect(withTimeout(() => new Promise(() => {}), 5)).resolves.toBe(
-			false,
-		);
-		expect(Date.now() - started).toBeGreaterThanOrEqual(5);
+	describe("when cleanup never settles", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it("does not resolve before the deadline", async () => {
+			let settled = false;
+			void withTimeout(() => new Promise(() => {}), 5).then(() => {
+				settled = true;
+			});
+
+			await vi.advanceTimersByTimeAsync(4);
+			expect(settled).toBe(false);
+		});
+
+		it("returns false once the deadline passes", async () => {
+			const result = withTimeout(() => new Promise(() => {}), 5);
+			await vi.advanceTimersByTimeAsync(5);
+			await expect(result).resolves.toBe(false);
+		});
 	});
 });
