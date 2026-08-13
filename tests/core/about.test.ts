@@ -31,7 +31,8 @@ async function setup(overrides: Partial<AboutToolDeps> = {}) {
 		fs,
 		docsDir: DOCS,
 		isOwnerTurn: () => true,
-		settingsReport: () => "# Configuration currently running (personal mode)",
+		settingsReport: async () =>
+			"# Configuration currently running (personal mode)",
 		claimCall: () => true,
 		...overrides,
 	};
@@ -139,7 +140,7 @@ describe("about tool", () => {
 	});
 
 	it("reports nothing when no mode is running", async () => {
-		const { call } = await setup({ settingsReport: () => null });
+		const { call } = await setup({ settingsReport: async () => null });
 		const result = await call({ topic: "current_settings" });
 		expect(isError(result)).toBe(true);
 		expect(textOf(result)).toContain("No mode is running");

@@ -25,7 +25,22 @@ const NO_DEFAULT = new Set([
 	"timezone",
 	"assistant.toolOutputDir",
 	"manager.ownerName",
+	"memory.plugmemConfig",
 ]);
+
+/**
+ * Keys that are still parsed but no longer configure anything.
+ *
+ * `memory.embedder.*` is read exactly once - to move an older installation's embedder
+ * into plugmem's own `config.toml` - and never again. Publishing it in the example
+ * would invite somebody to configure an embedder in the file that stopped being where
+ * embedders are configured.
+ */
+const LEGACY = new Set(
+	leafPaths(DEFAULT_SETTINGS).filter((path) =>
+		path.startsWith("memory.embedder."),
+	),
+);
 
 function exampleJson(): Record<string, unknown> {
 	const doc = readFileSync(
@@ -77,7 +92,7 @@ describe("the settings example in SETTINGS.md", () => {
 		const example = exampleJson();
 		const documented = new Set(leafPaths(example));
 		const missing = leafPaths(DEFAULT_SETTINGS).filter(
-			(path) => !documented.has(path),
+			(path) => !documented.has(path) && !LEGACY.has(path),
 		);
 		expect(missing).toEqual([]);
 	});
@@ -94,7 +109,7 @@ describe("the settings example in SETTINGS.md", () => {
 		// the reader something false about their own bot.
 		const example = exampleJson();
 		for (const path of leafPaths(DEFAULT_SETTINGS)) {
-			if (NO_DEFAULT.has(path)) continue;
+			if (NO_DEFAULT.has(path) || LEGACY.has(path)) continue;
 			expect(valueAt(example, path), `default of ${path}`).toEqual(
 				valueAt(DEFAULT_SETTINGS, path),
 			);

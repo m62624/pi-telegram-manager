@@ -58,10 +58,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
     "recallK": 0,
     "consolidationMaxSteps": 12,
     "consolidationMaxNudges": 2,
-    "embedder": {
-      "enabled": false,
-      "dim": 0
-    }
+    "plugmemConfig": "/home/you/.pi/agent/extensions/pi-telegram-manager/memory/config.toml"
   },
   "mixed": {
     "returnToTelegramMs": 480000
@@ -259,6 +256,49 @@ that is not open.
 | `memory.consolidationMaxSteps` | `12` | replaces | How many memory tool calls one idle pass may make before it is told to wrap up. It runs only while nothing is waiting and yields instantly to a live message, so this bounds a confused model, not a busy one. |
 | `memory.consolidationMaxNudges` | `2` | replaces | How many times a pass may be re-prompted after the model answers without calling any tool, before the pass is abandoned (and picked up another time). |
 
+### The storage engine — `memory.plugmemConfig`
+
+Everything about the engine — the embedder, retrieval weights, maintenance triggers —
+is configured in **plugmem's own `config.toml`**, not in `settings.json`. This setting
+says only where that file is:
+
+```
+<extension dir>/memory/config.toml
+```
+
+Unset (the default) means exactly that path. A relative path is read from the
+extension's own directory, not from wherever Pi happened to start; a leading `~` is
+the home directory.
+
+| Key | Default | Override | What it does |
+| --- | --- | --- | --- |
+| `memory.plugmemConfig` | unset (`memory/config.toml`) | replaces | Path to plugmem's `config.toml`. The file is written once if it is missing and never edited afterwards. |
+
+The file is **yours**:
+
+- delete it and the defaults come back on the next mode start;
+- if the path you named holds no file, one is written **there** and the bot says so —
+  a path pointing at nothing is a typo far more often than a request;
+- what goes in it is plugmem's business. It validates the file, reports what it did
+  not understand, and documents every key in its own `config.example.toml` and
+  `SETTINGS.md`. This extension does not parse it.
+
+**Four keys in that file are read by nothing here**, so filling them in is wasted
+effort:
+
+| Key | Why it does nothing |
+| --- | --- |
+| `[database].path` | The memories live in the extension's own `memory/` directory, handed to plugmem directly. Moving `config.toml` elsewhere does not move them. |
+| `[workspace].dir` | Same reason: the workspace root is passed, not looked up. |
+| `[workspace].max_open` | A default for an option the bot passes explicitly, so the file loses. It is `1` on purpose — that is what makes "two contacts' memories are never open at the same time" true rather than merely likely. |
+| `[workspace].idle_timeout_ms` | Passed explicitly too: an open memory holds its file's lock, so how soon it is released is a liveness decision this extension makes. |
+
+Everything else in the file applies to every contact memory alike.
+
+> **Upgrading?** If `settings.json` still has a `memory.embedder` section it is
+> written into `config.toml` once, on the next mode start, and the bot tells you where
+> it went. After that the section does nothing and can be deleted.
+
 ### The embedder — optional, and off by default
 
 **Everything works without one.** Three of plugmem's four recall sources need no model,
@@ -271,67 +311,74 @@ no API key and no network:
 | Time | "what was true then", recent windows | no |
 | Semantic (vectors) | meaning, paraphrase | **yes** |
 
-So with `enabled: false` (the default), a fact reading *"prefers to be called in the
+So with no embedder (the default), a fact reading *"prefers to be called in the
 evening"* answers a question containing "evening", but not a question phrased *"when
-should I reach them?"*. Enable the configured embedder and it does.
+should I reach them?"*. Configure one and it does.
 
-These keys are translated to plugmem's `[embedder]` section plus `[engine].dim`.
 There is one implementation, `OpenAiCompatEmbedder`: `url` is the complete
 OpenAI-compatible embeddings endpoint exactly as entered — no `/embeddings` path is
 appended — and `model` is the model name selected on that server. OpenAI, Ollama,
 LM Studio, vLLM and llama.cpp-compatible servers all use this same shape.
 
-| Key | Default | Override | What it does |
-| --- | --- | --- | --- |
-| `memory.embedder.enabled` | `false` | replaces | Create and call the embedder when `true`; `false` keeps the settings but makes no HTTP requests. |
-| `memory.embedder.url` | unset | replaces | The complete embeddings endpoint URL, for example `https://api.openai.com/v1/embeddings`. Required when enabled. |
-| `memory.embedder.model` | unset | replaces | Embedding model name selected on the server. Required when enabled. |
-| `memory.embedder.apiKeyEnv` | unset | replaces | Name of the **environment variable** holding the bearer token — never the token itself. |
-| `memory.embedder.dim` | `0` | replaces | Embedding width. Must be greater than `0` when enabled; keep the stored width while temporarily disabled. |
-| `memory.embedder.spaceId` | unset (falls back to `model`) | replaces | The identity plugmem tags a database's stored vectors with — see [Vector space identity](#vector-space-identity-spaceid) below. |
+A local example, with [Ollama](https://ollama.com) already running, written into
+`memory/config.toml`:
 
-A local example, with [Ollama](https://ollama.com) already running:
+```toml
+[engine]
+dim = 768
 
-```jsonc
-  "memory": {
-    "embedder": {
-      "enabled": true,
-      "url": "http://localhost:11434/v1/embeddings",
-      "model": "nomic-embed-text",
-      "dim": 768
-    }
-  }
+[embedder]
+enabled = true
+url = "http://localhost:11434/v1/embeddings"
+model = "nomic-embed-text"
+on_error = "degrade"
+# api_key_env = "OPENAI_API_KEY"   # the NAME of the variable, never the token
 ```
 
-Settings that do not add up are refused **when the settings are read**, not at the
-first recall: an enabled embedder without a `url`, a `model` or a positive `dim` fails
-the mode start with the offending key named. A disabled embedder may retain all three
-values, which makes switching it back on safe for an existing database.
+`dim` is the vector width and is written into each database at creation; it has to
+match what the model returns. An incoherent `[embedder]` is refused by plugmem when it
+opens a database, naming the key it could not accept.
 
 Changing only `url` is safe when it still serves the same model at the same width. To
-temporarily stop semantic embedding, set `enabled: false` and keep the existing `model`
-and `dim` — the stored vectors are left alone and switching back on costs nothing.
+stop semantic embedding temporarily, set `enabled = false` and keep `model` and `dim`
+— the stored vectors are left alone and switching back on costs nothing.
 
-#### Vector space identity (`spaceId`)
+#### When the embedding service is down — `on_error`
+
+`degrade`, which the generated file sets, keeps the bot working through an outage: the
+fact is stored and the question answered **without** its vector, and the embedder
+suspends itself so the next turn does not pay the same timeout again. It retries by
+itself. Nothing is damaged — the facts written meanwhile are in the same state as
+facts written with no embedder at all, and `/telegram-memory-reembed` fills their
+vectors in afterwards.
+
+`fail` refuses the call instead. In manager mode that means refusing somebody who is
+waiting for an answer, which is why it is not the default.
+
+`/telegram-settings` (and `telegram_bot_about` with `current_settings`) says which of
+the three states the embedder is in right now: none configured, answering, or not
+answering.
+
+#### Vector space identity (`space_id`)
 
 Each database records not just the width but **which vector space its stored vectors
 belong to** — an identity string, written into the database when the first vector is
-stored. `spaceId` sets that identity explicitly; left unset, it is `model` itself, which
-is right for the ordinary case where "the model changed" and "the vectors are no longer
-comparable" are the same fact.
+stored. `space_id` sets that identity explicitly; left unset, it is `model` itself,
+which is right for the ordinary case where "the model changed" and "the vectors are no
+longer comparable" are the same fact.
 
 They stop being the same fact when a model is renamed or re-published behind a new
 name but keeps producing the identical vectors — a provider alias, a version bump that
-changed nothing about the weights. Declare the same `spaceId` for both names and
+changed nothing about the weights. Declare the same `space_id` for both names and
 plugmem treats their vectors as one space: no mismatch, no reembed, because none is
-needed. This is the ONE case `spaceId` exists for; changing it on an embedder that
+needed. This is the ONE case `space_id` exists for; changing it on an embedder that
 already has vectors is a vector-space change like any other, and produces the same
 `vector space mismatch` below.
 
 #### Changing the embedding model
 
 Two models' vectors cannot be compared, so rather than return quiet nonsense plugmem
-refuses: after a `model` (or `spaceId`) change, every read and write of a memory that
+refuses: after a `model` (or `space_id`) change, every read and write of a memory that
 already has vectors fails with `vector space mismatch` until the vectors are rebuilt.
 The bot says so, and names the command.
 
@@ -341,11 +388,11 @@ stopped bot:
 - in the chat — **`/memory_reembed`**;
 - in the terminal — **`/telegram-memory-reembed`**.
 
-It recomputes every retained fact with the model `memory.embedder` now names, one
+It recomputes every retained fact with the model `config.toml` now names, one
 contact at a time, and publishes each memory atomically: closed revisions, edges and
 metadata all survive, which is what separates it from an export/import round trip.
 `dim` moves with it, so a model with a different output width needs only its own `dim`
-in the settings. If it fails partway, the memories already rebuilt keep their new
+in `config.toml`. If it fails partway, the memories already rebuilt keep their new
 vectors — run it again to finish the rest.
 
 > **Turning an embedder ON for the first time is the quiet case.** Memories built

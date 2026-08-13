@@ -656,6 +656,24 @@ describe("a contact's memory", () => {
 		expect(await workspace.reembed()).toEqual([]);
 	});
 
+	it("knows it cannot answer for an embedder before a memory exists", async () => {
+		// An empty workspace has no embedder state of its own: a memory is what has
+		// one. Saying "absent" here would be a guess, and the caller would act on it
+		// - there is nothing to rebuild either way, which is what makes "unknown"
+		// something a caller can use rather than a failure.
+		const { workspace } = fresh();
+		expect(await workspace.embedderState()).toBe("unknown");
+	});
+
+	it("asks the engine about the embedder, once a memory exists", async () => {
+		// The configuration these tests run with declares no embedder, and the answer
+		// comes from the engine rather than from anything this project holds.
+		const { workspace } = fresh();
+		const memory = await workspace.for("111");
+		await memory.remember({ text: "held", entity: "A", tags: ["fact"] });
+		expect(await workspace.embedderState()).toBe("absent");
+	});
+
 	it("refuses a name that is not a user id rather than inventing one", async () => {
 		const { workspace } = fresh();
 		// Every caller resolves a real id before reaching here, so this is a bug — and the

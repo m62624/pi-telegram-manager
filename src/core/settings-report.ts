@@ -13,7 +13,9 @@
  *
  * Pure: takes a settings object, returns markdown. `index.ts` decides who may see it.
  */
+
 import type { TelegramSettings } from "../settings/schema";
+import type { MemoryEmbedderState } from "../storage/memory";
 
 /** Milliseconds as something a person reads: `5 min`, `1 min 30 s`, `800 ms`. */
 export function humanMs(ms: number): string {
@@ -49,6 +51,20 @@ export function humanBytes(bytes: number): string {
 
 const onOff = (value: boolean): string => (value ? "on" : "off");
 
+/** The embedder said in terms of what the memories can do, not of what is set. */
+function embedderLine(state: MemoryEmbedderState | undefined): string {
+	switch (state) {
+		case "absent":
+			return "none configured — recall matches words, the entity graph and time, but not meaning";
+		case "active":
+			return "answering — recall matches meaning too";
+		case "suspended":
+			return "NOT answering right now, so new facts are stored without vectors and recall matches words only; it retries by itself, and /telegram-memory-reembed fills the gaps in afterwards";
+		default:
+			return "not known yet — no contact memory has been opened in this run";
+	}
+}
+
 /** `40000` is a wall of digits; `40k` is a number. `0` means no cap here. */
 export function humanCount(value: number): string {
 	if (value === 0) return "no cap";
@@ -59,6 +75,14 @@ export interface SettingsReportInput {
 	settings: TelegramSettings;
 	/** The mode actually running right now. */
 	mode: "personal" | "manager" | "mixed";
+	/**
+	 * The storage engine as it stands, which `settings.json` cannot describe.
+	 *
+	 * The embedder is configured in plugmem's own `config.toml` — this extension
+	 * does not parse that file — and whether it is ANSWERING is decided by the
+	 * provider, minute to minute. Absent when no mode has opened a workspace yet.
+	 */
+	engine?: { configFile: string; embedder: MemoryEmbedderState };
 }
 
 /**
@@ -131,17 +155,8 @@ export function renderSettingsReport(input: SettingsReportInput): string {
 			}`,
 			`- episodes (messages and turn outcomes) recorded: ${onOff(s.memory.episodes)}`,
 			`- memory pass: up to ${s.memory.consolidationMaxSteps} tool calls, ${s.memory.consolidationMaxNudges} re-prompts`,
-			`- embedder: ${
-				!s.memory.embedder.enabled
-					? "disabled (keyword, entity-graph and time recall still work)"
-					: `${s.memory.embedder.model ?? "(no model)"} at ${
-							s.memory.embedder.url ?? "(no url)"
-						}, ${s.memory.embedder.dim} dimensions, vector space "${
-							s.memory.embedder.spaceId ??
-							s.memory.embedder.model ??
-							"(no model)"
-						}"${s.memory.embedder.spaceId ? "" : " (defaults to the model name)"}`
-			}`,
+			`- engine config: ${input.engine?.configFile ?? "not opened yet in this run"} (plugmem's own file; this extension does not read it)`,
+			`- embedder: ${embedderLine(input.engine?.embedder)}`,
 			"",
 		);
 	}

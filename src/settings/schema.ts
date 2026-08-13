@@ -318,17 +318,23 @@ export interface TelegramSettings {
 		 */
 		consolidationMaxNudges: number;
 		/**
-		 * The single OpenAI-compatible embedder, passed through to plugmem verbatim.
+		 * Where plugmem's own `config.toml` is; unset means `memory/config.toml` inside
+		 * the extension directory.
 		 *
-		 * Leave `enabled` false and everything still works: three of plugmem's four
-		 * recall sources — keyword (BM25), entity graph and time — need no model, no API
-		 * key and no network. What an embedder adds is matching by MEANING, so that a
-		 * fact reading "prefers to be called in the evening" answers a question about
-		 * when to reach them, and not only a question containing the word "evening".
+		 * The only thing this file says about the storage engine. The embedder, the
+		 * recall weights and the maintenance triggers are said in that file, which
+		 * plugmem reads, validates and documents itself — this extension does not parse
+		 * it. A relative path is read from the extension's directory (Pi starts wherever
+		 * the owner happens to be), and a leading `~` is the home directory.
+		 */
+		plugmemConfig?: string;
+		/**
+		 * The embedder as `settings.json` used to describe it.
 		 *
-		 * `dim` is written INTO each database at creation and cannot be changed on one
-		 * that already holds facts — see SETTINGS.md before changing it. Disabling the
-		 * embedder keeps the URL, model and dimension so it can be enabled again safely.
+		 * @deprecated Configured in `config.toml` now (see `plugmemConfig`). These keys
+		 * are still read, and still honoured exactly once: to write that file the first
+		 * time, so an upgrade does not silently turn a working embedder off. Nothing
+		 * reads them afterwards.
 		 */
 		embedder: EmbedderSettings;
 	};
@@ -802,10 +808,15 @@ export function normalizeSettings(
 				"memory.consolidationMaxNudges",
 				d.memory.consolidationMaxNudges,
 			),
-			// Checked here rather than at the first recall: plugmem rejects an incoherent
-			// `[embedder]` when it opens a database, which would be somewhere in the middle
-			// of the first turn taken for a stranger. `validateEmbedder` is a deliberate
-			// copy of its rules — see `storage/plugmem-config.ts`.
+			plugmemConfig: asOptionalString(
+				memory.plugmemConfig,
+				"memory.plugmemConfig",
+			),
+			// Still checked here, and only for the migration: these values came out of a
+			// file the owner typed, so a bad one should name `memory.embedder.url` rather
+			// than surface later as plugmem's opinion of a TOML file they have never seen.
+			// `validateEmbedder` is a deliberate copy of its rules — see
+			// `storage/plugmem-config.ts`.
 			embedder: validatedEmbedder({
 				enabled: asBoolean(
 					embedder.enabled,

@@ -1,20 +1,20 @@
 /**
- * The `config.toml` handed to plugmem, built from the owner's settings.
+ * What goes into a `config.toml` this extension writes.
  *
- * plugmem configures itself from a TOML file — that is its interface, and this file
- * does not try to have another one. The `memory.embedder.*` keys are its
- * `[embedder]` section under different capitalisation, plus `dim`, which lives in
- * plugmem's `[engine]`. We translate and pass through; we do not interpret. The
- * single source of truth for what an embedder means stays inside plugmem.
+ * It writes one exactly twice: the first time a memory workspace exists at all, and
+ * the first time an older installation's `memory.embedder` settings need a home.
+ * After that the file belongs to the owner and plugmem is the only thing that reads
+ * it — see `storage/config-file.ts` for who owns what, and why mirroring plugmem's
+ * keys into `settings.json` was worth stopping.
  *
  * The validation below is a DELIBERATE duplicate of plugmem's own
- * (`plugmem-host/src/settings.rs`, `EmbedderCfg::build`), and the duplication earns
- * its keep by moving the error in time: plugmem rejects a bad `[embedder]` when it
- * opens a database, which here would be somewhere in the middle of the first turn
- * the manager takes for somebody. Checked at settings load, the owner is told while
- * they are still looking at the settings file.
+ * (`plugmem-host/src/settings.rs`, `EmbedderCfg::build`), and it survives for the
+ * migration alone: those values came out of a file the owner typed, so the complaint
+ * should name `memory.embedder.url` rather than arrive later as plugmem's opinion of
+ * a TOML file nobody has seen yet. Anything typed into `config.toml` afterwards is
+ * plugmem's to judge, and it does.
  *
- * Pure: strings in, a string out. `index.ts` writes it next to the workspace.
+ * Pure: strings in, a string out. Writing them is `config-file.ts`'s job.
  */
 
 export interface EmbedderSettings {
@@ -46,6 +46,76 @@ export interface EmbedderSettings {
 	 * in SETTINGS.md.
 	 */
 	spaceId?: string;
+}
+
+/**
+ * The file a fresh installation gets.
+ *
+ * Deliberately short. plugmem's own `config.example.toml` lists every key it takes
+ * with its default, and copying that here would freeze today's defaults into every
+ * owner's file; what belongs here is the handful of lines somebody has to change to
+ * get meaning-based recall working, and a pointer to the rest.
+ */
+export const DEFAULT_PLUGMEM_CONFIG = `# plugmem's configuration for this bot's per-contact memories.
+#
+# This file is yours. pi-telegram-manager writes it once, when it is not there, and
+# never edits it afterwards - so delete it to get these defaults back.
+#
+# Only the keys below are set; everything else stays at plugmem's own tuned
+# defaults. The full list, with every default and what it is for, is in plugmem's
+# config.example.toml and SETTINGS.md.
+#
+# Four keys are read by nothing here, so setting them is wasted effort:
+#
+#   [database].path              - the memories live in this extension's own memory/
+#   [workspace].dir                directory, which is handed to plugmem directly.
+#                                  Moving THIS file elsewhere does not move them.
+#   [workspace].max_open         - defaults for options the bot passes explicitly, so
+#   [workspace].idle_timeout_ms    the file loses. max_open is 1 on purpose: it is
+#                                  what makes "two contacts' memories are never open
+#                                  at the same time" true rather than likely.
+#
+# Everything else here applies to every contact memory alike.
+
+[engine]
+# Embedding width. 0 stores no vectors at all. With an embedder on it has to match
+# what the model returns, and it is written into each database at creation -
+# changing it later means a rebuild (/telegram-memory-reembed).
+dim = 0
+
+[embedder]
+# Off by default, so a bot on a machine with no embedding service still works:
+# keyword, entity-graph and time recall need no model and no network. What an
+# embedder adds is matching by MEANING - "when should I reach them?" finding a fact
+# that says "prefers to be called in the evening".
+enabled = false
+# url = "http://localhost:11434/v1/embeddings"
+# model = "bge-m3"
+# An unreachable provider stores and answers WITHOUT a vector rather than failing
+# the call, and suspends itself until it can be reached again. Facts written
+# meanwhile get their vectors from /telegram-memory-reembed. "fail" refuses instead,
+# which in a mode that answers strangers means refusing them.
+on_error = "degrade"
+# The NAME of an environment variable holding the bearer token - never a token.
+# api_key_env = "OPENAI_API_KEY"
+`;
+
+/**
+ * Whether these embedder settings were ever touched.
+ *
+ * The question a migration has to answer is "does this owner have an embedder worth
+ * carrying over", and settings that are byte-for-byte the defaults are the ones
+ * nobody chose. They carry no information, so they are not carried.
+ */
+export function embedderWasConfigured(embedder: EmbedderSettings): boolean {
+	return (
+		embedder.enabled ||
+		embedder.dim !== 0 ||
+		embedder.url !== undefined ||
+		embedder.model !== undefined ||
+		embedder.apiKeyEnv !== undefined ||
+		embedder.spaceId !== undefined
+	);
 }
 
 /** plugmem's own ceiling on a persisted embedding-space identity (`MAX_VECTOR_SPACE_ID_BYTES`). */
@@ -116,24 +186,24 @@ function tomlString(value: string): string {
 }
 
 /**
- * Render the `config.toml` for the memory workspace.
+ * The same embedder, said in TOML — the one-time move out of `settings.json`.
  *
- * Only two sections are written. `[engine].dim` because the width has to be declared
- * before a database is created, and `[embedder]` because that is the whole point of
- * the file. Everything else — recall weights, index thresholds, maintenance triggers
- * — is left at plugmem's tuned defaults: its own settings doc says to reach for them
- * when a specific memory answers badly, and a knob this project exposes is a knob it
- * has to explain.
+ * Only two sections, because those are the only things the old settings could say:
+ * `[engine].dim`, and `[embedder]`. From here on the file is edited by hand, and
+ * everything else plugmem takes is available in it.
  *
- * One default is chosen rather than inherited: `maintain_every_forgets` stays OFF.
- * The model may forget freely, and `forget` only tombstones — the bytes survive until
- * a maintenance pass purges them. Leaving that pass manual is what gives the owner a
- * window to look at what was dropped, and to put it back.
+ * `on_error` is the one thing added rather than translated: `settings.json` had no
+ * such key, the old behaviour was to fail, and in a mode that answers strangers on
+ * the owner's behalf an outage should cost the vector rather than the answer. It is
+ * written explicitly so the file says what it does.
  */
 export function buildPlugmemConfig(embedder: EmbedderSettings): string {
 	const lines = [
-		"# Generated by pi-telegram-manager from settings.json (memory.*).",
-		"# Edits here are overwritten every time a mode starts.",
+		"# Moved here from settings.json (memory.embedder.*) by pi-telegram-manager.",
+		"#",
+		"# This file is yours now: nothing overwrites it, and plugmem is the only thing",
+		"# that reads it. Every other key it takes - recall weights, the maintenance",
+		"# triggers - is documented in plugmem's config.example.toml.",
 		"",
 		"[engine]",
 		`dim = ${embedder.dim}`,
@@ -153,5 +223,10 @@ export function buildPlugmemConfig(embedder: EmbedderSettings): string {
 	if (embedder.apiKeyEnv?.trim()) {
 		lines.push(`api_key_env = ${tomlString(embedder.apiKeyEnv.trim())}`);
 	}
+	lines.push(
+		"# An unreachable provider stores and answers without a vector instead of",
+		'# failing the call, and retries by itself. Set to "fail" to be refused.',
+		'on_error = "degrade"',
+	);
 	return `${lines.join("\n")}\n`;
 }

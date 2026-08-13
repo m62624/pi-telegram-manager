@@ -38,6 +38,7 @@ import { COMMANDS } from "../constants";
 import {
 	type ContactMemory,
 	isOpenInterval,
+	type MemoryEmbedderState,
 	type MemoryFact,
 	type MemoryGuardedOutcome,
 	type MemoryHit,
@@ -125,8 +126,8 @@ function isMissingFact(error: unknown): boolean {
  * Turn a failure to answer into something the owner can act on.
  *
  * The vector-space case is called out by name because it is the one failure that is
- * not a broken install but a legitimate settings change: pointing `memory.embedder` at
- * a different model leaves every stored vector describing the old one. plugmem refuses
+ * not a broken install but a legitimate change: pointing the engine's `[embedder]`
+ * at a different model leaves every stored vector describing the old one. plugmem refuses
  * to mix them rather than returning quiet nonsense, which is right — and it leaves the
  * owner with a memory that answers nothing at all until the vectors are rebuilt. That
  * is one command, and this says which.
@@ -135,11 +136,11 @@ function memoryFailure(name: string, error: unknown): MemoryOpenError {
 	if (isVectorSpaceMismatch(error)) {
 		return new MemoryOpenError(
 			`memory "${name}" was written with a different embedding model than ` +
-				"memory.embedder now asks for, and plugmem will not mix two models' " +
-				"vectors in one index. Nothing is lost, and nothing is read or written " +
+				"the engine's config.toml now asks for, and plugmem will not mix two " +
+				"models' vectors in one index. Nothing is lost, and nothing is read or written " +
 				"until the vectors are rebuilt with the new model:\n" +
 				`  /${COMMANDS.memoryReembed} — rebuilds every contact's vectors, in place\n` +
-				"Or put the previous memory.embedder settings back, and the memories " +
+				"Or put the previous [embedder] settings back, and the memories " +
 				`answer again as they did. (${message(error)})`,
 			error,
 		);
@@ -360,6 +361,37 @@ function contactMemory(
  *
  * The chain must survive a rejection, or one failed verb wedges every later call.
  */
+/**
+ * Every memory on disk, by name.
+ *
+ * The workspace registry is not the index of what exists: `describe()` is what fills
+ * it, and nothing here describes a contact — so `entries()` answers with an empty
+ * list however many memories there are. The directory is the truth.
+ *
+ * A memory is a GROUP of files — `u1.plugmem` beside `.plugmem.journal`,
+ * `.plugmem.lock` and `.plugmem.snap.N` — and the snapshot is not the one that is
+ * always there: it is written at a checkpoint, so a memory written to a moment ago
+ * exists on disk as a journal and a lock and nothing else. Matching the snapshot
+ * alone would quietly skip exactly the memories that have just been used, and report
+ * success. So the name is whatever precedes the suffix, in any of them, deduplicated.
+ */
+async function memoryNames(root: string): Promise<string[]> {
+	let files: string[];
+	try {
+		files = await readdir(join(root, DB_SUBDIR));
+	} catch {
+		// No directory means no memory has ever been written.
+		return [];
+	}
+	return [
+		...new Set(
+			files
+				.map((file) => file.slice(0, file.indexOf(DB_SUFFIX)))
+				.filter((name) => name.length > 0),
+		),
+	].sort();
+}
+
 export function createPlugmemWorkspace(
 	root: string,
 	options: PlugmemWorkspaceOptions,
@@ -405,32 +437,31 @@ export function createPlugmemWorkspace(
 			return memory;
 		},
 
+		async embedderState(): Promise<MemoryEmbedderState> {
+			// Asked of the engine rather than read out of settings, because the answer
+			// lives in the config file plugmem read and can change while the bot runs: a
+			// provider that stops answering suspends itself under `on_error = "degrade"`.
+			//
+			// A memory is what has an embedder, so one has to exist to be asked. With no
+			// contacts yet there is nothing to answer for and nothing to rebuild either,
+			// which is why "unknown" is a state a caller can act on rather than a failure.
+			const names = await memoryNames(root);
+			const first = names[0];
+			if (first === undefined) return "unknown";
+			return serialized(async () => {
+				try {
+					return await workspace.memory(first).embedderState();
+				} catch {
+					// A memory that will not open says nothing about the embedder, and
+					// whatever is wrong with it will be reported by the verb that needs
+					// it. Guessing here would put a wrong sentence in front of the owner.
+					return "unknown";
+				}
+			});
+		},
+
 		async reembed(onProgress): Promise<MemoryReembedReport[]> {
-			// The registry is not the index of what exists: `describe()` is what fills it,
-			// and nothing here describes a contact — so `entries()` answers with an empty
-			// list however many memories are on disk. The directory is the truth.
-			let files: string[];
-			try {
-				files = await readdir(join(root, DB_SUBDIR));
-			} catch {
-				// No directory means no memory has ever been written. Nothing to rebuild.
-				return [];
-			}
-			// A memory is a GROUP of files — `u1.plugmem` beside `.plugmem.journal`,
-			// `.plugmem.lock` and `.plugmem.snap.N` — and the snapshot is not the one that
-			// is always there: it is written at a checkpoint, so a memory written to a
-			// moment ago exists on disk as a journal and a lock and nothing else. Matching
-			// the snapshot alone would quietly skip exactly the memories that have just
-			// been used, and report success. So the name is whatever precedes the suffix,
-			// in any of them, deduplicated. (The workspace registry is not in here — it
-			// sits beside this directory, not inside it.)
-			const names = [
-				...new Set(
-					files
-						.map((file) => file.slice(0, file.indexOf(DB_SUFFIX)))
-						.filter((name) => name.length > 0),
-				),
-			].sort();
+			const names = await memoryNames(root);
 			const reports: MemoryReembedReport[] = [];
 			for (const [index, name] of names.entries()) {
 				await onProgress?.(name, index, names.length);

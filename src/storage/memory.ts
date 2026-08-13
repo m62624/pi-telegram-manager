@@ -268,6 +268,21 @@ export interface MemoryReembedReport {
 }
 
 /**
+ * What the engine says about the embedder, which is a different question from what
+ * the config file asks for.
+ *
+ * - `absent` — none configured, so recall matches wording, not meaning;
+ * - `active` — configured and being called;
+ * - `suspended` — configured, but the provider could not be reached and the policy is
+ *   `degrade`, so facts are stored and questions answered WITHOUT vectors until it
+ *   answers again. Nothing is damaged; a reembed fills the gaps in afterwards, and
+ *   the engine refuses one while the embedder is suspended;
+ * - `unknown` — no memory exists yet to ask. An empty workspace has no embedder state
+ *   of its own, and nothing to rebuild either.
+ */
+export type MemoryEmbedderState = "absent" | "active" | "suspended" | "unknown";
+
+/**
  * The memory of ONE contact, already open. There is no database argument on any
  * method here — by the time a caller holds this, the choice has been made.
  */
@@ -359,6 +374,14 @@ export interface MemoryWorkspace {
 	 * provider once per batch of facts and the owner is watching something — a
 	 * terminal, or a chat where two unawaited sends arrive in whichever order.
 	 */
+	/**
+	 * Whether an embedder is configured, and whether it is answering right now.
+	 *
+	 * Asked of a memory rather than derived from settings: `config.toml` is the
+	 * engine's file and this extension does not parse it, and a provider that stopped
+	 * answering mid-run is a state no file can report.
+	 */
+	embedderState(): Promise<MemoryEmbedderState>;
 	reembed(
 		onProgress?: (
 			name: string,
