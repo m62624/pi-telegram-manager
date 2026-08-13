@@ -70,8 +70,12 @@ export interface AboutToolDeps {
 	/**
 	 * The live configuration, already redacted for display, or null when no mode is
 	 * running. Never contains the token.
+	 *
+	 * Asynchronous because part of it is not a setting: whether the embedder is
+	 * answering right now is a question for the engine, and the answer can change
+	 * while a mode runs.
 	 */
-	settingsReport(): string | null;
+	settingsReport(): Promise<string | null>;
 	/**
 	 * Claim one read of this turn's budget; false once it is spent.
 	 *
@@ -182,7 +186,7 @@ export function createAboutTools(deps: AboutToolDeps): ToolDefinition[] {
 			}
 
 			if (topic === "current_settings") {
-				const report = deps.settingsReport();
+				const report = await deps.settingsReport();
 				if (!report)
 					return fail("No mode is running, so there is nothing to report.");
 				return ok(report);

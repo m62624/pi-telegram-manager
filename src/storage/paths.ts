@@ -79,8 +79,10 @@ export interface TelegramPaths {
 	 */
 	memoryDir: string;
 	/**
-	 * The `config.toml` plugmem reads (engine width + embedder). Generated from the
-	 * owner's `memory.*` settings on every mode start — see `storage/plugmem-config.ts`.
+	 * Where plugmem's own `config.toml` lives unless `memory.plugmemConfig` moves it.
+	 *
+	 * The owner's file: written once when it is missing and never edited afterwards —
+	 * see `storage/config-file.ts`.
 	 */
 	memoryConfigPath: string;
 	/** Working directory a mode-2 manager session is opened in. */

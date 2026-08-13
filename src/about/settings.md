@@ -97,30 +97,41 @@ said in any one turn.
 - `memory.consolidationMaxSteps`, `memory.consolidationMaxNudges` — how long an idle
   memory pass may go on, and how many times you may be prompted after answering
   without calling a tool.
-- `memory.embedder.enabled`, `memory.embedder.url`, `memory.embedder.model`,
-  `memory.embedder.apiKeyEnv`, `memory.embedder.dim` — an optional OpenAI-compatible
-  embedding service. With `enabled: false` (the default) recall still works: it
-  matches on words, on the entity graph and on time. With it enabled, it also matches
-  on MEANING; `url` is the complete endpoint and `model` selects the server model.
-  `dim` is the vector width, fixed into a database the moment its first vector is
-  written.
-- `memory.embedder.spaceId` — the identity a database's stored vectors are tagged
-  with. Unset (the default) it is just `model` — which is right until a model is
-  renamed or re-published under a new name while producing the identical vectors, the
-  one case worth setting this for explicitly.
+- `memory.plugmemConfig` — where the storage engine's own `config.toml` is. Unset, it
+  sits at `memory/config.toml` inside the extension directory. THAT file, not
+  `settings.json`, configures the embedder — the endpoint, the model, the vector
+  width, the name of the environment variable holding a key — and everything else
+  plugmem takes. The bot never reads it; plugmem does. It is written once if it is
+  missing and never edited afterwards, so the owner can change it freely and delete
+  it to get the defaults back.
+
+An embedder is optional. Without one recall still works: it matches on words, on the
+entity graph and on time. With one it also matches on MEANING, so "when should I
+reach them?" finds a fact that says "prefers to be called in the evening". Whether
+one is configured, and whether it is answering RIGHT NOW, is in the
+`current_settings` page — not here, because it can change while the bot runs.
+
+**When the embedding service is down.** The generated config asks for
+`on_error = "degrade"`: a fact is stored and a question answered WITHOUT its vector
+rather than the call failing, and the embedder suspends itself so the next turn does
+not pay the same timeout. Nothing is damaged and nothing is lost — the facts written
+meanwhile simply have no vectors yet, and `/telegram-memory-reembed` fills them in
+once the service is back. If `current_settings` says the embedder is not answering,
+that is what is happening, and it is worth telling the owner.
 
 **Why a memory sometimes answers nothing at all, and what to do about it.** Every
-database remembers which vector space its stored facts' vectors belong to (`model`,
-or `spaceId` if the owner set one). Two spaces' vectors are never mixed — plugmem
+database remembers which vector space its stored facts' vectors belong to (the
+model's name, or `space_id` if the owner set one). Two spaces' vectors are never mixed — plugmem
 refuses rather than compare vectors that do not mean the same thing — so the moment
-`memory.embedder.model` (or `.spaceId`) changes, every read and write on a memory
+the embedder's `model` (or its `space_id`) changes in `config.toml`, every read and
+write on a memory
 that already has vectors fails with **`vector space mismatch`**, for every contact,
 until the vectors are rebuilt. Nothing is lost: the facts and their text are still
 there, only the vectors need recomputing. Tell whoever hits this to run
 **`/memory_reembed`** in the chat, or **`/telegram-memory-reembed`** in the terminal
 — either rebuilds every contact's vectors in place, atomically, and resumes where it
-left off if interrupted. Reverting `model`/`spaceId` to what they were before also
-clears it, with nothing to rebuild.
+left off if interrupted. Reverting `model`/`space_id` to what they were before
+also clears it, with nothing to rebuild.
 
 **What you may touch**
 

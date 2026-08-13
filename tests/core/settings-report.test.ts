@@ -101,46 +101,51 @@ describe("renderSettingsReport", () => {
 		expect(closed).toContain("none (messaging tools only)");
 	});
 
-	it("names the vector space an enabled embedder answers from", () => {
-		const withoutSpaceId = normalizeSettings({
-			botToken: SECRET,
-			allowedUserId: 777,
-			memory: {
-				embedder: {
-					enabled: true,
-					url: "http://localhost:11434/v1/embeddings",
-					model: "nomic-embed-text",
-					dim: 768,
-				},
-			},
-		});
+	it("reports the embedder the ENGINE has, not the one settings describe", () => {
+		// The endpoint, the model and the width live in plugmem's config.toml now,
+		// which this extension does not parse. What it can report is the part that
+		// decides how a search behaves - and that one is not a setting at all.
 		const report = renderSettingsReport({
-			settings: withoutSpaceId,
+			settings: withToken,
 			mode: "manager",
+			engine: { configFile: "/x/memory/config.toml", embedder: "active" },
 		});
-		expect(report).toContain(
-			'vector space "nomic-embed-text" (defaults to the model name)',
-		);
+		expect(report).toContain("/x/memory/config.toml");
+		expect(report).toContain("embedder: answering");
+	});
 
-		const withSpaceId = normalizeSettings({
-			botToken: SECRET,
-			allowedUserId: 777,
-			memory: {
-				embedder: {
-					enabled: true,
-					url: "http://localhost:11434/v1/embeddings",
-					model: "nomic-embed-text-alias",
-					spaceId: "nomic-embed-text",
-					dim: 768,
-				},
-			},
+	it("says a provider that stopped answering has stopped", () => {
+		// The state nothing in settings.json can express: an embedder is configured,
+		// it simply is not answering, and facts are being stored without vectors.
+		const report = renderSettingsReport({
+			settings: withToken,
+			mode: "manager",
+			engine: { configFile: "/x/memory/config.toml", embedder: "suspended" },
 		});
-		const reportWithSpaceId = renderSettingsReport({
-			settings: withSpaceId,
+		expect(report).toContain("NOT answering");
+		expect(report).toContain("/telegram-memory-reembed");
+	});
+
+	it("explains what no embedder costs, rather than printing a boolean", () => {
+		const report = renderSettingsReport({
+			settings: withToken,
+			mode: "manager",
+			engine: { configFile: "/x/memory/config.toml", embedder: "absent" },
+		});
+		expect(report).toContain("none configured");
+		expect(report).toContain("not meaning");
+	});
+
+	it("admits it has not asked the engine yet rather than guessing", () => {
+		// Before a mode opens a workspace there is nothing to ask, and a report that
+		// filled the gap from settings would be describing a configuration that has
+		// not been read.
+		const report = renderSettingsReport({
+			settings: withToken,
 			mode: "manager",
 		});
-		expect(reportWithSpaceId).toContain('vector space "nomic-embed-text"');
-		expect(reportWithSpaceId).not.toContain("defaults to the model name");
+		expect(report).toContain("not opened yet in this run");
+		expect(report).toContain("not known yet");
 	});
 });
 

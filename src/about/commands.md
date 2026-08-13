@@ -26,13 +26,16 @@ every MODE" — never "to everyone".
   terminal. If the session does not stop, the bot says so rather than staying quiet.
 - `/switch` — change the mode (manager / personal / mixed) with buttons.
 - `/memory_reembed` — rebuild the vectors in every contact's long-term memory with the
-  embedding model `memory.embedder` currently names. Needed after that model changes:
+  embedding model the engine's `config.toml` currently names. Needed after that model
+  changes:
   the memories keep the vectors of the model that wrote them, and rather than mix two
   models' vectors the bot stops answering from memory until this has run. Also worth
   running once after turning an embedder ON over memories built without one, otherwise
-  only the facts learned since the change can be found by meaning. It calls the
-  provider once per batch of facts, for every contact, and reports each memory as it
-  goes.
+  only the facts learned since the change can be found by meaning — and once after an
+  embedding service was down for a while, because facts stored during an outage keep
+  their text and wait for their vectors. It calls the provider once per batch of facts,
+  for every contact, and reports each memory as it goes. It refuses while the embedding
+  service is not answering, rather than publish half a vector space.
 - `/stop` — stop the bot entirely. Deliberately a typed command and not a button, so a
   mistap cannot end a Secretary connection.
 - `/start` — the privacy and terms notice. The one command anyone may use.

@@ -77,8 +77,14 @@ describe("about pages match the code", () => {
 	it("documents every setting the schema actually has", () => {
 		// The bug this pins: the page was written by hand and silently missed 24 keys,
 		// so the model simply did not know they existed.
+		//
+		// `memory.embedder.*` is the one exception, and the page is right to leave it
+		// out: those keys are read once, to move an older installation's embedder into
+		// plugmem's `config.toml`, and configure nothing afterwards. Telling the model
+		// about them would have it send the owner to a section that does nothing.
 		const doc = page("settings.md");
 		const missing = settingsKeys(DEFAULT_SETTINGS)
+			.filter((path) => !path.startsWith("memory.embedder."))
 			.map((path) => path.split(".").at(-1) as string)
 			.filter((leaf) => !doc.includes(leaf));
 		expect(missing).toEqual([]);

@@ -200,6 +200,7 @@ import {
 	type ChatStore,
 	createChatStore,
 } from "./storage/chat-store";
+import { ensurePlugmemConfig } from "./storage/config-file";
 import {
 	createConnectIntentStore,
 	intentApplies,
@@ -211,7 +212,7 @@ import { createNodeFs } from "./storage/fs";
 import type { MemoryWorkspace } from "./storage/memory";
 import { createPlugmemWorkspace } from "./storage/memory-plugmem";
 import { importLegacyFacts, migrateStorage } from "./storage/migrations";
-import { buildPlugmemConfig, embedderActive } from "./storage/plugmem-config";
+import { embedderWasConfigured } from "./storage/plugmem-config";
 import { createSingletonStore } from "./storage/singleton-store";
 import { createUpdateCursor } from "./storage/update-cursor";
 import {
@@ -796,6 +797,10 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// on stop so the files' locks are released and the owner can read their own memory
 	// with `plugmem-cli`.
 	let memoryWorkspace: MemoryWorkspace | null = null;
+	// The engine config file that workspace was actually opened with — the owner's
+	// own path when they named one, so the settings report can point at the file
+	// they would edit rather than at the place it usually lives.
+	let memoryConfigPath: string | null = null;
 	// The active telegram-sandbox allowlist; null while the manager is inactive.
 	let managerMatcher: ToolMatcher | null = null;
 	// Tool calls made during the current manager turn, gathered for the debug feed
@@ -1361,14 +1366,31 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// A manager turn is answering a stranger. Personal — and mixed while the owner
 		// is coding — is the owner's own chat.
 		isOwnerTurn: () => !managerHoldsSession(mixedActive, polarity) || !manager,
-		settingsReport: () => {
+		settingsReport: async () => {
 			if (!activeSettings) return null;
 			const mode = manager
 				? mixedActive
 					? ("mixed" as const)
 					: ("manager" as const)
 				: ("personal" as const);
-			return renderSettingsReport({ settings: activeSettings, mode });
+			// Asked at the moment of asking, not remembered from mode start: an
+			// embedding service that went down since then is exactly what somebody
+			// reading this is trying to explain.
+			const workspace = memoryWorkspace;
+			const engine =
+				workspace && memoryConfigPath
+					? {
+							configFile: memoryConfigPath,
+							embedder: await workspace
+								.embedderState()
+								.catch(() => "unknown" as const),
+						}
+					: undefined;
+			return renderSettingsReport({
+				settings: activeSettings,
+				mode,
+				...(engine === undefined ? {} : { engine }),
+			});
 		},
 	})) {
 		pi.registerTool(tool);
@@ -3286,8 +3308,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			settings.manager.rememberMessages,
 		);
 		// The long-term memory: one plugmem database per contact, under `memory/`. The
-		// config is regenerated from the owner's settings on every start, so an embedder
-		// they just turned on is in force for this run and not the next one.
+		// engine reads its own `config.toml` there, which is the owner's file: written
+		// once if it is missing - carrying over the old `memory.embedder` settings if
+		// this installation still has them - and never edited afterwards.
 		//
 		// A workspace left over from a previous start is closed first, and that is not
 		// belt and braces: an open database holds its file's exclusive lock, so a leaked
@@ -3297,12 +3320,21 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// it worth a line.
 		await memoryWorkspace?.close().catch(() => {});
 		await fs.mkdirp(paths.memoryDir);
-		await fs.writeTextAtomic(
-			paths.memoryConfigPath,
-			buildPlugmemConfig(settings.memory.embedder),
-		);
+		const memoryConfig = await ensurePlugmemConfig({
+			fs,
+			defaultPath: paths.memoryConfigPath,
+			extensionDir: paths.extensionDir,
+			...(settings.memory.plugmemConfig === undefined
+				? {}
+				: { configured: settings.memory.plugmemConfig }),
+			...(embedderWasConfigured(settings.memory.embedder)
+				? { legacy: settings.memory.embedder }
+				: {}),
+		});
+		if (memoryConfig.notice) ctx.ui.notify(memoryConfig.notice);
+		memoryConfigPath = memoryConfig.path;
 		memoryWorkspace = createPlugmemWorkspace(paths.memoryDir, {
-			configPath: paths.memoryConfigPath,
+			configPath: memoryConfig.path,
 			idleTimeoutMs: MEMORY_IDLE_TIMEOUT_MS,
 		});
 		// Facts an older version stored in `contacts/*.json` move into the memory here,
@@ -3817,8 +3849,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 *
 	 * The owner's operation, and deliberately not an automatic one: it calls the model
 	 * once per batch of facts, for every contact, and how long that takes depends on a
-	 * provider this code does not manage. It is needed after two changes to
-	 * `memory.embedder`, and only one of them announces itself:
+	 * provider this code does not manage. It is needed after two changes to the
+	 * `[embedder]` section of the engine's `config.toml`, and only one of them
+	 * announces itself:
 	 *
 	 *  - **a different model** — plugmem records which model's vectors are in the file
 	 *    and refuses to mix two, so every read and write fails until this runs. Loud,
@@ -3833,8 +3866,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	 *
 	 * The owner's operation, and deliberately not an automatic one: it calls the model
 	 * once per batch of facts, for every contact, and how long that takes depends on a
-	 * provider this code does not manage. It is needed after two changes to
-	 * `memory.embedder`, and only one of them announces itself:
+	 * provider this code does not manage. It is needed after two changes to the
+	 * `[embedder]` section of the engine's `config.toml`, and only one of them
+	 * announces itself:
 	 *
 	 *  - **a different model** — plugmem records which model's vectors are in the file
 	 *    and refuses to mix two, so every read and write of that memory fails until
@@ -3868,26 +3902,44 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			await report("Telegram settings could not be read.", "error");
 			return;
 		}
-		if (!embedderActive(settings.memory.embedder)) {
-			await report(
-				"memory.embedder is off, so there is no model to rebuild vectors with. " +
-					"The memories still work — keyword, entity-graph and time retrieval " +
-					"need no embedder; only meaning-based recall does.",
-				"error",
-			);
-			return;
-		}
 		let workspace = live;
 		if (!workspace) {
 			await fs.mkdirp(paths.memoryDir);
-			await fs.writeTextAtomic(
-				paths.memoryConfigPath,
-				buildPlugmemConfig(settings.memory.embedder),
-			);
+			const memoryConfig = await ensurePlugmemConfig({
+				fs,
+				defaultPath: paths.memoryConfigPath,
+				extensionDir: paths.extensionDir,
+				...(settings.memory.plugmemConfig === undefined
+					? {}
+					: { configured: settings.memory.plugmemConfig }),
+				...(embedderWasConfigured(settings.memory.embedder)
+					? { legacy: settings.memory.embedder }
+					: {}),
+			});
+			if (memoryConfig.notice) await report(memoryConfig.notice);
 			workspace = createPlugmemWorkspace(paths.memoryDir, {
-				configPath: paths.memoryConfigPath,
+				configPath: memoryConfig.path,
 				idleTimeoutMs: MEMORY_IDLE_TIMEOUT_MS,
 			});
+		}
+		// Asked of the engine, not of the settings: whether there is an embedder is
+		// decided by the config file plugmem read, and whether it is ANSWERING is
+		// decided by the provider. Both refuse this rebuild, and for different
+		// reasons the owner acts on differently.
+		const embedder = await workspace.embedderState();
+		if (embedder === "absent" || embedder === "suspended") {
+			await report(
+				embedder === "absent"
+					? "No embedder is configured, so there is no model to rebuild vectors with. " +
+							"The memories still work — keyword, entity-graph and time retrieval " +
+							"need no embedder; only meaning-based recall does."
+					: "The embedding service is not answering, so a rebuild would publish half a " +
+							"vector space — plugmem refuses one while the embedder is suspended. " +
+							"Start the service and run this again.",
+				"error",
+			);
+			if (!live) await workspace.close().catch(() => {});
+			return;
 		}
 		try {
 			const reports = await workspace.reembed((name, index, total) =>
