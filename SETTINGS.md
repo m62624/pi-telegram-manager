@@ -6,7 +6,7 @@ All settings live in one JSON file: `<pi-agent-dir>/extensions/pi-telegram-manag
 
 ## The whole file, with every default
 
-Written out in full so the nesting is never a guess: this is what the extension runs with when your `settings.json` says nothing. **Copy only the lines you want to change** — every key is optional, and an empty `{}` is a valid file. The three keys with no default (`botToken`, `allowedUserId`, `timezone`) are shown with example values; the rest are the real defaults. A test keeps this block in step with the code, so it cannot quietly go stale.
+Written out in full so the nesting is never a guess: this is what the extension runs with when your `settings.json` says nothing. **Copy only the lines you want to change**. Every key is optional, and an empty `{}` is a valid file. The three keys with no default (`botToken`, `allowedUserId`, `timezone`) are shown with example values; the rest are the real defaults. A test keeps this block in step with the code, so it cannot quietly go stale.
 
 <!-- settings-example:start -->
 ```json
@@ -98,7 +98,7 @@ Written out in full so the nesting is never a guess: this is what the extension 
 
 ## `assistant` (Personal mode)
 
-Two behaviours here are not settings but are worth stating, since they shape what Personal *is*. **Isolation:** Personal and the manager share one Pi session, so the raw log holds both — but each Personal turn strips the other side out before the model reads it, so after the bot has answered other people (manager or mixed) their messages never leak into your Personal context; you don't have to `/clear` to be sure. **Session choice:** `/resume` in the chat (or the picker that `/telegram-personal` opens in the terminal) lets you keep the current session, start a new one, or resume any earlier session of this project; binding to a session that already holds a conversation (resuming a different one, or connecting to a terminal session used without Telegram) replays its last few messages into the fresh `personal` topic as read-only cards — for reference only, never sent to the model — and rotates the topic to mirror the change (see [Why the `personal` topic is new every session](README.md#why-the-personal-topic-is-new-every-session)).
+Two behaviours here are not settings but are worth stating, since they shape what Personal *is*. **Isolation:** Personal and the manager share one Pi session, so the raw log holds both, but each Personal turn strips the other side out before the model reads it, so after the bot has answered other people (manager or mixed) their messages never leak into your Personal context; you don't have to `/clear` to be sure. **Session choice:** `/resume` in the chat (or the picker that `/telegram-personal` opens in the terminal) lets you keep the current session, start a new one, or resume any earlier session of this project; binding to a session that already holds a conversation (resuming a different one, or connecting to a terminal session used without Telegram) replays its last few messages into the fresh `personal` topic as read-only cards: for reference only, never sent to the model, and rotates the topic to mirror the change (see [Why the `personal` topic is new every session](README.md#why-the-personal-topic-is-new-every-session)).
 
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
@@ -112,7 +112,7 @@ Two behaviours here are not settings but are worth stating, since they shape wha
 
 ### The full output of a tool call
 
-A card can only show so much: past `assistant`'s result limit it stops at `… (59 earlier lines)`. The rest has to be reachable, or the card is only teasing — so the extension attaches the full output as a file. It comes from one of two places, and you never have to care which:
+A card can only show so much: past `assistant`'s result limit it stops at `… (59 earlier lines)`. The rest has to be reachable, or the card is only teasing, so the extension attaches the full output as a file. It comes from one of two places, and you never have to care which:
 
 - the **tool** truncated its own output for the model and saved the whole thing to a file → that file is sent;
 - the tool returned everything and **the card** is what cut it (a `find … | head -100`, say) → the extension writes the full output out itself and sends that.
@@ -122,9 +122,9 @@ Two rules, and both are yours:
 - **only when something was actually truncated.** If the card shows the whole result, a file would just be a duplicate.
 - **only up to `toolOutputMaxBytes`.** Over the cap, nothing is attached. Cap it low if you read Telegram on metered mobile data (`1048576` = 1 MiB), or set `0` to never attach anything.
 
-This is not `files.maxBytes` — that governs files **you** send the bot. This one governs logs the bot sends **you**, unasked, which is why it has a cap of its own. The extension decides it mechanically: the agent is never asked, so it cannot decide to bury you in logs.
+This is not `files.maxBytes`. That governs files **you** send the bot. This one governs logs the bot sends **you**, unasked, which is why it has a cap of its own. The extension decides it mechanically: the agent is never asked, so it cannot decide to bury you in logs.
 
-**Where the files go.** By default into the extension's own directory (`<agent>/extensions/pi-telegram-manager/tool-output`) — never the system temp dir — and each one is deleted the moment it has been sent. Point `toolOutputDir` anywhere you like; both path flavours are accepted, since the same `settings.json` may travel between machines:
+**Where the files go.** By default into the extension's own directory (`<agent>/extensions/pi-telegram-manager/tool-output`): never the system temp dir, and each one is deleted the moment it has been sent. Point `toolOutputDir` anywhere you like; both path flavours are accepted, since the same `settings.json` may travel between machines:
 
 ```jsonc
 "assistant": {
@@ -133,7 +133,7 @@ This is not `files.maxBytes` — that governs files **you** send the bot. This o
 }
 ```
 
-A leading `~` expands to your home directory on either platform (`~\logs` works too). Beyond that the path is used exactly as written: a Windows path on Linux fails as a missing directory — an honest error — instead of being quietly rewritten into some other one.
+A leading `~` expands to your home directory on either platform (`~\logs` works too). Beyond that the path is used exactly as written: a Windows path on Linux fails as a missing directory (an honest error) instead of being quietly rewritten into some other one.
 
 ## `mixed` (mixed mode)
 
@@ -143,13 +143,13 @@ Mixed runs the manager alongside your terminal session in one Pi session, with t
 | --- | --- | --- | --- |
 | `mixed.returnToTelegramMs` | `480000` (8 min) | replaces | After your terminal inference **finishes** (or an abort settles), how long the brain stays idle before it returns to Telegram moderation. The countdown starts when the turn **ends**, not while it runs; any new terminal prompt cancels it. |
 
-**Two keyboards, one session.** Mixed runs the Personal bridge as well, bound to the **personal** topic of your bot DM: a message there is treated exactly like a prompt typed at the terminal (it takes the brain back for coding, aborting a moderation turn in flight), and terminal prompts are mirrored into it. Manager turns are never delivered there — they answer the interlocutor and report into the **manager** topic.
+**Two keyboards, one session.** Mixed runs the Personal bridge as well, bound to the **personal** topic of your bot DM: a message there is treated exactly like a prompt typed at the terminal (it takes the brain back for coding, aborting a moderation turn in flight), and terminal prompts are mirrored into it. Manager turns are never delivered there. They answer the interlocutor and report into the **manager** topic.
 
-**Priority & algorithm.** While you are at the terminal (the `coding` polarity) the manager may not run a turn: incoming Telegram messages are stored and deferred, and **even a wake-word does not preempt you** — it only marks the chat ready. Nothing from Telegram enters your terminal context or costs you tokens. When your inference has been idle for `mixed.returnToTelegramMs`, the brain flips to the `telegram` polarity and moderates the ready chats. The instant you type again it flips back, aborts any in-flight moderation, and restores your full tools. In the `telegram` polarity the model runs in the sandbox (messaging tools only — no `read`/`write`/`bash`); your full tools exist only while you hold the terminal. What it did while you were away is mirrored to your bot DM: the replies it delivered land in the **manager** topic (`manager.replies`), and its diagnostics — silences, held drafts, notices — in the **log** topic (`manager.log`), both on by default.
+**Priority & algorithm.** While you are at the terminal (the `coding` polarity) the manager may not run a turn: incoming Telegram messages are stored and deferred, and **even a wake-word does not preempt you**. It only marks the chat ready. Nothing from Telegram enters your terminal context or costs you tokens. When your inference has been idle for `mixed.returnToTelegramMs`, the brain flips to the `telegram` polarity and moderates the ready chats. The instant you type again it flips back, aborts any in-flight moderation, and restores your full tools. In the `telegram` polarity the model runs in the sandbox (messaging tools only, no `read`/`write`/`bash`); your full tools exist only while you hold the terminal. What it did while you were away is mirrored to your bot DM: the replies it delivered land in the **manager** topic (`manager.replies`), and its diagnostics (silences, held drafts, notices) in the **log** topic (`manager.log`), both on by default.
 
 ## `connectionCheck` (connection watchdog, all modes)
 
-A silent timer probes the bot connection while a mode is active; after too many consecutive failures the mode auto-disconnects. Probes never post to chat or the debug feed — only the final auto-disconnect is surfaced.
+A silent timer probes the bot connection while a mode is active; after too many consecutive failures the mode auto-disconnects. Probes never post to chat or the debug feed: only the final auto-disconnect is surfaced.
 
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
@@ -160,9 +160,9 @@ A silent timer probes the bot connection while a mode is active; after too many 
 
 ## `topics` (owner DM layout)
 
-Bot API 9.3 lets a bot create forum topics **inside a private chat**, so your DM with the bot is split into three, by *whose* conversation it is and — for the secretary side — by whether the bot actually **spoke**: **personal** — you and the model (your prompts, its replies, and the tool calls it made for you, so you can watch it work); **manager** — only the replies the bot delivered to other people, its work product, kept clean so it reads as a log of what was actually said; and **log** — the diagnostics: turns where it stayed silent, held a draft, or was re-prompted, plus every runtime notice. The noise that used to bury the **manager** topic now lives in **log**.
+Bot API 9.3 lets a bot create forum topics **inside a private chat**, so your DM with the bot is split into three, by *whose* conversation it is and (for the secretary side) by whether the bot actually **spoke**. **personal** holds you and the model: your prompts, its replies, and the tool calls it made for you, so you can watch it work. **manager** holds only the replies the bot delivered to other people, its work product, kept clean so it reads as a log of what was actually said. **log** holds the diagnostics: turns where it stayed silent, held a draft, or was re-prompted, plus every runtime notice. The noise that used to bury the **manager** topic now lives in **log**.
 
-It needs **Threaded Mode** on the bot, toggled in the **@BotFather Mini App** (tap BotFather's menu button → your bot → Threaded Mode). It is *not* in the classic `/mybots` → Bot Settings keyboard. This is a setup step, not a nicety — with it off, the bot warns you in the DM on every mode start (set `topics.enabled: false` if you genuinely want one flat stream). Without it (or on any error) everything degrades to the single plain DM exactly as before — nothing to configure, nothing breaks.
+It needs **Threaded Mode** on the bot, toggled in the **@BotFather Mini App** (tap BotFather's menu button → your bot → Threaded Mode). It is *not* in the classic `/mybots` → Bot Settings keyboard. This is a setup step, not a nicety: with it off, the bot warns you in the DM on every mode start (set `topics.enabled: false` if you genuinely want one flat stream). Without it (or on any error) everything degrades to the single plain DM exactly as before. Nothing to configure, nothing breaks.
 
 The thread ids are remembered on disk (`dm-state.json`); a topic you delete while the bot is off is simply recreated on the next start. An existing install created before the **log** topic existed keeps its `personal`/`manager` threads and simply grows the third on the next start.
 
@@ -208,7 +208,7 @@ The manager answers strangers on your behalf, so one rule is bundled with the
 extension and **no setting reaches it**: when it opens a conversation with someone
 new it says it is an AI assistant answering for you, and when anyone asks whether
 they are talking to a bot it answers truthfully. That instruction is appended
-**last**, after your own `instructionFiles`, so your text cannot quietly outweigh
+**last**, after your own `instructionFiles`, so your text cannot outweigh
 it.
 
 Everything around it is still yours: the tone and wording of the greeting
@@ -218,24 +218,24 @@ will not go into (`manager.instructionFiles`).
 
 ### Wake-words
 
-`manager.mentionWords` is a list of trigger words/phrases. A message that contains one **skips the owner-reply window** and makes that chat ready right away — the model still decides whether the message is actually a question worth answering.
+`manager.mentionWords` is a list of trigger words/phrases. A message that contains one **skips the owner-reply window** and makes that chat ready right away: the model still decides whether the message is actually a question worth answering.
 
-- **Override.** Setting `mentionWords` **replaces** the default list (`["llm", "manager"]`) — it does not add to it. So include the defaults if you still want them. `[]` disables wake-words.
-- **Labeler is added automatically.** On top of your list, the bot's own label (`manager.labeler`, normalized) is added as a phrase, so a message that addresses the bot by the name it signs replies with also wakes it. This is automatic and additive — your `mentionWords` stays authoritative, and the labeler is never written into your file. (An empty or emoji-only labeler adds nothing.)
-- **Matching.** Case-insensitive and **whole-word** (Unicode-aware): `"llm"` matches "Hey LLM!" but not "llms". Surrounding punctuation is ignored (`"llm!?"`, `"(qwen)"` match). A multi-word entry is matched as whole words **in order** with any punctuation between them — `"mini bro"` matches "Mini, bro!" but not "minibro" or "bro mini". Misspellings are not matched; the model can still infer intent from the message itself.
-- **Priority in mixed.** In mixed mode, a wake-word does **not** interrupt your terminal work — it only marks the chat ready and is served after the return timer (`mixed.returnToTelegramMs`) hands the brain back to Telegram. In the standalone manager it takes effect on the next tick.
+- **Override.** Setting `mentionWords` **replaces** the default list (`["llm", "manager"]`). It does not add to it. So include the defaults if you still want them. `[]` disables wake-words.
+- **Labeler is added automatically.** On top of your list, the bot's own label (`manager.labeler`, normalized) is added as a phrase, so a message that addresses the bot by the name it signs replies with also wakes it. This is automatic and additive. Your `mentionWords` stays authoritative, and the labeler is never written into your file. (An empty or emoji-only labeler adds nothing.)
+- **Matching.** Case-insensitive and **whole-word** (Unicode-aware): `"llm"` matches "Hey LLM!" but not "llms". Surrounding punctuation is ignored (`"llm!?"`, `"(qwen)"` match). A multi-word entry is matched as whole words **in order** with any punctuation between them: `"mini bro"` matches "Mini, bro!" but not "minibro" or "bro mini". Misspellings are not matched; the model can still infer intent from the message itself.
+- **Priority in mixed.** In mixed mode, a wake-word does **not** interrupt your terminal work. It only marks the chat ready and is served after the return timer (`mixed.returnToTelegramMs`) hands the brain back to Telegram. In the standalone manager it takes effect on the next tick.
 
 ## `memory` (the manager's long-term memory)
 
 The manager keeps a **separate database per contact**, under
 `<agent>/extensions/pi-telegram-manager/memory/`, using
-[plugmem](https://github.com/m62624/plugmem) — an embedded engine, like SQLite: no
+[plugmem](https://github.com/m62624/plugmem), an embedded engine like SQLite: no
 server, no daemon, nothing to install beyond the package.
 
-Two things about it are worth knowing before the table.
+Two things about it need saying before the table.
 
 **There is no size limit.** The old `manager.factsLimit` capped how much could be
-*remembered*, so learning a new fact meant evicting an old one — and what got evicted
+*remembered*, so learning a new fact meant evicting an old one, and what got evicted
 was decided by a table of ranks rather than by whether it mattered. Nothing is capped
 now. What is capped is how much of the memory may be **said in one turn**
 (`memory.recallTokenBudget`): each turn, the memory is queried with the messages
@@ -245,7 +245,7 @@ above it to be read again.
 
 **Which database is open is decided by code**, from the chat being served, and one is
 open at a time. The model's memory tools have no argument that could name a different
-one — a contact's facts are not filtered out of a shared store, they are in a file
+one: a contact's facts are not filtered out of a shared store, they are in a file
 that is not open.
 
 | Key | Default | Override | What it does |
@@ -258,7 +258,7 @@ that is not open.
 
 ### The storage engine — `memory.plugmemConfig`
 
-Everything about the engine — the embedder, retrieval weights, maintenance triggers —
+Everything about the engine (the embedder, retrieval weights, maintenance triggers)
 is configured in **plugmem's own `config.toml`**, not in `settings.json`. This setting
 says only where that file is:
 
@@ -277,7 +277,7 @@ the home directory.
 The file is **yours**:
 
 - delete it and the defaults come back on the next mode start;
-- if the path you named holds no file, one is written **there** and the bot says so —
+- if the path you named holds no file, one is written **there** and the bot says so: 
   a path pointing at nothing is a typo far more often than a request;
 - what goes in it is plugmem's business. It validates the file and reports what it
   did not understand. This extension does not parse it.
@@ -332,8 +332,8 @@ evening"* answers a question containing "evening", but not a question phrased *"
 should I reach them?"*. Configure one and it does.
 
 There is one implementation, `OpenAiCompatEmbedder`: `url` is the complete
-OpenAI-compatible embeddings endpoint exactly as entered — no `/embeddings` path is
-appended — and `model` is the model name selected on that server. OpenAI, Ollama,
+OpenAI-compatible embeddings endpoint exactly as entered. No `/embeddings` path is
+appended, and `model` is the model name selected on that server. OpenAI, Ollama,
 LM Studio, vLLM and llama.cpp-compatible servers all use this same shape.
 
 A local example, with [Ollama](https://ollama.com) already running, written into
@@ -356,15 +356,15 @@ match what the model returns. An incoherent `[embedder]` is refused by plugmem w
 opens a database, naming the key it could not accept.
 
 Changing only `url` is safe when it still serves the same model at the same width. To
-stop semantic embedding temporarily, set `enabled = false` and keep `model` and `dim`
-— the stored vectors are left alone and switching back on costs nothing.
+stop semantic embedding temporarily, set `enabled = false` and keep `model` and `dim`:
+the stored vectors are left alone, and switching back on costs nothing.
 
 #### When the embedding service is down — `on_error`
 
 `degrade`, which the generated file sets, keeps the bot working through an outage: the
 fact is stored and the question answered **without** its vector, and the embedder
 suspends itself so the next turn does not pay the same timeout again. It retries by
-itself. Nothing is damaged — the facts written meanwhile are in the same state as
+itself. Nothing is damaged: the facts written meanwhile are in the same state as
 facts written with no embedder at all, and `/telegram-memory-reembed` fills their
 vectors in afterwards.
 
@@ -378,13 +378,13 @@ answering.
 #### Vector space identity (`space_id`)
 
 Each database records not just the width but **which vector space its stored vectors
-belong to** — an identity string, written into the database when the first vector is
+belong to**: an identity string, written into the database when the first vector is
 stored. `space_id` sets that identity explicitly; left unset, it is `model` itself,
 which is right for the ordinary case where "the model changed" and "the vectors are no
 longer comparable" are the same fact.
 
 They stop being the same fact when a model is renamed or re-published behind a new
-name but keeps producing the identical vectors — a provider alias, a version bump that
+name but keeps producing the identical vectors: a provider alias, a version bump that
 changed nothing about the weights. Declare the same `space_id` for both names and
 plugmem treats their vectors as one space: no mismatch, no reembed, because none is
 needed. This is the ONE case `space_id` exists for; changing it on an embedder that
@@ -401,15 +401,15 @@ The bot says so, and names the command.
 Rebuilding is one command, in place, and needs no export, no backup dance and no
 stopped bot:
 
-- in the chat — **`/memory_reembed`**;
-- in the terminal — **`/telegram-memory-reembed`**.
+- in the chat: **`/memory_reembed`**;
+- in the terminal: **`/telegram-memory-reembed`**.
 
 It recomputes every retained fact with the model `config.toml` now names, one
 contact at a time, and publishes each memory atomically: closed revisions, edges and
 metadata all survive, which is what separates it from an export/import round trip.
 `dim` moves with it, so a model with a different output width needs only its own `dim`
 in `config.toml`. If it fails partway, the memories already rebuilt keep their new
-vectors — run it again to finish the rest.
+vectors: run it again to finish the rest.
 
 > **Turning an embedder ON for the first time is the quiet case.** Memories built
 > without one keep working: nothing fails, facts learned from now on get vectors, and
@@ -437,15 +437,15 @@ $ plugmem-cli --workspace "$WS" --config "$CFG" --db u123456789 stats
 The database name is `u` followed by the contact's numeric Telegram user id, and the
 entity is the contact's display name. Tags **filter** a recall rather than being
 something it can rank by, so a query made only of tags has nothing to search on and
-comes back empty — always give it an entity, a query, or both.
+comes back empty: always give it an entity, a query, or both.
 
 One database can hold **more than two** subjects: the contact, who the durable facts are
 about; `chat log`, which is every message and turn outcome, joined to them by a `said`
 edge; and, when the consolidation pass has used `telegram_manager_link`, any number of TOPIC
-entities (a hobby, a show, a recurring activity) joined to the contact — or to each other
-— by one of a closed set of relations (`interested_in`, `involved_in`, `part_of`,
+entities (a hobby, a show, a recurring activity) joined to the contact, or to each other,
+by one of a closed set of relations (`interested_in`, `involved_in`, `part_of`,
 `related_to`, `mentioned_with`). That is why the recall above answers with episodes while
-anchored on the contact — it walks one hop, and a fact filed under a linked topic is
+anchored on the contact. It walks one hop, and a fact filed under a linked topic is
 reached the same way. They are kept apart from the contact's own facts because plugmem
 judges a new fact against the most recent facts of the subject it names: with the
 conversation filed under the person, a fact drawn from what they just said collides with
@@ -454,7 +454,7 @@ being recognised at all.
 
 ## `forwards` (forwarded messages, all modes)
 
-A forward is not a message someone wrote to you — it is content pasted in from elsewhere, and Telegram sends a batch of them as **one message each**. Ten forwarded posts of any length can fill a small local context on their own, which is also the cheapest way for a stranger to fill it deliberately. So forwards get their own budget, separate from the ordinary message policy, and a batch reaches the model as **one turn** rather than as N turns it answers one by one. Replies and quotes inside the current chat are not affected.
+A forward is not a message someone wrote to you. It is content pasted in from elsewhere, and Telegram sends a batch of them as **one message each**. Ten forwarded posts of any length can fill a small local context on their own, which is also the cheapest way for a stranger to fill it deliberately. So forwards get their own budget, separate from the ordinary message policy, and a batch reaches the model as **one turn** rather than as N turns it answers one by one. Replies and quotes inside the current chat are not affected.
 
 | Key | Default | Override | What it does |
 | --- | --- | --- | --- |
@@ -472,7 +472,7 @@ A forward is not a message someone wrote to you — it is content pasted in from
 
 ### Writing a path
 
-Every path setting — `files.downloadDir`, [`assistant.toolOutputDir`](#the-full-output-of-a-tool-call), `instructionFiles` — accepts the same forms, so you never have to remember which one is fussy:
+Every path setting (`files.downloadDir`, [`assistant.toolOutputDir`](#the-full-output-of-a-tool-call), `instructionFiles`) accepts the same forms, so you never have to remember which one is fussy:
 
 | You write | It means |
 | --- | --- |
@@ -481,7 +481,7 @@ Every path setting — `files.downloadDir`, [`assistant.toolOutputDir`](#the-ful
 | `/var/log/pi`, `./out` | Used as written. |
 | `C:\logs`, `D:/logs`, `\\server\share` | Used as written. |
 
-Only `~` is ever rewritten. A path from another OS fails as a missing directory — an error you can read — rather than being quietly "corrected" into some other directory, which is how files end up somewhere nobody thinks to look.
+Only `~` is ever rewritten. A path from another OS fails as a missing directory (an error you can read) rather than being quietly "corrected" into some other directory, which is how files end up somewhere nobody thinks to look.
 
 ---
 
@@ -500,7 +500,7 @@ Tuned for a **local model** answering over minutes, not milliseconds. Slower har
 | Catch-up window | 10 h | oldest waiting message still worth answering on start |
 | Connection check | 10 min | silent liveness probe interval |
 
-**They are not independent — two relations matter if you retune them.**
+**They are not independent: two relations matter if you retune them.**
 
-- **Live freshness > owner-reply.** Freshness decides whether a message may wake the bot at all; the owner window then holds it so you can answer first. Set freshness *below* the owner window and you declare messages too old to wake the bot before they have even had their turn — a message delayed in transit is then filed as history and answered by nobody. Keep a wide margin (10 min vs 5 min).
-- **Continuation is a priority, not a deadline.** It only says how long a chat keeps the fast lane after a reply. Miss it and nothing is lost: the next message re-enters the normal path — the owner window, then the queue — so the person is still answered, just not instantly. Raise it if your contacts take their time replying; lower it if one chatty conversation keeps the model from the others (the queue promotes never-answered chats first regardless).
+- **Live freshness > owner-reply.** Freshness decides whether a message may wake the bot at all; the owner window then holds it so you can answer first. Set freshness *below* the owner window and you declare messages too old to wake the bot before they have even had their turn: a message delayed in transit is then filed as history and answered by nobody. Keep a wide margin (10 min vs 5 min).
+- **Continuation is a priority, not a deadline.** It only says how long a chat keeps the fast lane after a reply. Miss it and nothing is lost: the next message re-enters the normal path: the owner window, then the queue, so the person is still answered, just not instantly. Raise it if your contacts take their time replying; lower it if one chatty conversation keeps the model from the others (the queue promotes never-answered chats first regardless).
