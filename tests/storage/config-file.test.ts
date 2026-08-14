@@ -92,10 +92,24 @@ describe("ensurePlugmemConfig", () => {
 			"[workspace].dir",
 			"[workspace].max_open",
 			"[workspace].idle_timeout_ms",
+			"[server].workers",
 		]) {
 			expect(written, `${key} is not named as ineffective`).toContain(key);
 		}
 		expect(written).toContain("does not move them");
+	});
+
+	it("points at the full key list rather than pretending to be it", async () => {
+		// The generated file sets six keys. Nothing tells a reader that every
+		// other key the engine takes works here too - unless it says so and links
+		// to where they are documented, which is the engine's repository.
+		const fs = new FakeFs();
+		await ensurePlugmemConfig(base(fs));
+		const written = await fs.readText(DEFAULT_PATH);
+		expect(written).toContain(
+			"https://github.com/m62624/plugmem/blob/main/config.example.toml",
+		);
+		expect(written).toMatch(/every key plugmem/i);
 	});
 
 	it("never touches a file that is already there", async () => {

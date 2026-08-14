@@ -1,4 +1,4 @@
-> ⚠️ Experimental. pi-telegram-manager is built **for local models** and, at runtime, is driven by one — a small local model (tested with [Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF)) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
+> ⚠️ Experimental. pi-telegram-manager is built **for local models** and, at runtime, is driven by one: a small local model (tested with [Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF)) running through Pi. Cloud LLMs (such as Claude) take part in its development. It is maintained with AI assistance and may contain non-professional design choices, rough edges, broken behavior, or mistakes. Use it at your own risk.
 
 # pi-telegram-manager
 
@@ -13,19 +13,19 @@
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/pi-telegram-manager?style=flat-square&color=blue" alt="MIT licence"></a>
 </p>
 
-An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram — as your own assistant on your phone, and as a secretary that answers other people on your behalf. The model runs **on your machine, in your own Telegram account**.
+An experimental [Pi](https://github.com/earendil-works/pi) extension that puts a Pi agent on Telegram: as your own assistant on your phone, and as a secretary that answers other people on your behalf. The model runs **on your machine, in your own Telegram account**.
 
-> ⚖️ **Terms & responsibility — read before using.** The bot is **yours**, not this project's: you create it in @BotFather and connect it to Telegram, and Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers) then bind **you** — *"'you' refers to you, the developer"*, and the Telegram account holding the bot's credentials answers for what it does. So they apply to running your own bot, not to reading this repository. Also: the [Privacy Policy](https://telegram.org/privacy) and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business).
+> ⚖️ **Terms & responsibility, read before using.** The bot is **yours**, not this project's: you create it in @BotFather and connect it to Telegram, and Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers) then bind **you** (*"'you' refers to you, the developer"*), and the Telegram account holding the bot's credentials answers for what it does. So they apply to running your own bot, not to reading this repository. Also: the [Privacy Policy](https://telegram.org/privacy) and the [Secretary / Business section](https://telegram.org/tos/bot-developers#5-4-telegram-business).
 >
-> In manager and mixed modes the bot reads chats with **other people** and answers **on your behalf**. It tells them what it is: it introduces itself as an AI assistant to anyone it has no history with, answers truthfully when asked whether it is a bot, and by default labels each message it sends (`manager.labeler`). The first two are bundled into its instructions and cannot be turned off by a setting — the banner can. **You alone are responsible** for how you use it and for the data it processes. The bot repeats these links on `/start` and `/help`.
+> In manager and mixed modes the bot reads chats with **other people** and answers **on your behalf**. It tells them what it is: it introduces itself as an AI assistant to anyone it has no history with, answers truthfully when asked whether it is a bot, and by default labels each message it sends (`manager.labeler`). The first two are bundled into its instructions and cannot be turned off by a setting: the banner can. **You alone are responsible** for how you use it and for the data it processes. The bot repeats these links on `/start` and `/help`.
 
-The question behind it: **can a small local model be genuinely useful in everyday life if its context is managed carefully?** So the design starts from the local model, not a cloud one. Where other extensions assume a large cloud context and pour everything into it, this one **respects a small context window** — it was tuned for a local model at **131k** context. Almost every choice — one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments — exists to keep a small model coherent across many conversations without a huge prompt.
+The question behind it: **can a small local model be genuinely useful in everyday life if its context is managed carefully?** So the design starts from the local model, not a cloud one. Where other extensions assume a large cloud context and pour everything into it, this one **respects a small context window**: it was tuned for a local model at **131k** context. Almost every choice (one decision per turn ending in a tool call, strict per-chat context isolation, a last-N memory window, idle memory consolidation split into resumable fragments) exists to keep a small model coherent across many conversations without a huge prompt.
 
 ### What this deliberately is not
 
-**One local model, one session. No sub-agents, no agent swarm, no orchestration layer** — a decision, not a gap waiting to be filled. Those tricks assume you can spend context and calls freely; a small local model cannot. So one model handles every chat, seeing exactly one conversation at a time.
+**One local model, one session. No sub-agents, no agent swarm, no orchestration layer**: a decision, not a gap waiting to be filled. Those tricks assume you can spend context and calls freely; a small local model cannot. So one model handles every chat, seeing exactly one conversation at a time.
 
-Need the cloud shape — parallel agents, a big context, a delegation layer? **Fork it.** MIT, ports injected, and the pieces you would replace (context building, the scheduler, the memory passes) are the ones deliberately kept small. It runs on cloud models as-is; it is simply not tuned for them, and will not grow features that only make sense there.
+Need the cloud shape: parallel agents, a big context, a delegation layer? **Fork it.** MIT, ports injected, and the pieces you would replace (context building, the scheduler, the memory passes) are the ones deliberately kept small. It runs on cloud models as-is; it is simply not tuned for them, and will not grow features that only make sense there.
 
 ---
 
@@ -37,13 +37,13 @@ Released versions, published to npm:
 pi install npm:pi-telegram-manager
 ```
 
-Developer version — the latest `main`, including changes not yet released to npm:
+Developer version: the latest `main`, including changes not yet released to npm:
 
 ```bash
 pi install git:github.com/m62624/pi-telegram-manager
 ```
 
-Both channels can have bugs; the difference is only what they track — npm follows tagged releases, GitHub follows `main`. Then set it up: **[Getting started](#getting-started)**.
+Both channels can have bugs; the difference is only what they track: npm follows tagged releases, GitHub follows `main`. Then set it up: **[Getting started](#getting-started)**.
 
 ---
 
@@ -55,15 +55,15 @@ One bot account, one mode at a time. Each mode is a different job for the same m
 
 Binds your **current Pi terminal session** to your **private chat with the bot**. It is the same session, not a copy: what you type in Telegram arrives in the terminal, what you type in the terminal is mirrored to Telegram, and the model's answer appears in both.
 
-- Send text, files and images; the bot saves non-image files to disk and hands the model real paths ([`files.downloadDir`](SETTINGS.md#files) — the directory Pi runs in unless you say otherwise), so it can open them with its normal tools. **Replying** to a file works too, including one the bot sent you: the model gets that file, not just your words about it.
-- You see the model **work**, not just its conclusion: each message it writes is delivered as it finishes, and each tool call is mirrored as a collapsible block ([`assistant.toolActivity`](SETTINGS.md#assistant-personal-mode)) that **completes itself** when the call returns — ✅ or ❌, with the output folded in (⏹️ if `/esc` caught it mid-flight).
-- When a card has to cut a long output, the **full output is attached as a file** — whether the tool truncated it (and saved its own log) or the card did. Capped by bytes, and the cap is yours ([`assistant.toolOutputMaxBytes`](SETTINGS.md#the-full-output-of-a-tool-call), 25 MiB by default, `0` to never attach; [`assistant.toolOutputDir`](SETTINGS.md#the-full-output-of-a-tool-call) says where they are written). Cap it low on metered data.
-- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)). The wait before the first word can be filled too: an animated placeholder shows the call the turn is waiting on (`Thinking…`, then `▸ bash — npm test (4s)`, with its own clock) and dissolves into the reply as it starts streaming — [`assistant.thinkingPlaceholder`](SETTINGS.md#assistant-personal-mode), beta and off by default (see [Known issue](#known-issue-telegram-on-android-hangs-the-first-time-a-chat-is-opened)).
+- Send text, files and images; the bot saves non-image files to disk and hands the model real paths ([`files.downloadDir`](SETTINGS.md#files): the directory Pi runs in unless you say otherwise), so it can open them with its normal tools. **Replying** to a file works too, including one the bot sent you: the model gets that file, not just your words about it.
+- You see the model **work**, not just its conclusion: each message it writes is delivered as it finishes, and each tool call is mirrored as a collapsible block ([`assistant.toolActivity`](SETTINGS.md#assistant-personal-mode)) that **completes itself** when the call returns: ✅ or ❌, with the output folded in (⏹️ if `/esc` caught it mid-flight).
+- When a card has to cut a long output, the **full output is attached as a file**: whether the tool truncated it (and saved its own log) or the card did. Capped by bytes, and the cap is yours ([`assistant.toolOutputMaxBytes`](SETTINGS.md#the-full-output-of-a-tool-call), 25 MiB by default, `0` to never attach; [`assistant.toolOutputDir`](SETTINGS.md#the-full-output-of-a-tool-call) says where they are written). Cap it low on metered data.
+- Replies arrive as native rich Markdown with a live "typing…" indicator and a streamed draft preview ([`assistant.draftPreviews`](SETTINGS.md#assistant-personal-mode)). The wait before the first word can be filled too: an animated placeholder shows the call the turn is waiting on (`Thinking…`, then `▸ bash — npm test (4s)`, with its own clock) and dissolves into the reply as it starts streaming: [`assistant.thinkingPlaceholder`](SETTINGS.md#assistant-personal-mode), beta and off by default (see [Known issue](#known-issue-telegram-on-android-hangs-the-first-time-a-chat-is-opened)).
 - Messages you send while it is busy are **queued**, not dropped; editing a queued message rewrites it in place.
-- **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)) — a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
+- **Forwards** you paste in arrive as one turn, not one per message, and are capped by their own budget ([`forwards`](SETTINGS.md#forwards-forwarded-messages-all-modes)): a wall of forwarded posts cannot eat the model's context, in your DM or in a chat the manager answers.
 - The bot talks only to **you** (`allowedUserId`) and touches no other chats.
-- **Your context stays yours.** Personal and manager run in one Pi session, so the raw log holds both — but each Personal turn **strips the other side out** before the model sees it: after the bot has answered other people (in manager or mixed), their messages are removed from what Personal reads. You never inherit a stranger's conversation, and you don't have to `/clear` to be sure of it.
-- **Choose which session you are in.** Starting Personal in the terminal (`/telegram-personal`, and `/telegram-mixed`, which bridges the same session) offers a picker: keep the **current** session, start a **new** one, or **resume** any earlier session from this project (paged). From the phone, `/resume` offers the same, minus New — keep **current**, **clear** it, or **resume** another — because creating a brand-new session needs a terminal command context the chat does not have. Whenever the bridge binds to a session that already holds a conversation — resuming a different one, or simply connecting to a terminal session you had been working in without Telegram — its last few messages are replayed into the fresh topic as **read-only** cards, so your phone shows what the session is about. Those replays are for reading only, never sent to the model, and ordinary forwarding works as before afterwards; a mode switch that keeps the topic does not repeat them.
+- **Your context stays yours.** Personal and manager run in one Pi session, so the raw log holds both, but each Personal turn **strips the other side out** before the model sees it: after the bot has answered other people (in manager or mixed), their messages are removed from what Personal reads. You never inherit a stranger's conversation, and you don't have to `/clear` to be sure of it.
+- **Choose which session you are in.** Starting Personal in the terminal (`/telegram-personal`, and `/telegram-mixed`, which bridges the same session) offers a picker: keep the **current** session, start a **new** one, or **resume** any earlier session from this project (paged). From the phone, `/resume` offers the same, minus New: keep **current**, **clear** it, or **resume** another, because creating a brand-new session needs a terminal command context the chat does not have. Whenever the bridge binds to a session that already holds a conversation: resuming a different one, or simply connecting to a terminal session you had been working in without Telegram. Its last few messages are replayed into the fresh topic as **read-only** cards, so your phone shows what the session is about. Those replays are for reading only, never sent to the model, and ordinary forwarding works as before afterwards; a mode switch that keeps the topic does not repeat them.
 
 Start it with `/telegram-personal`. In the chat: `/resume` (pick / resume a session), `/clear` (wipe history), `/compact` (summarise the history to free up context), `/esc` (cancel the running turn), `/help`.
 
@@ -75,7 +75,7 @@ Start it with `/telegram-manager`. There is nothing to choose: the behaviour bel
 
 #### The algorithm, in full
 
-Every branch of this is enforced in **code**. The model is only ever asked the questions a machine cannot answer — *is this person actually waiting for an answer, and what should it say* — and it is never even offered the chance to answer you.
+Every branch of this is enforced in **code**. The model is only ever asked the questions a machine cannot answer: *is this person actually waiting for an answer, and what should it say*, and it is never even offered the chance to answer you.
 
 ```
                    a message lands in a chat you manage
@@ -108,38 +108,38 @@ Every branch of this is enforced in **code**. The model is only ever asked the q
 
 **A message of yours also does three things**, none of which is "answer me":
 
-1. **closes the 2:00 fast lane** in that chat — you are present, so the bot goes back to letting you answer first;
-2. **holds any draft it was writing** right then: it is reconsidered against what you just said, and sent, refined, or dropped — never fired off over your head;
+1. **closes the 2:00 fast lane** in that chat. You are present, so the bot goes back to letting you answer first;
+2. **holds any draft it was writing** right then: it is reconsidered against what you just said, and sent, refined, or dropped, never fired off over your head;
 3. **and nothing else.** It does not switch the bot off in that chat: the next message from that person arms a new window, and if you let that one hang, the bot answers it.
 
 **What that means in practice:**
 
 - **It never replies immediately.** An incoming message is held for the owner-reply window ([`manager.ownerReplyWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **5 min**): **you** get first crack, always. Only if the window runs out in your silence is the chat handed to the model. Want it to answer for you more eagerly? Shorten the window. Want it to almost never beat you to it? Lengthen it. That single number is the whole "how much do I delegate" dial.
-- **It never answers *you*.** Your messages are context, never a task — no message of yours can open a turn at all. So writing *"did you buy the bread?"* to someone cannot make the bot answer *"yes"*: after a message of yours nothing in that chat is unanswered, and there is nothing for it to wake up for. This is structural, not a rule the model is asked to follow.
-- **Writing in a chat does not switch the bot off in it.** You simply took that batch. If the person writes again and you let it hang, the window runs out and the bot answers — it keeps watching for whatever nobody answered. (There is no "freeze": you can half-follow a conversation without shutting the bot out of it.)
-- **Call it and it comes.** A wake-word ([`manager.mentionWords`](SETTINGS.md#wake-words)) or the bot's own name skips the window — from the other person, and from **you**: *"hey qwen, what did I forward to them?"* is answered right there in that chat. It is the one case where a message of yours reaches the model, and whatever you add while it starts up (a screenshot, the forwards you were asking about) counts as part of your question, not as a cancellation of it.
-- **It stays quiet when nothing is being asked.** "ok", "nice", a sticker, small talk between two other people — that judgement is the model's, and the chatter guard ([`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)) drops a reply it itself tagged as chatter unless it was addressed directly.
+- **It never answers *you*.** Your messages are context, never a task. No message of yours can open a turn at all. So writing *"did you buy the bread?"* to someone cannot make the bot answer *"yes"*: after a message of yours nothing in that chat is unanswered, and there is nothing for it to wake up for. This is structural, not a rule the model is asked to follow.
+- **Writing in a chat does not switch the bot off in it.** You simply took that batch. If the person writes again and you let it hang, the window runs out and the bot answers. It keeps watching for whatever nobody answered. (There is no "freeze": you can half-follow a conversation without shutting the bot out of it.)
+- **Call it and it comes.** A wake-word ([`manager.mentionWords`](SETTINGS.md#wake-words)) or the bot's own name skips the window, from the other person and from **you**: *"hey qwen, what did I forward to them?"* is answered right there in that chat. It is the one case where a message of yours reaches the model, and whatever you add while it starts up (a screenshot, the forwards you were asking about) counts as part of your question, not as a cancellation of it.
+- **It stays quiet when nothing is being asked.** "ok", "nice", a sticker, small talk between two other people. That judgement is the model's, and the chatter guard ([`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)) drops a reply it itself tagged as chatter unless it was addressed directly.
 - **If you answer while it is writing, its reply is not sent blind.** The draft is held and reconsidered against what you just said: send it, refine it, or drop it. It never talks over you.
 
-Everything else about the manager — how it orders chats, what it remembers, what it is not allowed to do — is in [**How the manager actually works**](#how-the-manager-actually-works) below.
+Everything else about the manager (how it orders chats, what it remembers, what it is not allowed to do) is in [**How the manager actually works**](#how-the-manager-actually-works) below.
 
 ### 🔀 Mixed — Personal **and** manager, in one session
 
-Mixed is not a third behaviour: it is **both of the above on one brain** — your coding thread *and* the secretary. What makes it work is a queue with a strict priority: **you always outrank other people.**
+Mixed is not a third behaviour: it is **both of the above on one brain**, your coding thread *and* the secretary. What makes it work is a queue with a strict priority: **you always outrank other people.**
 
-- **While you are working, other people wait.** Their messages are stored and deferred; **nothing of theirs enters your context** or costs you tokens, and even a wake-word does not pull the model off your work — it only marks that chat as ready. Contacts never bleed into your code.
+- **While you are working, other people wait.** Their messages are stored and deferred; **nothing of theirs enters your context** or costs you tokens, and even a wake-word does not pull the model off your work. It only marks that chat as ready. Contacts never bleed into your code.
 - **You are you on either surface.** The terminal and the `personal` topic of your bot DM are the same session and rank exactly the same, so answering from your phone is not "the Telegram side".
-- **When you go quiet, it goes back to Telegram.** After [`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode) (default **8 min**) of idleness — counted from when the model's inference *finishes*, not while it thinks — it moderates whoever is waiting, under exactly the manager rules above.
+- **When you go quiet, it goes back to Telegram.** After [`mixed.returnToTelegramMs`](SETTINGS.md#mixed-mixed-mode) (default **8 min**) of idleness (counted from when the model's inference *finishes*, not while it thinks) it moderates whoever is waiting, under exactly the manager rules above.
 - **When you come back, you take the brain instantly.** A prompt from you aborts a moderation turn in flight. Nothing is lost: an unanswered chat is picked up next time, an interrupted memory pass resumes where it stopped.
-- **The two sides stay separate.** What the bot writes to other people goes to them; the account of what it did lands in the **manager** topic. While it moderates it runs in the sandbox (messaging tools only) — your full `read`/`write`/`bash` exist only while you hold the terminal. Your TUI stays clean: one footer line (`mixed · coding`) says who holds the brain.
+- **The two sides stay separate.** What the bot writes to other people goes to them; the account of what it did lands in the **manager** topic. While it moderates it runs in the sandbox (messaging tools only). Your full `read`/`write`/`bash` exist only while you hold the terminal. Your TUI stays clean: one footer line (`mixed · coding`) says who holds the brain.
 
 Start it with `/telegram-mixed`.
 
 ### ⏹️ Switching modes
 
-In the terminal, the mode commands **are** the switcher: `/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop`. Starting one stops whatever else was running — you never have to stop by hand. Switching is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and takes effect at once.
+In the terminal, the mode commands **are** the switcher: `/telegram-personal`, `/telegram-manager`, `/telegram-mixed`, `/telegram-stop`. Starting one stops whatever else was running. You never have to stop by hand. Switching is a **priority** action: it aborts whatever the bot is doing (even a long memory consolidation) and takes effect at once.
 
-Away from the terminal, send **`/switch`** in your DM with the bot and pick **Manager / Mixed / Personal** from an inline keyboard. It has **no Stop button** on purpose — a Secretary connection is a long-lived thing, and a mistap while picking a mode should not end it. Stopping from Telegram is its own explicit command: **`/stop`**.
+Away from the terminal, send **`/switch`** in your DM with the bot and pick **Manager / Mixed / Personal** from an inline keyboard. It has **no Stop button** on purpose: a Secretary connection is a long-lived thing, and a mistap while picking a mode should not end it. Stopping from Telegram is its own explicit command: **`/stop`**.
 
 A **pinned message** in the `personal` topic always shows the active mode.
 
@@ -147,91 +147,91 @@ A **pinned message** in the `personal` topic always shows the active mode.
 
 ## How the manager actually works
 
-The decision rules are in [the algorithm above](#the-algorithm-in-full). This is everything around them: the order chats are served in, what the model sees, and what it is not allowed to do. Every number is a setting — the links go to [SETTINGS.md](SETTINGS.md).
+The decision rules are in [the algorithm above](#the-algorithm-in-full). This is everything around them: the order chats are served in, what the model sees, and what it is not allowed to do. Every number is a setting: the links go to [SETTINGS.md](SETTINGS.md).
 
 ### One chat at a time, in a deliberate order
 
 Messages from many people arrive at once; the model handles **one chat per turn**, so it is never confused about who it is talking to. The scheduler picks the next chat by:
 
-1. **never-replied chats first** — someone who has not heard back yet outranks an ongoing conversation;
-2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **2:00**) — right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
+1. **never-replied chats first**: someone who has not heard back yet outranks an ongoing conversation;
+2. then a **continuation window** ([`manager.continueWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **2:00**): right after replying, that chat keeps its fast lane, so a live back-and-forth is not made to wait five minutes again, nor interrupted by an older chat. **Writing in the chat yourself closes that lane**: you are present, so the bot goes back to letting you answer first.
 
 ### Wake-words — how the bot knows it is being addressed
 
-[`manager.mentionWords`](SETTINGS.md#wake-words) (default `["llm", "manager"]`, plus your bot's own label automatically). A message containing one jumps straight past the owner-reply window — but it does **not** force a reply: the model still decides whether the word was a real address to it ("hey llm, what do you think?") or just a word used in passing ("the LLM at work is slow").
+[`manager.mentionWords`](SETTINGS.md#wake-words) (default `["llm", "manager"]`, plus your bot's own label automatically). A message containing one jumps straight past the owner-reply window, but it does **not** force a reply: the model still decides whether the word was a real address to it ("hey llm, what do you think?") or just a word used in passing ("the LLM at work is slow").
 
-Being addressed **in substance** works too ("what does the bot think?") — but only from the other person, because only their messages ever reach the model. For **you**, the wake-word list is the trigger; that is the price of the guarantee that the bot cannot answer a message of yours by accident. Add the words you actually use. In mixed mode, no wake-word ever preempts your coding.
+Being addressed **in substance** works too ("what does the bot think?"), but only from the other person, because only their messages ever reach the model. For **you**, the wake-word list is the trigger; that is the price of the guarantee that the bot cannot answer a message of yours by accident. Add the words you actually use. In mixed mode, no wake-word ever preempts your coding.
 
 ### What it sees, and what it remembers
 
 - **Strict per-chat isolation.** Each turn the model's context is rebuilt from disk for that one conversation. It never sees another chat.
 - **A last-N window** ([`manager.rememberMessages`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **20**), bounded again by characters ([`manager.maxContextChars`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) / [`manager.maxCharsPerMessage`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)) so one long paste cannot overflow a small local context.
-- **A memory of its own, per person** — a [plugmem](https://github.com/m62624/plugmem) database for each contact, under `<extension dir>/memory/`, keyed by their Telegram account (not their name, so two Alexes never merge). It holds durable facts *and* episodes: every message that arrives and every turn the bot took, including the ones where it decided to stay quiet and why. There is **no size limit** — the transcript above is pruned to twice the reading window, and this is what still answers "what did we agree last month" afterwards, because the bot can ask its memory for a period by date as well as by words (and for what it *believed* on a given day, which is not the same question).
-- **What the model is shown is ranked, not dumped.** Each turn, the memory is queried with the messages nobody has answered yet, and the result — a compact block bounded by [`memory.recallTokenBudget`](SETTINGS.md#memory-the-managers-long-term-memory) (default **512 tokens**) — rides in the trailing message under the transcript, so it costs its own tokens and never makes the conversation above it be re-read. Anything the transcript still shows is left out of it: the memory answers about what the window cannot.
-- **It works with no embedding model at all.** Three of plugmem's four recall sources — keyword (BM25), the entity graph and time — need no model, no key and no network. Configure an embedder in the engine's own [`config.toml`](SETTINGS.md#the-storage-engine--memoryplugmemconfig) and it also matches by *meaning*; leave it alone and everything else is unchanged.
+- **A memory of its own, per person** — a [plugmem](https://github.com/m62624/plugmem) database for each contact, under `<extension dir>/memory/`, keyed by their Telegram account (not their name, so two Alexes never merge). It holds durable facts *and* episodes: every message that arrives and every turn the bot took, including the ones where it decided to stay quiet and why. There is **no size limit**: the transcript above is pruned to twice the reading window, and this is what still answers "what did we agree last month" afterwards, because the bot can ask its memory for a period by date as well as by words (and for what it *believed* on a given day, which is not the same question).
+- **What the model is shown is ranked, not dumped.** Each turn, the memory is queried with the messages nobody has answered yet, and the result is a compact block bounded by [`memory.recallTokenBudget`](SETTINGS.md#memory-the-managers-long-term-memory) (default **512 tokens**): rides in the trailing message under the transcript, so it costs its own tokens and never makes the conversation above it be re-read. Anything the transcript still shows is left out of it: the memory answers about what the window cannot.
+- **It works with no embedding model at all.** Three of plugmem's four recall sources need no model, no key and no network: keyword (BM25), the entity graph and time. Configure an embedder in the engine's own [`config.toml`](SETTINGS.md#the-storage-engine--memoryplugmemconfig) and it also matches by *meaning*; leave it alone and everything else is unchanged.
 - **An embedding service that goes down does not take the bot with it.** The generated `config.toml` asks for `on_error = "degrade"`: a fact is stored and a question answered *without* its vector rather than the call failing, and the embedder suspends itself so the next turn does not pay the same timeout. Somebody waiting for an answer gets one. `/telegram-settings` says whether it is answering, and `/memory_reembed` fills in the vectors of whatever was stored during the outage.
-- **Changing the embedding model needs one command, not a migration.** Each database records which vector space its stored vectors belong to (the model's name, or `space_id` if one is set), and plugmem refuses to mix two — so after a `model`, `space_id` or `dim` change, a memory that already has vectors stops answering until `/memory_reembed` (in the chat) or `/telegram-memory-reembed` (in the terminal) rebuilds it in place, keeping revisions and edges. Run it once after turning an embedder ON as well: nothing fails there, but only facts learned after the change can be found by meaning until it has. Changing only the endpoint URL is safe when it serves the same model and dimension; to disable embeddings temporarily, set `enabled = false` while retaining the existing values. See [memory settings](SETTINGS.md#the-storage-engine--memoryplugmemconfig).
-- **Writing only happens in the background.** `telegram_manager_remember`, `telegram_manager_revise`, `telegram_manager_forget`, `telegram_manager_link` and `telegram_manager_unlink` are all consolidation-only — a live reply turn only *reads* the memory (the block above is assembled automatically, no tool call needed), so answering somebody is never held up by a write.
-- **Memory consolidation.** When a chat has been quiet for [`manager.factConsolidationQuietMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **30 min**), the model goes back over it with its memory tools in hand — `telegram_manager_recall` to look things up, `telegram_manager_remember`, `telegram_manager_revise` to replace what the conversation overturned, `telegram_manager_forget` to drop what was wrong, `telegram_manager_link`/`telegram_manager_unlink` to connect this person to a durable topic (or one topic to another) in the memory's own graph — and ends with `telegram_manager_done`. It **owns its own memory**: nothing is capped, evicted or expired on its behalf. A `revise` closes a fact rather than erasing it, so what it used to believe stays answerable. One pass covers **one chat**, for as many facts as that conversation holds — it ends when the model calls `telegram_manager_done`, not after a fixed number of writes — and the next queued chat starts on a later tick. It runs only while idle, a live message **interrupts it immediately** (the pass resumes with everything it had already done), and it is bounded by [`memory.consolidationMaxSteps`](SETTINGS.md#memory-the-managers-long-term-memory) so a confused pass cannot go on forever.
+- **Changing the embedding model needs one command, not a migration.** Each database records which vector space its stored vectors belong to (the model's name, or `space_id` if one is set), and plugmem refuses to mix two, so after a `model`, `space_id` or `dim` change, a memory that already has vectors stops answering until `/memory_reembed` (in the chat) or `/telegram-memory-reembed` (in the terminal) rebuilds it in place, keeping revisions and edges. Run it once after turning an embedder ON as well: nothing fails there, but only facts learned after the change can be found by meaning until it has. Changing only the endpoint URL is safe when it serves the same model and dimension; to disable embeddings temporarily, set `enabled = false` while retaining the existing values. See [memory settings](SETTINGS.md#the-storage-engine--memoryplugmemconfig).
+- **Writing only happens in the background.** `telegram_manager_remember`, `telegram_manager_revise`, `telegram_manager_forget`, `telegram_manager_link` and `telegram_manager_unlink` are all consolidation-only: a live reply turn only *reads* the memory (the block above is assembled automatically, no tool call needed), so answering somebody is never held up by a write.
+- **Memory consolidation.** When a chat has been quiet for [`manager.factConsolidationQuietMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) (default **30 min**), the model goes back over it with its memory tools in hand: `telegram_manager_recall` to look things up, `telegram_manager_remember`, `telegram_manager_revise` to replace what the conversation overturned, `telegram_manager_forget` to drop what was wrong, `telegram_manager_link`/`telegram_manager_unlink` to connect this person to a durable topic (or one topic to another) in the memory's own graph, and ends with `telegram_manager_done`. It **owns its own memory**: nothing is capped, evicted or expired on its behalf. A `revise` closes a fact rather than erasing it, so what it used to believe stays answerable. One pass covers **one chat**, for as many facts as that conversation holds. It ends when the model calls `telegram_manager_done`, not after a fixed number of writes, and the next queued chat starts on a later tick. It runs only while idle, a live message **interrupts it immediately** (the pass resumes with everything it had already done), and it is bounded by [`memory.consolidationMaxSteps`](SETTINGS.md#memory-the-managers-long-term-memory) so a confused pass cannot go on forever.
 - **One database is open at a time, and it is chosen by code** from the active chat. The memory tools have no argument that could name another; a contact's facts are not filtered out of a shared store, they are in a file that is not open. Every `forget` and `revise` is mirrored to your **log** topic, so a model that manages its own memory stays auditable.
 
 ### "Operation aborted" is how a turn ends, not a failure
 
-You will see it in the terminal after **every** manager turn — a reply, a silent turn, a finished memory pass. It is deliberate, and it is the only mechanism available: the agent loop keeps re-sampling the model until something stops the run, and a model that has already answered — and can still see the tools it answered with — calls them again. It did exactly that, every pass, until the run was aborted at `turn_end`. So the manager settles each turn against its own accounting (did a reply reach Telegram; did the pass call `telegram_manager_done`) and aborts once the answer is in.
+You will see it in the terminal after **every** manager turn: a reply, a silent turn, a finished memory pass. It is deliberate, and it is the only mechanism available, because the agent loop keeps re-sampling the model until something stops the run, and a model that has already answered, and can still see the tools it answered with: calls them again. It did exactly that, every pass, until the run was aborted at `turn_end`. So the manager settles each turn against its own accounting (did a reply reach Telegram; did the pass call `telegram_manager_done`) and aborts once the answer is in.
 
 Nothing is lost to it: replies are delivered before the abort, and every memory tool writes to disk the moment it returns, so a pass cut off at any point keeps what it had already decided. One consolidation pass covers one chat; the next queued chat is picked up by the following tick (5 s), each in its own run and its own abort.
 
 ### Guards against a small model doing something silly
 
-- **Every turn ends in a tool call**, never in prose. Prose is never delivered to Telegram — if the model writes an answer as plain text, it is **held as a draft** and handed back with one instruction: send it, refine it, or drop it. That way a composed answer is never lost, and never sent by accident.
+- **Every turn ends in a tool call**, never in prose. Prose is never delivered to Telegram: if the model writes an answer as plain text, it is **held as a draft** and handed back with one instruction: send it, refine it, or drop it. That way a composed answer is never lost, and never sent by accident.
 - **The same happens when new messages land mid-reply**: the draft is held and reconsidered against them, up to [`manager.reviseThreshold`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) times (default **2**), then sent as-is.
-- **The chatter guard** ([`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **on**): a reply the model itself tagged as chatter/acknowledgement — or as not needing an answer — is dropped unless the interlocutor addressed the bot directly. It stops a weak model from joining a conversation between two other people.
-- **Backlog is not "woken"** ([`manager.liveFreshnessMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 min**): after a reconnect Telegram redelivers what the bot missed, so a message is judged by its *true send time* — anything older is kept as context but starts no reply cycle, and a conversation that ended yesterday cannot wake the bot. A message delayed in transit still counts as live, which is why this sits well above the owner window.
-- **Catch-up on start** ([`manager.catchUpWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 h**): when a mode starts, chats whose last message is not yours and is still recent get answered — so switching the bot on does not silently ignore what waited for it.
+- **The chatter guard** ([`manager.strictReplyGuard`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **on**): a reply the model itself tagged as chatter/acknowledgement, or as not needing an answer: is dropped unless the interlocutor addressed the bot directly. It stops a weak model from joining a conversation between two other people.
+- **Backlog is not "woken"** ([`manager.liveFreshnessMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 min**): after a reconnect Telegram redelivers what the bot missed, so a message is judged by its *true send time*: anything older is kept as context but starts no reply cycle, and a conversation that ended yesterday cannot wake the bot. A message delayed in transit still counts as live, which is why this sits well above the owner window.
+- **Catch-up on start** ([`manager.catchUpWindowMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **10 h**): when a mode starts, chats whose last message is not yours and is still recent get answered, so switching the bot on does not silently ignore what waited for it.
 - **Re-greeting** ([`manager.reopenAfterMs`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **24 h**): a conversation resuming after a long silence is greeted rather than continued mid-sentence.
-- **The sandbox.** While the manager holds the session the model has **no computer access** — only its messaging tools. It cannot read your files, run commands, or ask you anything, and a blocked call steers it back. Extra tools can be allowed explicitly ([`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)).
+- **The sandbox.** While the manager holds the session the model has **no computer access**: only its messaging tools. It cannot read your files, run commands, or ask you anything, and a blocked call steers it back. Extra tools can be allowed explicitly ([`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed)).
 
 ### What you see
 
-Every turn is mirrored to your bot DM, split by what happened. With [`manager.replies`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), the replies the bot actually delivered land in the clean **manager** topic — the log of what it said to people. With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), everything else — turns where it stayed silent, held a draft, or was re-prompted, plus every runtime notice — lands in the **log** topic, with the model's thinking and the tools it called folded in. Together they are the audit trail; reading it for a day is a reasonable way to decide whether to trust the bot with your chats.
+Every turn is mirrored to your bot DM, split by what happened. With [`manager.replies`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), the replies the bot actually delivered land in the clean **manager** topic: the log of what it said to people. With [`manager.log`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) on (the default), everything else: turns where it stayed silent, held a draft, or was re-prompted, plus every runtime notice: lands in the **log** topic, with the model's thinking and the tools it called folded in. Together they are the audit trail; reading it for a day is a reasonable way to decide whether to trust the bot with your chats.
 
 ---
 
 ## Security model
 
-The idea is simple: **a model can only do harm through its tools.** So when it talks to other people, it gets none — except the ones it needs to talk.
+The idea is simple: **a model can only do harm through its tools.** So when it talks to other people, it gets none, except the ones it needs to talk.
 
 **In Personal, everything is open.** It is your own conversation: the model reads, writes, runs commands, opens the files you send it. It works for you.
 
-**As a manager, it can only reply.** Answering other people, it runs in the **telegram-sandbox**: its tool list is rewritten to the messaging tools and nothing else, and any other call is blocked at runtime — hiding a tool is not enough, a small model happily invents a name it remembers. It can look at **images** people send ([`manager.media.images`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default on) — but not files: documents are refused, and it has no tool to open one anyway.
+**As a manager, it can only reply.** Answering other people, it runs in the **telegram-sandbox**: its tool list is rewritten to the messaging tools and nothing else, and any other call is blocked at runtime. Hiding a tool is not enough, a small model happily invents a name it remembers. It can look at **images** people send ([`manager.media.images`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default on), but not files: documents are refused, and it has no tool to open one anyway.
 
 **In mixed it switches by itself:** your own chat with the bot (terminal or the `personal` topic) → full tools; a message from someone else → sandbox. Same predicate everywhere, so the gate cannot drift out of sync.
 
-**But it is not a container.** No Docker, no VM, no separate user — the Pi process runs with your own rights the whole time. The sandbox gates the *model*, not the process. And [`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) lets you hand tools back into it: whatever you put there, a stranger's message can eventually reach. Empty is the default.
+**But it is not a container.** No Docker, no VM, no separate user: the Pi process runs with your own rights the whole time. The sandbox gates the *model*, not the process. And [`manager.allowedTools`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed) lets you hand tools back into it: whatever you put there, a stranger's message can eventually reach. Empty is the default.
 
 ## Getting started
 
 ### 1. Create the bot (BotFather)
 
-In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts. BotFather replies with an **HTTP API token** (`123456:ABC-…`) — this is your `botToken`.
+In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, and follow the prompts. BotFather replies with an **HTTP API token** (`123456:ABC-…`). This is your `botToken`.
 
 ### 2. Enable Secretary Mode — for manager and mixed modes
 
-Their Telegram side receives messages through a Telegram **Secretary** connection (the feature Telegram **recently renamed from Business** — the Bot API is unchanged), which a bot can only accept when **Secretary Mode** is on for it. One-time BotFather toggle:
+Their Telegram side receives messages through a Telegram **Secretary** connection (the feature Telegram **recently renamed from Business**: the Bot API is unchanged), which a bot can only accept when **Secretary Mode** is on for it. One-time BotFather toggle:
 
 > `@BotFather` → `/mybots` → *select your bot* → **Bot Settings** → **Secretary Mode** (formerly **Business Mode**) → **Turn on**
 
 Personal mode does not need it.
 
-> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected secretary/business bots to everyone** — [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
+> ✅ **No Telegram Premium, subscription, or "business account" is required.** Telegram opened **connected secretary/business bots to everyone**. [Bot API 10.0](https://core.telegram.org/bots/api-changelog), **8 May 2026**: *"Allowed Business Bots to manage user accounts without a Telegram Premium subscription."* An ordinary free account can let a bot reply on its behalf, and the people who message you need nothing either.
 
 ### 3. Enable Threaded Mode — required
 
-Your DM with the bot is **three topics**, split by *whose* conversation it is and — for the secretary side — by whether the bot actually spoke: **personal** (you and the model — your prompts, its replies, and the full trace of the tool calls it made for you), **manager** (only the replies the bot delivered to other people — its work product, kept clean) and **log** (the diagnostics — silences, held drafts, corrections and runtime notices). Without them every moderation card, every notice and your own conversation share one chat, interleaved — which makes the DM useless as any of them. The bot creates the topics itself; it only needs the toggle:
+Your DM with the bot is **three topics**, split by *whose* conversation it is and (for the secretary side) by whether the bot actually spoke. **personal** holds you and the model: your prompts, its replies, and the full trace of the tool calls it made for you. **manager** holds only the replies the bot delivered to other people, its work product, kept clean. **log** holds the diagnostics: silences, held drafts, corrections and runtime notices. Without them every moderation card, every notice and your own conversation share one chat, interleaved, which makes the DM useless as any of them. The bot creates the topics itself; it only needs the toggle:
 
 > `@BotFather` → open the **Mini App** (tap the menu button next to the message field) → *select your bot* → **Threaded Mode** → **on**
 
-⚠️ It is **not** in the classic `/mybots` → **Bot Settings** keyboard — that menu has no such row. The toggle lives only in the newer BotFather Mini App, under **Thread Settings**. `getMe` then reports `has_topics_enabled: true`, which is exactly what this extension checks.
+⚠️ It is **not** in the classic `/mybots` → **Bot Settings** keyboard. That menu has no such row. The toggle lives only in the newer BotFather Mini App, under **Thread Settings**. `getMe` then reports `has_topics_enabled: true`, which is exactly what this extension checks.
 
 | Open the Mini App | Turn on Threaded Mode |
 | --- | --- |
@@ -239,17 +239,17 @@ Your DM with the bot is **three topics**, split by *whose* conversation it is an
 
 *Not rendering? Open them in the repository: [`assets/threaded-mode-1-open-mini-app.jpg`](assets/threaded-mode-1-open-mini-app.jpg), [`assets/threaded-mode-2-toggle.jpg`](assets/threaded-mode-2-toggle.jpg).*
 
-Leave **Disallow users to create new threads** off — the extension creates the `personal`, `manager` and `log` topics itself, and you may want your own besides. They are safe to keep: the bot **never deletes a topic you made**, and it only ever removes the ones it created (see [below](#why-the-personal-topic-is-new-every-session)). A message you write in a topic of your own is **copied** into `personal` so the conversation there stays whole, and the original is left exactly where you put it. Only the "All" view is different — nothing lives there, so a message typed in it is *moved*, not copied.
+Leave **Disallow users to create new threads** off: the extension creates the `personal`, `manager` and `log` topics itself, and you may want your own besides. They are safe to keep: the bot **never deletes a topic you made**, and it only ever removes the ones it created (see [below](#why-the-personal-topic-is-new-every-session)). A message you write in a topic of your own is **copied** into `personal` so the conversation there stays whole, and the original is left exactly where you put it. Only the "All" view is different. Nothing lives there, so a message typed in it is *moved*, not copied.
 
-Turn the switch **on** if you would rather the DM held nothing but the bot's own topics; you then cannot create or delete topics there at all — including, usefully, not deleting `personal` by accident.
+Turn the switch **on** if you would rather the DM held nothing but the bot's own topics; you then cannot create or delete topics there at all, which includes not deleting `personal` by accident.
 
-If the toggle is off, the bot does not die — it falls back to one flat DM — but it **tells you so**, in that DM, with a link back to this section, on every mode start. Silence it only by deciding: either turn Threaded Mode on, or say you meant it with `topics.enabled: false` (then also consider `manager.log: false`, since the feed is chatty in a single stream).
+If the toggle is off, the bot does not die. It falls back to one flat DM, but it **tells you so**, in that DM, with a link back to this section, on every mode start. Silence it only by deciding: either turn Threaded Mode on, or say you meant it with `topics.enabled: false` (then also consider `manager.log: false`, since the feed is chatty in a single stream).
 
-Mute the **log** (or **manager**) topic by hand if you don't want its notifications — Telegram gives bots no API for that, and muting one topic leaves the others alone. Rename the topics with [`topics.personalName` / `topics.managerName` / `topics.logName`](SETTINGS.md#topics-owner-dm-layout).
+Mute the **log** (or **manager**) topic by hand if you don't want its notifications. Telegram gives bots no API for that, and muting one topic leaves the others alone. Rename the topics with [`topics.personalName` / `topics.managerName` / `topics.logName`](SETTINGS.md#topics-owner-dm-layout).
 
 ### 4. Find your Telegram user id
 
-`allowedUserId` is your **numeric** user id (not your @username) — the only account the bot obeys. Get it from a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot).
+`allowedUserId` is your **numeric** user id (not your @username): the only account the bot obeys. Get it from a lookup bot such as [@userinfobot](https://t.me/userinfobot) or [@getidsbot](https://t.me/getidsbot).
 
 ### 5. Configure
 
@@ -263,11 +263,11 @@ Create `<pi-agent-dir>/extensions/pi-telegram-manager/settings.json` (typically 
 }
 ```
 
-`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment. Every other key is optional — see **[SETTINGS.md](SETTINGS.md)**.
+`botToken` may instead be `"env:TELEGRAM_BOT_TOKEN"` to read it from the environment. Every other key is optional: see **[SETTINGS.md](SETTINGS.md)**.
 
 ### 6. (Manager / mixed only) Connect the bot to your account
 
-The toggle in step 2 only *allows* the bot to be connected; this is where you actually hand it your chats. Open Telegram **Settings → Account → Chat automation** (this is where the setting lives now — older guides pointed at *Business / Secretary → Chatbots*), enter your bot's username, and choose which chats it may access — and make sure it is allowed to **reply** (without that permission the bot can read but not answer, and the manager will sit there silent).
+The toggle in step 2 only *allows* the bot to be connected; this is where you actually hand it your chats. Open Telegram **Settings → Account → Chat automation** (this is where the setting lives now: older guides pointed at *Business / Secretary → Chatbots*), enter your bot's username, and choose which chats it may access, and make sure it is allowed to **reply** (without that permission the bot can read but not answer, and the manager will sit there silent).
 
 <img src="assets/connect-secretary-bot.gif" alt="Telegram Settings → Account → Chat automation: adding the bot and picking its chats" width="300">
 
@@ -294,17 +294,17 @@ Then open Pi and start a mode.
 SIGTERM, escalating to SIGKILL only when needed, then clears only the matching singleton
 record. In a headless TUI use `/telegram-recover --force`.
 
-**In your chat with the bot:** `/start` (privacy & terms — anyone), `/switch` (mode picker — owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot — owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/resume` (pick / resume which session Personal runs in).
+**In your chat with the bot:** `/start` (privacy & terms (anyone), `/switch` (mode picker) owner), `/status` (owner), `/context` (owner), `/esc` (owner), `/stop` (stop the bot: owner), `/help`; in Personal and mixed mode also `/clear`, `/compact`, `/resume` (pick / resume which session Personal runs in).
 
-`/status` reports the model and its provider, how full the context is (`~77k of 131.1k tokens (59% full)`), the working directory, whether a turn is running, what is queued, and — in mixed — which side holds the session. Every command above is refused to anyone but the owner, and none appear in the menu strangers see.
+`/status` reports the model and its provider, how full the context is (`~77k of 131.1k tokens (59% full)`), the working directory, whether a turn is running, what is queued, and: in mixed, which side holds the session. Every command above is refused to anyone but the owner, and none appear in the menu strangers see.
 
-`/context` answers the next question: not how full the context is, but what it is full **of**. It names the thread it was built from (your session, or one isolated chat), the exact size of the last call as the model counted it, our estimate of the next one, and the breakdown — tool output is usually most of it. If a compaction has already replaced part of the history with a summary, it says so and when, which is normally the answer to "why did it forget what I said an hour ago".
+`/context` answers the next question: not how full the context is, but what it is full **of**. It names the thread it was built from (your session, or one isolated chat), the exact size of the last call as the model counted it, our estimate of the next one, and the breakdown: tool output is usually most of it. If a compaction has already replaced part of the history with a summary, it says so and when, which is normally the answer to "why did it forget what I said an hour ago".
 
-It also reports the half of the prompt the message list cannot see: the **prompt head** — the system prompt plus the tool schemas, which on a local backend the chat template renders into the system message, so they sit ahead of every word anyone has said. That is the prefix your backend caches, and anything that rewrites it makes the whole prompt be re-read. `/context` names its size and its tool count, and if another extension rewrote it in the middle of a turn, says so and what it cost. The bot also tells you once, in the log feed, the first time it sees that happen ([`manager.promptAlerts`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **on**) — once per kind, because a warning repeated every turn is a warning you learn to scroll past.
+It also reports the half of the prompt the message list cannot see, the **prompt head**: the system prompt plus the tool schemas, which on a local backend the chat template renders into the system message, so they sit ahead of every word anyone has said. That is the prefix your backend caches, and anything that rewrites it makes the whole prompt be re-read. `/context` names its size and its tool count, and if another extension rewrote it in the middle of a turn, says so and what it cost. The bot also tells you once, in the log feed, the first time it sees that happen ([`manager.promptAlerts`](SETTINGS.md#manager-business-manager-and-the-telegram-side-of-mixed), default **on**): once per kind, because a warning repeated every turn is a warning you learn to scroll past.
 
-`/compact` summarises the history so a long session keeps going instead of hitting the context window. The chat shows the outcome: how full the context was, what the history weighed, and a card if the compaction failed. In manager mode there is nothing to compact — the context is built fresh for each conversation.
+`/compact` summarises the history so a long session keeps going instead of hitting the context window. The chat shows the outcome: how full the context was, what the history weighed, and a card if the compaction failed. In manager mode there is nothing to compact: the context is built fresh for each conversation.
 
-**Every compaction is summarised with instructions**, whoever started it. Pi decides when to compact and what to cut; the bridge writes the summary, using Pi's own `compact()` with the one argument its automatic path leaves empty. The instructions say the thing the token counts hide: tool output is 80-90% of a working context and your words are two or three, so a summariser weighing the conversation by mass keeps the files it read and forgets what you asked it to do with them. A file can be read again; a thing you said an hour ago cannot. The manager's summaries are briefed differently — they are told never to reproduce what other people wrote, because a chat summary outlives the chat. If the summarisation fails for any reason, Pi's own compaction runs instead, exactly as before.
+**Every compaction is summarised with instructions**, whoever started it. Pi decides when to compact and what to cut; the bridge writes the summary, using Pi's own `compact()` with the one argument its automatic path leaves empty. The instructions say the thing the token counts hide: tool output is 80-90% of a working context and your words are two or three, so a summariser weighing the conversation by mass keeps the files it read and forgets what you asked it to do with them. A file can be read again; a thing you said an hour ago cannot. The manager's summaries are briefed differently. They are told never to reproduce what other people wrote, because a chat summary outlives the chat. If the summarisation fails for any reason, Pi's own compaction runs instead, exactly as before.
 
 ---
 
@@ -320,7 +320,7 @@ Everything is one JSON file at `<pi-agent-dir>/extensions/pi-telegram-manager/se
 
 Reported on Android: opening the bot chat for the first time freezes the app, and it may be killed before it recovers. After the first message renders it behaves normally. Desktop is unaffected.
 
-The cause is not established. This bot uses several features few bots do — Bot API 10.1 rich messages, streaming drafts, an animated `<tg-thinking>` block, forum topics — and any of them could be the one a given client mishandles. Each has its own switch:
+The cause is not established. This bot uses several features few bots do. Bot API 10.1 rich messages, streaming drafts, an animated `<tg-thinking>` block, forum topics, and any of them could be the one a given client mishandles. Each has its own switch:
 
 | Try | What it turns off |
 | --- | --- |
@@ -337,15 +337,15 @@ If one of them fixes it, please [open an issue](https://github.com/m62624/pi-tel
 
 ## Why the `personal` topic is new every session
 
-You get a **fresh `personal` topic** whenever the Pi **session** behind it changes — you start or resume a *different* session (with `/resume`, the terminal picker, or a resume at the terminal), or `/clear` wipes the history. Merely switching modes keeps the topic, because it keeps the session: the topic mirrors the model's actual memory, not your last command, so a manager↔personal↔mixed round-trip in one session no longer breeds a pile of look-alike topics. The one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted, so the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind — its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
+You get a **fresh `personal` topic** whenever the Pi **session** behind it changes. You start or resume a *different* session (with `/resume`, the terminal picker, or a resume at the terminal), or `/clear` wipes the history. Merely switching modes keeps the topic, because it keeps the session: the topic mirrors the model's actual memory, not your last command, so a manager↔personal↔mixed round-trip in one session no longer breeds a pile of look-alike topics. The one you were using is renamed to **`personal (archive)`**, and the archive before it is deleted, so the DM holds at most two: the live conversation and the last one. A session where you never wrote anything leaves nothing behind. Its topic is deleted, creation notice and all, and it does not push a real conversation out of the archive.
 
 That is not a filing preference. It is the only defence we have against a bug we could not otherwise survive.
 
-A topic can stop accepting ordinary messages **from the phone**. You open it in Telegram for Android, you type, the app shows your message inside the topic — and it is not there. Telegram posted it *outside* the topics, into the general chat. The bot receives it with **no `message_thread_id`** at all, which is indistinguishable from a message you deliberately typed in the "All" view. Meanwhile Telegram Desktop, in the same topic, on the same account, behaves perfectly: `message_thread_id` set, `is_topic_message: true`, message where it belongs. And a *reply* from the same phone lands inside the topic, because a reply names its target explicitly.
+A topic can stop accepting ordinary messages **from the phone**. You open it in Telegram for Android, you type, the app shows your message inside the topic, and it is not there. Telegram posted it *outside* the topics, into the general chat. The bot receives it with **no `message_thread_id`** at all, which is indistinguishable from a message you deliberately typed in the "All" view. Meanwhile Telegram Desktop, in the same topic, on the same account, behaves perfectly: `message_thread_id` set, `is_topic_message: true`, message where it belongs. And a *reply* from the same phone lands inside the topic, because a reply names its target explicitly.
 
 We measured it rather than guessed: the same text, from the same phone, into a topic created minutes earlier and into one that was three days old (and had survived a rename and a deleted chat). The new topic took it. The old one did not.
 
-There is no signal for this. Nothing in the API says a topic has gone that way, and "no thread id" cannot be read as "the topic is broken" — it is also the perfectly normal shape of a message typed outside the topics. So the bot does not try to detect it. It simply never keeps a topic long enough for it to happen: **one session, one topic.** And because a single session can now outlive many mode switches, a topic that approaches Telegram's staleness window is rotated **on age alone** — with a one-line "this session continues" note, so a fresh topic does not read as a fresh conversation — which keeps a long-running session from ever crossing into the broken state. Your history is not lost — it is one chip to the left, in `personal (archive)`.
+There is no signal for this. Nothing in the API says a topic has gone that way, and "no thread id" cannot be read as "the topic is broken". It is also the perfectly normal shape of a message typed outside the topics. So the bot does not try to detect it. It simply never keeps a topic long enough for it to happen: **one session, one topic.** And because a single session can now outlive many mode switches, a topic that approaches Telegram's staleness window is rotated **on age alone**: with a one-line "this session continues" note, so a fresh topic does not read as a fresh conversation, which keeps a long-running session from ever crossing into the broken state. Your history is not lost. It is one chip to the left, in `personal (archive)`.
 
 If you use the bot only from Telegram Desktop, none of this affects you; the rotation is harmless there.
 
@@ -377,7 +377,7 @@ real thing from something wearing its name.
 (mirrored to [tangled](https://tangled.org/m62624.tngl.sh/pi-telegram-manager)).
 Releases are built by GitHub Actions and published with npm **trusted publishing**,
 which attaches a signed [provenance attestation](https://docs.npmjs.com/generating-provenance-statements)
-binding the tarball to the commit it was built from — `npm audit signatures` checks
+binding the tarball to the commit it was built from. `Npm audit signatures` checks
 it. A package that cannot show provenance pointing at this repository was not built
 here, whatever its README says.
 
@@ -385,14 +385,14 @@ here, whatever its README says.
 reachable by no setting: the manager introduces itself as an AI assistant to anyone
 it has no history with, and it answers truthfully when asked whether it is a bot.
 The block that says so is appended after your own instruction files, so your text
-cannot outweigh it. Everything else — tone, name, banner, subjects — is yours to
+cannot outweigh it. Everything else (tone, name, banner, subjects) is yours to
 configure.
 
 **What a fork can do, and what it cannot.** MIT means anyone may fork this, delete
 that block, and ship the result. That is the deal, and I would not change it. But a
 fork is not this project: I cannot vouch for one, patch one, or answer for one.
 Whoever strips the disclosure and points a bot at real people is the person who did
-that — and under Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers)
+that, and under Telegram's [Bot Developer Terms](https://telegram.org/tos/bot-developers)
 the developer is *"you"*: the account that holds the bot's credentials. Running a
 bot honestly is a choice each operator makes on their own machine. This one is built
 to make the honest choice the easy one.
