@@ -51,7 +51,8 @@ export interface EmbedderSettings {
 /**
  * The file a fresh installation gets.
  *
- * Deliberately short. plugmem's own `config.example.toml` lists every key it takes
+ * Deliberately short, and linking to the rest. plugmem's own `config.example.toml`
+ * lists every key it takes
  * with its default, and copying that here would freeze today's defaults into every
  * owner's file; what belongs here is the handful of lines somebody has to change to
  * get meaning-based recall working, and a pointer to the rest.
@@ -62,10 +63,18 @@ export const DEFAULT_PLUGMEM_CONFIG = `# plugmem's configuration for this bot's 
 # never edits it afterwards - so delete it to get these defaults back.
 #
 # Only the keys below are set; everything else stays at plugmem's own tuned
-# defaults. The full list, with every default and what it is for, is in plugmem's
-# config.example.toml and SETTINGS.md.
+# defaults. This is not the limit of what you may put here: EVERY key plugmem
+# takes works, whether or not it is named below. The full list, each with its
+# type, default and what it is for:
 #
-# Four keys are read by nothing here, so setting them is wasted effort:
+#   https://github.com/m62624/plugmem/blob/main/config.example.toml
+#
+# What applies to every contact memory alike: [engine] (vector width and size
+# limits), [embedder] (the embedding service), [recall] (how a question is
+# answered: source weights, recency discount, graph depth), [index] (the vector
+# index) and [maintenance] (reclaiming the bytes of forgotten facts).
+#
+# Five keys are read by nothing here, so setting them is wasted effort:
 #
 #   [database].path              - the memories live in this extension's own memory/
 #   [workspace].dir                directory, which is handed to plugmem directly.
@@ -74,8 +83,7 @@ export const DEFAULT_PLUGMEM_CONFIG = `# plugmem's configuration for this bot's 
 #   [workspace].idle_timeout_ms    the file loses. max_open is 1 on purpose: it is
 #                                  what makes "two contacts' memories are never open
 #                                  at the same time" true rather than likely.
-#
-# Everything else here applies to every contact memory alike.
+#   [server].workers             - read only by plugmem's MCP server.
 
 [engine]
 # Embedding width. 0 stores no vectors at all. With an embedder on it has to match
@@ -203,7 +211,8 @@ export function buildPlugmemConfig(embedder: EmbedderSettings): string {
 		"#",
 		"# This file is yours now: nothing overwrites it, and plugmem is the only thing",
 		"# that reads it. Every other key it takes - recall weights, the maintenance",
-		"# triggers - is documented in plugmem's config.example.toml.",
+		"# triggers - is documented in plugmem's config.example.toml:",
+		"# https://github.com/m62624/plugmem/blob/main/config.example.toml",
 		"",
 		"[engine]",
 		`dim = ${embedder.dim}`,

@@ -279,11 +279,28 @@ The file is **yours**:
 - delete it and the defaults come back on the next mode start;
 - if the path you named holds no file, one is written **there** and the bot says so —
   a path pointing at nothing is a typo far more often than a request;
-- what goes in it is plugmem's business. It validates the file, reports what it did
-  not understand, and documents every key in its own `config.example.toml` and
-  `SETTINGS.md`. This extension does not parse it.
+- what goes in it is plugmem's business. It validates the file and reports what it
+  did not understand. This extension does not parse it.
 
-**Four keys in that file are read by nothing here**, so filling them in is wasted
+The generated file sets the handful of keys needed to get started. It is not the
+limit of what may go there: **every key plugmem takes works, whether or not the
+generated file mentions it.** The full list, each with its type, default and one
+line of what it is for, is
+[`config.example.toml`](https://github.com/m62624/plugmem/blob/main/config.example.toml)
+in plugmem's repository. Copy the sections you want into your file and uncomment
+what you change.
+
+| Section | What it governs |
+| --- | --- |
+| `[engine]` | vector width, size limits, what a single write may hold |
+| `[embedder]` | the embedding service: endpoint, model, key variable, behaviour when it is down |
+| `[recall]` | how a question is answered: source weights, the recency discount and its half-life, graph depth and decay, the duplicate threshold |
+| `[index]` | the vector index: HNSW build width, and the vector count at which it stops scanning flat and builds the graph |
+| `[maintenance]` | reclaiming the bytes of forgotten facts, and what triggers a pass |
+
+Everything above applies to every contact memory alike.
+
+**Five keys in that file are read by nothing here**, so filling them in is wasted
 effort:
 
 | Key | Why it does nothing |
@@ -292,8 +309,7 @@ effort:
 | `[workspace].dir` | Same reason: the workspace root is passed, not looked up. |
 | `[workspace].max_open` | A default for an option the bot passes explicitly, so the file loses. It is `1` on purpose — that is what makes "two contacts' memories are never open at the same time" true rather than merely likely. |
 | `[workspace].idle_timeout_ms` | Passed explicitly too: an open memory holds its file's lock, so how soon it is released is a liveness decision this extension makes. |
-
-Everything else in the file applies to every contact memory alike.
+| `[server].workers` | Read only by plugmem's MCP server, which is not what runs here. |
 
 > **Upgrading?** If `settings.json` still has a `memory.embedder` section it is
 > written into `config.toml` once, on the next mode start, and the bot tells you where
