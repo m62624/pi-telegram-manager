@@ -16,6 +16,23 @@ const rec = (over: Partial<ChatMessageRecord>): ChatMessageRecord => ({
 });
 
 describe("buildIsolatedMessages — images", () => {
+	it("attaches rehydrated images to their historical message, not the newest line", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({ text: "older picture", messageId: 11 }),
+				rec({ text: "newer text", messageId: 12 }),
+			],
+			imagesByMessageId: new Map([
+				[11, [{ data: "OLD_IMAGE", mimeType: "image/jpeg" }]],
+			]),
+		});
+
+		expect(messages[0].images).toEqual([
+			{ data: "OLD_IMAGE", mimeType: "image/jpeg" },
+		]);
+		expect(messages[1].images).toBeUndefined();
+	});
+
 	it("attaches latest images to the last interlocutor line and rebuilds image blocks", () => {
 		const messages = buildIsolatedMessages({
 			records: [

@@ -59,6 +59,8 @@ export interface BuildIsolatedInput {
 	 * interlocutor one.
 	 */
 	latestImages?: IsolatedImage[];
+	/** Images rehydrated from persisted Telegram file references, keyed by message id. */
+	imagesByMessageId?: ReadonlyMap<number, IsolatedImage[]>;
 }
 
 /**
@@ -104,9 +106,14 @@ export function buildIsolatedMessages(
 						.join("\n")}`
 				: "";
 			const spoken = text ? `${who}: ${text}` : `${who}:`;
+			const images =
+				record.messageId === undefined
+					? undefined
+					: input.imagesByMessageId?.get(record.messageId);
 			messages.push({
 				role: "user",
 				content: `${tag}${timed}${spoken}${trailer}`,
+				...(images?.length ? { images } : {}),
 			});
 			lastIncomingIndex = messages.length - 1;
 		}
