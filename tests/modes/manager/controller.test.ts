@@ -141,6 +141,32 @@ describe("ManagerController", () => {
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
 	});
 
+	it("lets an old unanswered message outrank an eligible memory pass", async () => {
+		const { controller, triggerAgent, clock } = await setup();
+		// It arrived while the manager was already running. It is kept in the
+		// transcript and consolidation queue, but is too old for the live-freshness
+		// shortcut that normally marks a chat as immediately unserved.
+		clock.advance(1_000_000);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("delayed hello"),
+		});
+
+		// The queue is now quiet long enough for consolidation, but the chat still
+		// ends with an unanswered interlocutor message. Conversation work wins.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		expect(triggerAgent.mock.calls[0][0]).toContain(
+			"Respond to the latest messages",
+		);
+		expect(triggerAgent.mock.calls[0][0]).not.toContain(
+			"Bring your long-term memory",
+		);
+	});
+
 	it("delivers telegram_manager_reply text on turn end, labelled + bot-tagged + recorded", async () => {
 		const { controller, sendReply, deps, clock } = await setup();
 		await controller.onBusinessMessage({

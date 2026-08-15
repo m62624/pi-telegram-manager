@@ -1688,7 +1688,18 @@ export class ManagerController {
 		// whole seconds, so an owner message and an interlocutor's in the same second
 		// compare as equal, and a timestamp test would call the chat answered while the
 		// interlocutor is in fact still waiting.
-		return analyzeChat(records).interlocutorWaiting;
+		const state = analyzeChat(records);
+		if (!state.interlocutorWaiting || state.lastInterlocutorAt === null)
+			return false;
+		// A deliberate silent turn has no bot line to put after the interlocutor's
+		// message. The durable handled cursor is therefore part of the answer check;
+		// without it, every old silent chat would be promoted ahead of consolidation
+		// forever.
+		const cursor = await this.deps.chatCursors.get(chatId);
+		return (
+			cursor?.handledThrough === undefined ||
+			state.lastInterlocutorAt > cursor.handledThrough
+		);
 	}
 
 	/**
@@ -1892,6 +1903,18 @@ export class ManagerController {
 		// interlocutor to remember, so drop it from the queue and stop.
 		if (entry.userId && (await this.isOwnerUserId(entry.userId))) {
 			await this.deps.consolidationQueue.remove(entry.chatId);
+			return;
+		}
+		// Consolidation is strictly below conversation work, including work that is
+		// old by the time we notice it. A message can be stale because the manager
+		// was already running when it arrived; it is still unanswered, and sending
+		// the chat to a memory pass first is exactly how a pending conversation got
+		// mistaken for a finished one. Move it back into the ordinary scheduler and
+		// let the model decide how to handle the late message.
+		if (await this.hasSomethingToAnswer(entry.chatId)) {
+			this.unserved.add(entry.chatId);
+			this.scheduler.onMessage(entry.chatId);
+			await this.triggerTurn();
 			return;
 		}
 		const ledger = new MemoryLedger();

@@ -23,6 +23,9 @@ terminal-continuation (`connect`) and business manager (`manager`).
 - Raw TypeScript shipped (Pi runs it); `tsc` is typecheck-only. ESM, tabs, double quotes (biome).
 - **All tests and mocks live in `tests/`** (never in `src/`). Test via the latest vitest.
 - Every runtime is a `create*Runtime(deps)` factory / class with injected ports (fake-ports testing).
+- Tests must use synthetic chat ids, names, and message text only. Never copy real Telegram
+  names, ids, timestamps, or message wording into fixtures; reproduce a production case with
+  neutral placeholders such as `Alice`, `chat-a`, and `delayed hello`.
 
 ## Read First
 The approved plan: `~/.claude/plans/lazy-giggling-gosling.md`.
