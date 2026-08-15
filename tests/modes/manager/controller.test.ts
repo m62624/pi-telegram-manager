@@ -141,6 +141,32 @@ describe("ManagerController", () => {
 		expect(controller.status()).toMatchObject({ activeChat: "42", queued: 0 });
 	});
 
+	it("lets an old unanswered message outrank an eligible memory pass", async () => {
+		const { controller, triggerAgent, clock } = await setup();
+		// It arrived while the manager was already running. It is kept in the
+		// transcript and consolidation queue, but is too old for the live-freshness
+		// shortcut that normally marks a chat as immediately unserved.
+		clock.advance(1_000_000);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("delayed hello"),
+		});
+
+		// The queue is now quiet long enough for consolidation, but the chat still
+		// ends with an unanswered interlocutor message. Conversation work wins.
+		clock.advance(1_800_001);
+		await controller.onTick();
+		expect(triggerAgent).toHaveBeenCalledTimes(1);
+		expect(triggerAgent.mock.calls[0][0]).toContain(
+			"Respond to the latest messages",
+		);
+		expect(triggerAgent.mock.calls[0][0]).not.toContain(
+			"Bring your long-term memory",
+		);
+	});
+
 	it("delivers telegram_manager_reply text on turn end, labelled + bot-tagged + recorded", async () => {
 		const { controller, sendReply, deps, clock } = await setup();
 		await controller.onBusinessMessage({
@@ -581,6 +607,56 @@ describe("ManagerController", () => {
 		// The model is nudged to judge whether it is really addressed.
 		const ctx = await controller.buildContextForActive();
 		expect(ctx?.at(-1)?.content).toContain("wake-word");
+	});
+
+	it("rehydrates an image from an older stored message", async () => {
+		const { controller, deps, clock } = await setup();
+		await deps.chatStore.append("42", {
+			author: "interlocutor",
+			text: "old picture",
+			timestamp: 1,
+			messageId: 40,
+			imageRefs: [{ fileId: "old-photo", mimeType: "image/jpeg" }],
+		});
+		const loadImageRefs = vi.fn(async () => [
+			{ data: "OLD_IMAGE", mimeType: "image/jpeg" },
+		]);
+		deps.loadImageRefs = loadImageRefs;
+
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: interlocutorMsg("new text", 5, 41),
+		});
+		clock.advance(300_001);
+		await controller.onTick();
+
+		const ctx = await controller.buildContextForActive();
+		const old = ctx?.find((message) => message.content.includes("old picture"));
+		expect(old?.images).toEqual([
+			{ data: "OLD_IMAGE", mimeType: "image/jpeg" },
+		]);
+		expect(loadImageRefs).toHaveBeenCalledWith([
+			{ fileId: "old-photo", mimeType: "image/jpeg" },
+		]);
+	});
+
+	it("persists an image reference alongside a newly received photo", async () => {
+		const { controller, deps } = await setup(["llm"]);
+		deps.loadImages = vi.fn(async () => []);
+		await controller.onBusinessMessage({
+			connectionId: CONN,
+			chatId: "42",
+			fromId: 5,
+			message: {
+				...interlocutorMsg("look", 5, 50),
+				photo: [{ file_id: "new-photo", file_size: 123 }],
+			} as Message,
+		});
+
+		const [record] = await deps.chatStore.all("42");
+		expect(record.imageRefs).toEqual([{ fileId: "new-photo", fileSize: 123 }]);
 	});
 
 	it("loads a photo the owner REPLIES to when summoning the bot to look", async () => {

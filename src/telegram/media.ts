@@ -204,9 +204,19 @@ export async function loadInlineImages(
 	message: Message,
 	maxBytes?: number,
 ): Promise<InlineImage[]> {
-	const refs = describeAttachments(message, maxBytes).filter(isImage);
+	return loadInlineImageRefs(
+		downloader,
+		describeAttachments(message, maxBytes).filter(isImage),
+	);
+}
+
+/** Download previously persisted image references for a historical message. */
+export async function loadInlineImageRefs(
+	downloader: MediaDownloader,
+	refs: readonly AttachmentRef[],
+): Promise<InlineImage[]> {
 	const images: InlineImage[] = [];
-	for (const ref of refs) {
+	for (const ref of refs.filter(isImage)) {
 		try {
 			const file = await downloader.download(ref);
 			images.push({

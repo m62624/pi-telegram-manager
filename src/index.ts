@@ -199,6 +199,7 @@ import {
 	type ChatMessageRecord,
 	type ChatStore,
 	createChatStore,
+	type StoredImageRef,
 } from "./storage/chat-store";
 import { ensurePlugmemConfig } from "./storage/config-file";
 import {
@@ -225,6 +226,7 @@ import {
 	describeAttachments,
 	type FileApi,
 	isImage,
+	loadInlineImageRefs,
 	loadInlineImages,
 	MediaDownloader,
 } from "./telegram/media";
@@ -3419,6 +3421,16 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		// policy and never reach here.
 		const loadManagerImages = (message: Message) =>
 			loadInlineImages(managerMedia, message, settings.files.maxBytes);
+		const loadManagerImageRefs = (refs: readonly StoredImageRef[]) =>
+			loadInlineImageRefs(
+				managerMedia,
+				refs.map((ref) => ({
+					kind: "photo" as const,
+					fileId: ref.fileId,
+					fileSize: ref.fileSize,
+					mimeType: ref.mimeType,
+				})),
+			);
 		const api = managerClient.api as unknown as {
 			sendChatAction(args: {
 				business_connection_id: string;
@@ -3474,6 +3486,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			maxImages: settings.files.maxImagesPerTurn,
 			media: settings.manager.media,
 			loadImages: loadManagerImages,
+			loadImageRefs: loadManagerImageRefs,
 			clock: { now: () => Date.now() },
 			chatStore,
 			contactStore,

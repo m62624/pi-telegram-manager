@@ -11,11 +11,28 @@ import type { ChatMessageRecord } from "../../../src/storage/chat-store";
 const rec = (over: Partial<ChatMessageRecord>): ChatMessageRecord => ({
 	author: "interlocutor",
 	text: "hi",
-	timestamp: 1,
+	timestamp: 0,
 	...over,
 });
 
 describe("buildIsolatedMessages — images", () => {
+	it("attaches rehydrated images to their historical message, not the newest line", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({ text: "older picture", messageId: 11 }),
+				rec({ text: "newer text", messageId: 12 }),
+			],
+			imagesByMessageId: new Map([
+				[11, [{ data: "OLD_IMAGE", mimeType: "image/jpeg" }]],
+			]),
+		});
+
+		expect(messages[0].images).toEqual([
+			{ data: "OLD_IMAGE", mimeType: "image/jpeg" },
+		]);
+		expect(messages[1].images).toBeUndefined();
+	});
+
 	it("attaches latest images to the last interlocutor line and rebuilds image blocks", () => {
 		const messages = buildIsolatedMessages({
 			records: [
@@ -75,6 +92,26 @@ describe("buildIsolatedMessages", () => {
 			{ role: "user", content: "Interlocutor (Alice): hello" },
 			{ role: "assistant", content: "hi there" },
 			{ role: "user", content: "Owner: I'll take it" },
+		]);
+	});
+
+	it("shows the real message time so a long gap is visible", () => {
+		const messages = buildIsolatedMessages({
+			records: [
+				rec({
+					text: "delayed hello",
+					timestamp: Date.parse("2026-01-02T09:00:00.000Z"),
+				}),
+				rec({
+					author: "bot",
+					text: "bot reply",
+					timestamp: Date.parse("2026-01-02T12:00:00.000Z"),
+				}),
+			],
+		});
+		expect(messages.map((message) => message.content)).toEqual([
+			"[2026-01-02T09:00:00.000Z] Interlocutor: delayed hello",
+			"[2026-01-02T12:00:00.000Z] bot reply",
 		]);
 	});
 

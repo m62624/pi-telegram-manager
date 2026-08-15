@@ -43,7 +43,11 @@ import type {
 	ConsolidationQueue,
 	SentRegistry,
 } from "../../storage/chat-state";
-import type { ChatMessageRecord, ChatStore } from "../../storage/chat-store";
+import type {
+	ChatMessageRecord,
+	ChatStore,
+	StoredImageRef,
+} from "../../storage/chat-store";
 import { ownWords } from "../../storage/chat-store";
 import type { ContactStore } from "../../storage/contact-store";
 import {
@@ -325,6 +329,8 @@ export interface ManagerControllerDeps {
 	isIdle: () => boolean;
 	/** Download an interlocutor message's inline images (empty when none/disabled). */
 	loadImages?: (message: Message) => Promise<IsolatedImage[]>;
+	/** Re-download persisted image references when rebuilding historical context. */
+	loadImageRefs?: (refs: readonly StoredImageRef[]) => Promise<IsolatedImage[]>;
 	/** Start an agent turn for the active chat (the prompt is a bare trigger). */
 	triggerAgent: (prompt: string) => Promise<void>;
 	/**
@@ -364,6 +370,15 @@ function messageText(message: Message): string {
 			: "[sticker]";
 	}
 	return "";
+}
+
+function dedupeImageRefs(refs: readonly StoredImageRef[]): StoredImageRef[] {
+	const seen = new Set<string>();
+	return refs.filter((ref) => {
+		if (seen.has(ref.fileId)) return false;
+		seen.add(ref.fileId);
+		return true;
+	});
 }
 
 /**
@@ -537,6 +552,11 @@ export class ManagerController {
 	 * the fastest way to blow a small local context.
 	 */
 	private readonly latestImages = new Map<string, IsolatedImage[]>();
+	/** Historical image bytes cached by chat and Telegram message id for this process. */
+	private readonly historicalImages = new Map<
+		string,
+		Map<number, IsolatedImage[]>
+	>();
 	/**
 	 * Chats that received a new interlocutor message WHILE their turn was already
 	 * running (mid-inference). On turn end such a chat is not marked served and its
@@ -853,7 +873,11 @@ export class ManagerController {
 			const media =
 				(summons || this.ownerSummoned.has(chatId)) && !forwardDropped
 					? await this.ingestMedia(chatId, input.message)
-					: { note: "", kind: undefined as string | undefined };
+					: {
+							note: "",
+							kind: undefined as string | undefined,
+							imageRefs: [],
+						};
 			const ownerBody = forwardBody(stripBotMarker(text));
 			const ownerText = media.note
 				? ownerBody
@@ -872,6 +896,7 @@ export class ManagerController {
 					senderId: ownerId,
 					messageId,
 					kind: media.kind,
+					imageRefs: media.imageRefs.length ? media.imageRefs : undefined,
 				});
 				// The owner's own line in this chat is part of what happened in it, so it
 				// belongs in the memory of the person they were talking to — that is the
@@ -961,7 +986,7 @@ export class ManagerController {
 			);
 		}
 		const media = forwardDropped
-			? { note: "", kind: undefined }
+			? { note: "", kind: undefined, imageRefs: [] }
 			: await this.ingestMedia(chatId, input.message);
 		const baseText = forwardBody(text);
 		const storedText = media.note
@@ -979,6 +1004,7 @@ export class ManagerController {
 			senderName: contactName,
 			messageId,
 			kind: media.kind,
+			imageRefs: media.imageRefs.length ? media.imageRefs : undefined,
 		});
 		// Every inbound message goes into the memory, whether or not it ever produces a
 		// turn: what a person said is worth keeping even when the owner answered it
@@ -1036,7 +1062,7 @@ export class ManagerController {
 	private async ingestMedia(
 		chatId: string,
 		message: Message,
-	): Promise<{ note: string; kind?: string }> {
+	): Promise<{ note: string; kind?: string; imageRefs: StoredImageRef[] }> {
 		const refs = describeAttachments(message, this.deps.maxBytes);
 		// A reply may carry no attachment of its own yet still POINT at a photo — so the
 		// replied-to picture is checked before the early return, or a "look at this"
@@ -1048,14 +1074,28 @@ export class ManagerController {
 						isImage,
 					)
 				: [];
-		if (refs.length === 0 && repliedImageRefs.length === 0) return { note: "" };
+		if (refs.length === 0 && repliedImageRefs.length === 0)
+			return { note: "", imageRefs: [] };
 		const images = refs.filter(isImage);
+		const imageRefs = this.deps.media.images
+			? dedupeImageRefs(
+					[...images, ...repliedImageRefs].map((ref) => ({
+						fileId: ref.fileId,
+						fileSize: ref.fileSize,
+						mimeType: ref.mimeType,
+					})),
+				)
+			: [];
 		const documents = refs.filter((ref) => !isImage(ref));
 		const parts: string[] = [];
 		if (images.length > 0) {
 			if (this.deps.media.images) {
 				parts.push("[image]");
-				this.stashImages(chatId, (await this.deps.loadImages?.(message)) ?? []);
+				this.stashImages(
+					chatId,
+					(await this.deps.loadImages?.(message)) ?? [],
+					message.message_id,
+				);
 			} else {
 				parts.push("[image not shown]");
 			}
@@ -1077,21 +1117,52 @@ export class ManagerController {
 			this.stashImages(
 				chatId,
 				(await this.deps.loadImages?.(repliedTo as Message)) ?? [],
+				message.message_id,
 			);
 		}
-		return { note: parts.join(" "), kind: refs[0]?.kind };
+		return { note: parts.join(" "), kind: refs[0]?.kind, imageRefs };
 	}
 
-	/** Merge freshly-loaded interlocutor images into the freshest turn, capped. */
-	private stashImages(chatId: string, loaded: IsolatedImage[]): void {
+	/** Merge freshly-loaded images into the freshest turn and historical cache. */
+	private stashImages(
+		chatId: string,
+		loaded: IsolatedImage[],
+		messageId?: number,
+	): void {
 		if (loaded.length === 0) return;
 		const pending = this.latestImages.get(chatId) ?? [];
 		const merged = [...pending, ...loaded];
 		const cap = this.deps.maxImages;
-		this.latestImages.set(
-			chatId,
-			cap && merged.length > cap ? merged.slice(-cap) : merged,
-		);
+		const capped = cap && merged.length > cap ? merged.slice(-cap) : merged;
+		this.latestImages.set(chatId, capped);
+		if (messageId !== undefined) {
+			const historical = this.historicalImages.get(chatId) ?? new Map();
+			const previous = historical.get(messageId) ?? [];
+			historical.set(messageId, [...previous, ...loaded]);
+			this.historicalImages.set(chatId, historical);
+		}
+	}
+
+	private async loadHistoricalImages(
+		chatId: string,
+		records: readonly ChatMessageRecord[],
+	): Promise<ReadonlyMap<number, IsolatedImage[]>> {
+		const cached = this.historicalImages.get(chatId) ?? new Map();
+		if (!this.deps.loadImageRefs) return cached;
+		for (const record of records) {
+			if (
+				record.messageId === undefined ||
+				!record.imageRefs?.length ||
+				cached.has(record.messageId)
+			)
+				continue;
+			cached.set(
+				record.messageId,
+				(await this.deps.loadImageRefs(record.imageRefs)) ?? [],
+			);
+		}
+		this.historicalImages.set(chatId, cached);
+		return cached;
 	}
 
 	/**
@@ -1438,11 +1509,13 @@ export class ManagerController {
 			maxCharsPerMessage: this.deps.maxCharsPerMessage,
 			maxContextChars: this.deps.maxContextChars,
 		});
+		const historicalImages = await this.loadHistoricalImages(active, records);
 		const meta = this.chats.get(active);
 		const isolated = buildIsolatedMessages({
 			records,
 			boundary: boundaryDirective(meta?.contactName ?? active),
 			latestImages: this.latestImages.get(active),
+			imagesByMessageId: historicalImages,
 		});
 		const state = analyzeChat(records);
 		// First contact = no bot reply yet and at most this one interlocutor line.
@@ -1688,7 +1761,18 @@ export class ManagerController {
 		// whole seconds, so an owner message and an interlocutor's in the same second
 		// compare as equal, and a timestamp test would call the chat answered while the
 		// interlocutor is in fact still waiting.
-		return analyzeChat(records).interlocutorWaiting;
+		const state = analyzeChat(records);
+		if (!state.interlocutorWaiting || state.lastInterlocutorAt === null)
+			return false;
+		// A deliberate silent turn has no bot line to put after the interlocutor's
+		// message. The durable handled cursor is therefore part of the answer check;
+		// without it, every old silent chat would be promoted ahead of consolidation
+		// forever.
+		const cursor = await this.deps.chatCursors.get(chatId);
+		return (
+			cursor?.handledThrough === undefined ||
+			state.lastInterlocutorAt > cursor.handledThrough
+		);
 	}
 
 	/**
@@ -1892,6 +1976,18 @@ export class ManagerController {
 		// interlocutor to remember, so drop it from the queue and stop.
 		if (entry.userId && (await this.isOwnerUserId(entry.userId))) {
 			await this.deps.consolidationQueue.remove(entry.chatId);
+			return;
+		}
+		// Consolidation is strictly below conversation work, including work that is
+		// old by the time we notice it. A message can be stale because the manager
+		// was already running when it arrived; it is still unanswered, and sending
+		// the chat to a memory pass first is exactly how a pending conversation got
+		// mistaken for a finished one. Move it back into the ordinary scheduler and
+		// let the model decide how to handle the late message.
+		if (await this.hasSomethingToAnswer(entry.chatId)) {
+			this.unserved.add(entry.chatId);
+			this.scheduler.onMessage(entry.chatId);
+			await this.triggerTurn();
 			return;
 		}
 		const ledger = new MemoryLedger();

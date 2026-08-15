@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	describeAttachments,
 	isImage,
+	loadInlineImageRefs,
 	loadInlineImages,
 	MediaDownloader,
 	MediaTooLargeError,
@@ -257,5 +258,14 @@ describe("loadInlineImages", () => {
 			message({ photo: photos }),
 		);
 		expect(images).toEqual([]);
+	});
+
+	it("downloads persisted image references", async () => {
+		const images = await loadInlineImageRefs(fakeDownloader(), [
+			{ kind: "photo", fileId: "old-photo", mimeType: "image/webp" },
+		]);
+		expect(images).toEqual([
+			{ data: toBase64([1, 2, 3]), mimeType: "image/webp" },
+		]);
 	});
 });

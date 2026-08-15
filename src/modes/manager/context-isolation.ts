@@ -59,6 +59,8 @@ export interface BuildIsolatedInput {
 	 * interlocutor one.
 	 */
 	latestImages?: IsolatedImage[];
+	/** Images rehydrated from persisted Telegram file references, keyed by message id. */
+	imagesByMessageId?: ReadonlyMap<number, IsolatedImage[]>;
 }
 
 /**
@@ -80,9 +82,11 @@ export function buildIsolatedMessages(
 		// A message can be pure context — a reply carrying nothing but a photo — and
 		// still matters: it is the turn the next one answers.
 		if (!text && !record.context?.trim()) continue;
+		const timestamp = formatTimestamp(record.timestamp);
+		const timed = timestamp ? `[${timestamp}] ` : "";
 		if (record.author === "bot") {
 			if (!text) continue;
-			messages.push({ role: "assistant", content: text });
+			messages.push({ role: "assistant", content: `${timed}${text}` });
 		} else {
 			const label =
 				record.author === "owner" ? labels.owner : labels.interlocutor;
@@ -102,7 +106,15 @@ export function buildIsolatedMessages(
 						.join("\n")}`
 				: "";
 			const spoken = text ? `${who}: ${text}` : `${who}:`;
-			messages.push({ role: "user", content: `${tag}${spoken}${trailer}` });
+			const images =
+				record.messageId === undefined
+					? undefined
+					: input.imagesByMessageId?.get(record.messageId);
+			messages.push({
+				role: "user",
+				content: `${tag}${timed}${spoken}${trailer}`,
+				...(images?.length ? { images } : {}),
+			});
 			lastIncomingIndex = messages.length - 1;
 		}
 	}
@@ -110,6 +122,12 @@ export function buildIsolatedMessages(
 		messages[lastIncomingIndex].images = input.latestImages;
 	}
 	return messages;
+}
+
+/** Keep the real Telegram order visible to the model, including long gaps. */
+function formatTimestamp(timestamp: number): string {
+	if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
+	return new Date(timestamp).toISOString();
 }
 
 /**

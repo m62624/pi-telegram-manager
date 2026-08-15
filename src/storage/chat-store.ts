@@ -10,6 +10,13 @@ import type { TelegramPaths } from "./paths";
  */
 export type ChatAuthor = "interlocutor" | "owner" | "bot";
 
+/** A Telegram file reference that lets the manager rehydrate an image later. */
+export interface StoredImageRef {
+	fileId: string;
+	fileSize?: number;
+	mimeType?: string;
+}
+
 export interface ChatMessageRecord {
 	author: ChatAuthor;
 	/**
@@ -33,6 +40,8 @@ export interface ChatMessageRecord {
 	messageId?: number;
 	/** Attachment kind, if the message carried media. */
 	kind?: string;
+	/** Downloadable image references; the bytes are deliberately not stored in JSONL. */
+	imageRefs?: StoredImageRef[];
 }
 
 /** A pre-`context` record: the context lines were merged into `text`. */
