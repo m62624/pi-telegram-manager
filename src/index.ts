@@ -17,14 +17,16 @@
  * reason. Settled, NOT ended: see the `agent_settled` handler for why the
  * difference is two minutes.
  */
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	BusinessConnection,
 	InlineKeyboardMarkup,
 	Message,
 } from "@grammyjs/types";
+import { InputFile } from "grammy";
 import {
 	COMMANDS,
 	COMPLIANCE_LINKS,
@@ -248,6 +250,11 @@ import {
 	switchLabel,
 	switchPanelText,
 } from "./telegram/switch-panel";
+import {
+	AgentControlController,
+	type AgentControlContext,
+} from "./telegram/agent-control";
+import { bindVeyyonAgentControlPort } from "./telegram/veyyon-native-port";
 import { ThinkingLog } from "./telegram/thinking-log";
 import {
 	DEFAULT_MAX_RESULT_CHARS,
@@ -306,6 +313,22 @@ interface ControlApi {
 		message_thread_id?: number;
 		from_chat_id: number;
 		message_id: number;
+	}): Promise<unknown>;
+	editMessageText(payload: {
+		chat_id: number;
+		message_id: number;
+		text: string;
+		reply_markup?: InlineKeyboardMarkup;
+	}): Promise<unknown>;
+	sendPhoto(payload: {
+		chat_id: number;
+		photo: InputFile;
+		caption?: string;
+	}): Promise<unknown>;
+	sendDocument(payload: {
+		chat_id: number;
+		document: InputFile;
+		caption?: string;
 	}): Promise<unknown>;
 }
 
@@ -843,6 +866,9 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// the owner.
 	let activeCtx: ExtensionCommandContext | null = null;
 	let ownerUserId: number | null = null;
+	let agentControl:
+		| { controller: AgentControlController; context: AgentControlContext }
+		| null = null;
 	// The configured zone, for the clock the mode pin carries. Set on every mode start.
 	let activeTimezone: string | undefined;
 	// The settings the RUNNING mode started with — what `about current_settings`
@@ -1480,6 +1506,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		toolOutputMaxBytes = 0;
 		activeSettings = null;
 		contextReset.forget();
+		agentControl = null;
 		await stoppingClient?.stop().catch(() => {});
 		await lifecycle.deactivate("connect");
 		visibility.setActive("connect", false);
@@ -1493,6 +1520,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 		const stoppingClient = managerClient;
 		managerClient = null;
 		manager = null;
+		agentControl = null;
 		const wasMixed = mixedActive;
 		disarmWatchdog();
 		if (notConnectedTimer) {
@@ -3126,6 +3154,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			onError: (error) =>
 				ctx.ui.notify(`Telegram error: ${String(error)}`, "error"),
 		});
+		bindAgentControl(ctx, allowedUserId, token);
 		await setupTopics(client.api, allowedUserId, settings, ctx);
 		const rotation = await rotatePersonalTopic(
 			ctx.sessionManager.getSessionId(),
@@ -3372,6 +3401,7 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 			// killed the process (a `shutdown`) is not redelivered and re-run on boot.
 			updateCursor: createUpdateCursor(fs, paths.updateCursorPath),
 		});
+		if (ownerUserId !== null) bindAgentControl(ctx, ownerUserId, token);
 		if (settings.allowedUserId) {
 			await setupTopics(
 				managerClient.api,
@@ -3761,6 +3791,79 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 	// panel, answer callbacks, edit keyboards). Null when fully stopped.
 	const controlApi = (): ControlApi | null =>
 		((managerClient ?? client)?.api as unknown as ControlApi) ?? null;
+
+	const bindAgentControl = (
+		ctx: ExtensionCommandContext,
+		owner: number,
+		botToken: string,
+	): void => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const auth = {
+			authToken: createHash("sha256")
+				.update("veyyon.telegram.native-control\u0000")
+				.update(botToken)
+				.digest("hex"),
+			actorId: String(owner),
+			chatId: String(owner),
+			sessionId,
+		};
+		const native = bindVeyyonAgentControlPort(auth, [ctx.cwd]);
+		if (!native) {
+			agentControl = null;
+			return;
+		}
+		const requireApi = (): ControlApi => {
+			const api = controlApi();
+			if (!api) throw new Error("Telegram control client is not active");
+			return api;
+		};
+		agentControl = {
+			controller: new AgentControlController(native, {
+				async sendMessage(input) {
+					const sent = await requireApi().sendMessage({
+						chat_id: input.chatId,
+						text: input.text,
+						...(input.replyMarkup ? { reply_markup: input.replyMarkup } : {}),
+					});
+					return { messageId: sent.message_id };
+				},
+				async editMessage(input) {
+					await requireApi().editMessageText({
+						chat_id: input.chatId,
+						message_id: input.messageId,
+						text: input.text,
+						...(input.replyMarkup ? { reply_markup: input.replyMarkup } : {}),
+					});
+				},
+				async answerCallback(input) {
+					await requireApi().answerCallbackQuery({
+						callback_query_id: input.callbackQueryId,
+						...(input.text ? { text: input.text } : {}),
+					});
+				},
+				async sendPhoto(input) {
+					await requireApi().sendPhoto({
+						chat_id: input.chatId,
+						photo: new InputFile(input.path),
+						...(input.caption ? { caption: input.caption } : {}),
+					});
+				},
+				async sendDocument(input) {
+					await requireApi().sendDocument({
+						chat_id: input.chatId,
+						document: new InputFile(input.path),
+						...(input.caption ? { caption: input.caption } : {}),
+					});
+				},
+			}),
+			context: {
+				sessionId,
+				chatId: owner,
+				userId: owner,
+				sessionLabel: basename(ctx.cwd) || sessionId,
+			},
+		};
+	};
 
 	// The mode currently running, for the panel caption / pin ("stop" when idle).
 	const activeTarget = (): PanelMode => {
@@ -4292,6 +4395,12 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 				return false;
 			}
 			const text = (event.message.text ?? "").trim();
+			if (
+				agentControl &&
+				(await agentControl.controller.handleCommand(text, agentControl.context))
+			) {
+				return true;
+			}
 			if (isSwitchCommand(text)) {
 				await sendSwitchPanel(api, threadOf(event) ?? personalThread());
 				return true;
@@ -4433,6 +4542,19 @@ export default function piTelegramManagerExtension(pi: ExtensionAPI): void {
 
 		if (event.kind === "callback_query") {
 			if (event.fromId !== ownerUserId) return false;
+			if (
+				agentControl &&
+				(await agentControl.controller.handleCallback(
+					{
+						data: event.data,
+						callbackQueryId: event.query.id,
+						messageId: event.query.message?.message_id,
+					},
+					agentControl.context,
+				))
+			) {
+				return true;
+			}
 			const resume = parseResumeCallback(event.data);
 			if (resume) {
 				await handleResumeCallback(api, event, resume);

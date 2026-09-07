@@ -144,6 +144,46 @@ describe("TelegramClient update de-duplication", () => {
 	});
 });
 
+describe("TelegramClient.sendPhoto", () => {
+	function clientWithSpy() {
+		const client = new TelegramClient({
+			token: "123:ABC",
+			onEvent: () => {},
+		});
+		const sendPhoto = vi
+			.spyOn(client.bot.api, "sendPhoto")
+			.mockResolvedValue({} as never);
+		return { client, sendPhoto };
+	}
+
+	it("uses Telegram's native photo method with topic and reply routing", async () => {
+		const { client, sendPhoto } = clientWithSpy();
+		await client.sendPhoto({
+			chatId: 42,
+			threadId: 7,
+			url: "https://example/image.png",
+			caption: "result",
+			replyToMessageId: 9,
+		});
+		expect(sendPhoto).toHaveBeenCalledWith(
+			42,
+			"https://example/image.png",
+			{
+				caption: "result",
+				message_thread_id: 7,
+				reply_parameters: { message_id: 9 },
+			},
+		);
+	});
+
+	it("rejects a call with neither a path nor a url", async () => {
+		const { client } = clientWithSpy();
+		await expect(client.sendPhoto({ chatId: 42 })).rejects.toThrow(
+			"requires a local path or a url",
+		);
+	});
+});
+
 describe("TelegramClient.sendDocument", () => {
 	function clientWithSpy() {
 		const client = new TelegramClient({
