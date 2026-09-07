@@ -8,15 +8,61 @@ export interface TelegramNativeAuth {
 	sessionId: string;
 }
 
+export const VEYYON_NATIVE_CONTROL_HOST_SYMBOL = Symbol.for(
+	"veyyon.telegram.native-control-host.v1",
+);
+
+export interface TelegramNativeControlHostLike {
+	readonly version: 1;
+	bind(binding: TelegramNativeAuth & { workspaceRoots: readonly string[] }): TelegramNativeControlLike & {
+		getSessionIdentity(auth: TelegramNativeAuth): {
+			id: string;
+			actorId: string;
+			chatId: string;
+		};
+	};
+}
+
+interface NativeControlGlobal {
+	[VEYYON_NATIVE_CONTROL_HOST_SYMBOL]?: TelegramNativeControlHostLike;
+}
+
+export function bindVeyyonAgentControlPort(
+	auth: TelegramNativeAuth,
+	workspaceRoots: readonly string[],
+	host: TelegramNativeControlHostLike | undefined = (globalThis as NativeControlGlobal)[
+		VEYYON_NATIVE_CONTROL_HOST_SYMBOL
+	],
+): AgentControlPort | null {
+	if (!host) return null;
+	const bridge = host.bind({ ...auth, workspaceRoots });
+	const identity = bridge.getSessionIdentity(auth);
+	if (
+		identity.id !== auth.sessionId ||
+		identity.actorId !== auth.actorId ||
+		identity.chatId !== auth.chatId
+	) {
+		throw new StaleAgentContextError();
+	}
+	return createVeyyonAgentControlPort(bridge, auth);
+}
+
 export interface NativeAgentPage {
 	items: Array<{
 		id: string;
 		name: string;
 		status: string;
 		summary?: string;
-		updatedAt?: string;
+		updatedAt?: string | number;
 	}>;
 	nextCursor?: string;
+}
+
+function displayTimestamp(value: string | number | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "string") return value;
+	const date = new Date(value);
+	return Number.isNaN(date.valueOf()) ? String(value) : date.toISOString();
 }
 
 export interface TelegramNativeControlLike {
@@ -28,7 +74,7 @@ export interface TelegramNativeControlLike {
 		summary?: string;
 		progress?: string;
 		result?: string;
-		updatedAt?: string;
+		updatedAt?: string | number;
 	}>;
 }
 
@@ -69,7 +115,7 @@ export function createVeyyonAgentControlPort(
 					name: agent.name,
 					status: agent.status,
 					progress: agent.summary,
-					updatedAt: agent.updatedAt,
+					updatedAt: displayTimestamp(agent.updatedAt),
 				})),
 				nextCursor: page.nextCursor,
 			};
@@ -84,7 +130,7 @@ export function createVeyyonAgentControlPort(
 					status: agent.status,
 					progress: agent.progress ?? agent.summary,
 					result: agent.result,
-					updatedAt: agent.updatedAt,
+					updatedAt: displayTimestamp(agent.updatedAt),
 				};
 			} catch (error) {
 				if (nativeErrorCode(error) === "AGENT_NOT_FOUND") return null;
