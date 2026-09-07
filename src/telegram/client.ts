@@ -125,6 +125,38 @@ export class TelegramClient {
 	}
 
 	/**
+	 * Upload an image through Telegram's native photo path, so it renders inline
+	 * instead of as a generic attachment. Local paths use multipart upload; URLs
+	 * are fetched by Telegram. Callers must use sendDocument for non-images or
+	 * images that exceed the Bot API photo limits.
+	 */
+	async sendPhoto(input: {
+		chatId: number;
+		threadId?: number;
+		path?: string;
+		url?: string;
+		caption?: string;
+		replyToMessageId?: number;
+		filename?: string;
+	}): Promise<void> {
+		const photo = input.path
+			? new InputFile(input.path, input.filename)
+			: input.url;
+		if (!photo) {
+			throw new Error("sendPhoto requires a local path or a url");
+		}
+		await this.bot.api.sendPhoto(input.chatId, photo, {
+			...(input.caption ? { caption: input.caption } : {}),
+			...(input.threadId !== undefined
+				? { message_thread_id: input.threadId }
+				: {}),
+			...(input.replyToMessageId !== undefined
+				? { reply_parameters: { message_id: input.replyToMessageId } }
+				: {}),
+		});
+	}
+
+	/**
 	 * Upload a file to a chat as a document (preserving the exact bytes, unlike
 	 * sendPhoto which re-encodes and caps at 10 MB). A local `path` is streamed
 	 * via multipart; a `url` is handed to Telegram to fetch. Standard Bot API
