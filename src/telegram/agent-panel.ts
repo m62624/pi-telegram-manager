@@ -29,6 +29,19 @@ export interface AgentPage {
 	nextCursor?: string;
 	previousCursor?: string;
 }
+export class StaleAgentContextError extends Error {
+	readonly code = "STALE_AGENT_CONTEXT";
+
+	constructor() {
+		super("The native agent session is no longer active.");
+		this.name = "StaleAgentContextError";
+	}
+}
+
+export function isStaleAgentContextError(error: unknown): error is StaleAgentContextError {
+	return error instanceof StaleAgentContextError;
+}
+
 
 export interface AgentControlPort {
 	listAgents(input: {

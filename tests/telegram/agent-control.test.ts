@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentControlController, sanitizeAgentText } from "../../src/telegram/agent-control";
-import { AgentCallbackScope, type AgentControlPort } from "../../src/telegram/agent-panel";
+import { AgentCallbackScope, StaleAgentContextError, type AgentControlPort } from "../../src/telegram/agent-panel";
 
 const context = {
 	sessionId: "session-a",
@@ -95,6 +95,19 @@ describe("AgentControlController", () => {
 		expect(output.answerCallback).toHaveBeenLastCalledWith({
 			callbackQueryId: "query-b",
 			text: "This agent view is no longer valid.",
+		});
+	});
+
+	it("turns a stale native session into a refresh prompt without retrying", async () => {
+		const { native, output, controller } = fixture();
+		native.listAgents = vi.fn(async () => {
+			throw new StaleAgentContextError();
+		});
+		await expect(controller.handleCommand("/agents", context)).resolves.toBe(true);
+		expect(native.listAgents).toHaveBeenCalledTimes(1);
+		expect(output.sendMessage).toHaveBeenLastCalledWith({
+			chatId: 42,
+			text: "This session is no longer active. Open /agents in the current session.",
 		});
 	});
 

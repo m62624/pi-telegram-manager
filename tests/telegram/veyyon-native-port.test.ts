@@ -66,9 +66,24 @@ describe("createVeyyonAgentControlPort", () => {
 		const port = createVeyyonAgentControlPort(bridge, auth);
 		await expect(
 			port.getAgent({ sessionId: "session-b", agentId: "agent-a" }),
-		).rejects.toThrow("SESSION_BINDING_MISMATCH");
+		).rejects.toThrow("native agent session is no longer active");
 		expect(bridge.getAgentDetail).not.toHaveBeenCalled();
 	});
+
+	it.each(["SESSION_MISMATCH", "SESSION_NOT_ACTIVE"])(
+		"maps native %s to stale context without retrying another session",
+		async (code) => {
+			const bridge = bridgeFixture();
+			bridge.listAgents = vi.fn(async () => {
+				throw Object.assign(new Error("stale"), { code });
+			});
+			const port = createVeyyonAgentControlPort(bridge, auth);
+			await expect(
+				port.listAgents({ sessionId: "session-a", limit: 5 }),
+			).rejects.toThrow("native agent session is no longer active");
+			expect(bridge.listAgents).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("maps native AGENT_NOT_FOUND to a stale-panel null without hiding other errors", async () => {
 		const bridge = bridgeFixture();

@@ -6,6 +6,7 @@ import {
 	AgentCallbackScope,
 	buildAgentDetailKeyboard,
 	buildAgentListKeyboard,
+	isStaleAgentContextError,
 	parseAgentCommand,
 	type AgentControlPort,
 	type AgentPanelBinding,
@@ -65,10 +66,18 @@ export class AgentControlController {
 	async handleCommand(text: string, context: AgentControlContext): Promise<boolean> {
 		const command = parseAgentCommand(text);
 		if (!command) return false;
-		if (command.kind === "detail") {
-			await this.showDetail(context, command.agentId);
-		} else {
-			await this.showList(context);
+		try {
+			if (command.kind === "detail") {
+				await this.showDetail(context, command.agentId);
+			} else {
+				await this.showList(context);
+			}
+		} catch (error) {
+			if (!isStaleAgentContextError(error)) throw error;
+			await this.output.sendMessage({
+				chatId: context.chatId,
+				text: "This session is no longer active. Open /agents in the current session.",
+			});
 		}
 		return true;
 	}
@@ -85,14 +94,28 @@ export class AgentControlController {
 		}
 		// Telegram clients keep a spinner visible until every callback is answered.
 		await this.output.answerCallback({ callbackQueryId: input.callbackQueryId });
-		if (resolution.action.kind === "detail") {
-			await this.showDetail(context, resolution.action.agentId, input.messageId);
-		} else {
-			await this.showList(
-				context,
-				resolution.action.kind === "page" ? resolution.action.cursor : undefined,
-				input.messageId,
-			);
+		try {
+			if (resolution.action.kind === "detail") {
+				await this.showDetail(context, resolution.action.agentId, input.messageId);
+			} else {
+				await this.showList(
+					context,
+					resolution.action.kind === "page" ? resolution.action.cursor : undefined,
+					input.messageId,
+				);
+			}
+		} catch (error) {
+			if (!isStaleAgentContextError(error)) throw error;
+			const text = "This session is no longer active. Open /agents in the current session.";
+			if (input.messageId !== undefined) {
+				await this.output.editMessage({
+					chatId: context.chatId,
+					messageId: input.messageId,
+					text,
+				});
+			} else {
+				await this.output.sendMessage({ chatId: context.chatId, text });
+			}
 		}
 		return true;
 	}

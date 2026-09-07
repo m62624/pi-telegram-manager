@@ -1,8 +1,5 @@
-import type {
-	AgentControlPort,
-	AgentDetail,
-	AgentPage,
-} from "./agent-panel";
+import { StaleAgentContextError } from "./agent-panel";
+import type { AgentControlPort, AgentDetail, AgentPage } from "./agent-panel";
 
 export interface TelegramNativeAuth {
 	authToken: string;
@@ -11,17 +8,19 @@ export interface TelegramNativeAuth {
 	sessionId: string;
 }
 
-export interface TelegramNativeControlLike {
-	listAgents(input: TelegramNativeAuth & { cursor?: string; limit: number }): Promise<{
-		items: Array<{
-			id: string;
-			name: string;
-			status: string;
-			summary?: string;
-			updatedAt?: string;
-		}>;
-		nextCursor?: string;
+export interface NativeAgentPage {
+	items: Array<{
+		id: string;
+		name: string;
+		status: string;
+		summary?: string;
+		updatedAt?: string;
 	}>;
+	nextCursor?: string;
+}
+
+export interface TelegramNativeControlLike {
+	listAgents(input: TelegramNativeAuth & { cursor?: string; limit: number }): Promise<NativeAgentPage>;
 	getAgentDetail(input: TelegramNativeAuth & { agentId: string }): Promise<{
 		id: string;
 		name: string;
@@ -33,17 +32,18 @@ export interface TelegramNativeControlLike {
 	}>;
 }
 
-export interface NativeControlErrorLike {
-	code?: string;
+
+function nativeErrorCode(error: unknown): string | undefined {
+	if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+	return typeof error.code === "string" ? error.code : undefined;
 }
 
-function isAgentNotFound(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		error.code === "AGENT_NOT_FOUND"
-	);
+function mapNativeError(error: unknown): never {
+	const code = nativeErrorCode(error);
+	if (code === "SESSION_MISMATCH" || code === "SESSION_NOT_ACTIVE") {
+		throw new StaleAgentContextError();
+	}
+	throw error;
 }
 
 /**
@@ -56,8 +56,13 @@ export function createVeyyonAgentControlPort(
 ): AgentControlPort {
 	return {
 		async listAgents({ sessionId, cursor, limit }): Promise<AgentPage> {
-			if (sessionId !== auth.sessionId) throw new Error("SESSION_BINDING_MISMATCH");
-			const page = await bridge.listAgents({ ...auth, cursor, limit });
+			if (sessionId !== auth.sessionId) throw new StaleAgentContextError();
+			let page: NativeAgentPage;
+			try {
+				page = await bridge.listAgents({ ...auth, cursor, limit });
+			} catch (error) {
+				mapNativeError(error);
+			}
 			return {
 				items: page.items.map((agent) => ({
 					id: agent.id,
@@ -70,7 +75,7 @@ export function createVeyyonAgentControlPort(
 			};
 		},
 		async getAgent({ sessionId, agentId }): Promise<AgentDetail | null> {
-			if (sessionId !== auth.sessionId) throw new Error("SESSION_BINDING_MISMATCH");
+			if (sessionId !== auth.sessionId) throw new StaleAgentContextError();
 			try {
 				const agent = await bridge.getAgentDetail({ ...auth, agentId });
 				return {
@@ -82,8 +87,8 @@ export function createVeyyonAgentControlPort(
 					updatedAt: agent.updatedAt,
 				};
 			} catch (error) {
-				if (isAgentNotFound(error)) return null;
-				throw error;
+				if (nativeErrorCode(error) === "AGENT_NOT_FOUND") return null;
+				mapNativeError(error);
 			}
 		},
 	};
